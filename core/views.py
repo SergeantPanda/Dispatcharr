@@ -79,6 +79,7 @@ def stream_view(request, stream_id):
                     logger.debug('Profile is not active, skipping.')
                     continue
 
+                logger.debug(f'Profile has a max streams of {profile.max_streams}')
                 # Acquire the persistent Redis lock, indexed by 0 through max_streams available in the profile
                 stream_index = 0
                 while True:
@@ -89,9 +90,10 @@ def stream_view(request, stream_id):
                         logger.debug(f"Profile is using all available streams.")
                         break
 
-                    lock_key = f"lock:{channel.id}:{stream.id}:{profile.id}:{stream_index}"
+                    lock_key = f"lock:{profile.id}:{stream_index}"
                     persistent_lock = PersistentLock(redis_client, lock_key, lock_timeout=120)
 
+                    logger.debug(f'Attempting to acquire lock: {lock_key}')
                     if not persistent_lock.acquire():
                         logger.error(f"Could not acquire persistent lock for profile {profile.id} index {stream_index}, currently in use.")
                         continue
