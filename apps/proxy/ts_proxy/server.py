@@ -207,6 +207,9 @@ class ProxyServer:
         self.client_managers: Dict[str, ClientManager] = {}
         self.fetch_threads: Dict[str, threading.Thread] = {}
         self.user_agent: str = user_agent or Config.DEFAULT_USER_AGENT
+        self.lock: threading.Lock = threading.Lock()
+        # Add unique identifier for proxy streams
+        self.proxy_type: str = "ts"  # Identify this as TS proxy
 
     def initialize_channel(self, url: str, channel_id: str) -> None:
         """Initialize a new channel stream"""

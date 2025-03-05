@@ -21,13 +21,19 @@ def initialize_stream(request, channel_id):
         if not url:
             return JsonResponse({'error': 'No URL provided'}, status=400)
         
+        # Stop existing channel if it exists
+        if channel_id in proxy_server.stream_managers:
+            proxy_server.stop_channel(channel_id)
+            
         # Start the channel
         proxy_server.initialize_channel(url, channel_id)
         
         # Wait for connection to be established
         manager = proxy_server.stream_managers[channel_id]
         wait_start = time.time()
-        while not manager.connected:
+        
+        # Wait for both connection and initial buffer
+        while not manager.connected or len(proxy_server.stream_buffers[channel_id].buffer) == 0:
             if time.time() - wait_start > Config.CONNECTION_TIMEOUT:
                 proxy_server.stop_channel(channel_id)
                 return JsonResponse({
@@ -40,6 +46,12 @@ def initialize_stream(request, channel_id):
                 }, status=502)
             time.sleep(0.1)
             
+        # Reset client timeout since we just initialized
+        if channel_id in proxy_server.client_managers:
+            proxy_server.client_managers[channel_id].last_client_time = time.time()
+        
+        logger.info(f"Stream ready for channel {channel_id} with {len(proxy_server.stream_buffers[channel_id].buffer)} buffered chunks")
+            
         return JsonResponse({
             'message': 'Stream initialized and connected',
             'channel': channel_id,
@@ -49,52 +61,77 @@ def initialize_stream(request, channel_id):
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
     except Exception as e:
         logger.error(f"Failed to initialize stream: {e}")
+        if channel_id in proxy_server.stream_managers:
+            proxy_server.stop_channel(channel_id)
         return JsonResponse({'error': str(e)}, status=500)
 
 @csrf_exempt
 @require_http_methods(["GET"])
 def stream_ts(request, channel_id):
     """Handle TS stream requests"""
-    if channel_id not in proxy_server.stream_managers:
-        return JsonResponse({'error': 'Channel not found'}, status=404)
-        
-    def generate():
-        client_id = threading.get_ident()
-        try:
+    logger.info(f"Stream request received for channel {channel_id}")
+    
+    try:
+        with proxy_server.lock:  # Single atomic lock scope
+            # Check channel exists
+            if channel_id not in proxy_server.stream_managers:
+                logger.error(f"Channel {channel_id} not found")
+                return JsonResponse({'error': 'Channel not found'}, status=404)
+            
+            manager = proxy_server.stream_managers[channel_id]
+            if not manager.connected:
+                logger.error(f"Channel {channel_id} not connected")
+                return JsonResponse({'error': 'Stream not connected'}, status=503)
+                
+            # Get all references we need under the same lock
             buffer = proxy_server.stream_buffers[channel_id]
             client_manager = proxy_server.client_managers[channel_id]
+            initial_index = buffer.index
             
+            # Add client immediately while we have the lock
+            client_id = threading.get_ident()
             client_manager.add_client(client_id)
-            last_index = buffer.index
-            
-            while True:
-                with buffer.lock:
-                    if buffer.index > last_index:
-                        chunks_behind = buffer.index - last_index
-                        start_pos = max(0, len(buffer.buffer) - chunks_behind)
-                        
-                        for i in range(start_pos, len(buffer.buffer)):
-                            yield buffer.buffer[i]
-                        last_index = buffer.index
-                
-                threading.Event().wait(0.1)  # Short sleep between checks
-                
-        except Exception as e:
-            logger.error(f"Streaming error for channel {channel_id}: {e}")
-        finally:
-            try:
-                if channel_id in proxy_server.client_managers:
-                    remaining = proxy_server.client_managers[channel_id].remove_client(client_id)
-                    if remaining == 0:
-                        logger.info(f"No clients remaining, stopping channel {channel_id}")
-                        proxy_server.stop_channel(channel_id)
-            except Exception as e:
-                logger.error(f"Error during client cleanup: {e}")
+            logger.info(f"New client {client_id} connected to channel {channel_id}")
 
-    return StreamingHttpResponse(
-        generate(),
-        content_type='video/MP2T'
-    )
+        def generate():
+            nonlocal buffer, client_manager, initial_index
+            last_index = initial_index
+            
+            try:
+                while True:
+                    with buffer.lock:
+                        if buffer.index > last_index:
+                            chunks_behind = buffer.index - last_index
+                            start_pos = max(0, len(buffer.buffer) - chunks_behind)
+                            
+                            for i in range(start_pos, len(buffer.buffer)):
+                                yield buffer.buffer[i]
+                            last_index = buffer.index
+                    
+                    threading.Event().wait(0.1)
+                    
+            except Exception as e:
+                logger.error(f"Streaming error for channel {channel_id}: {e}")
+            finally:
+                logger.info(f"Client {client_id} disconnected from channel {channel_id}")
+                try:
+                    with proxy_server.lock:
+                        if channel_id in proxy_server.client_managers:
+                            remaining = proxy_server.client_managers[channel_id].remove_client(client_id)
+                            if remaining == 0:
+                                logger.info(f"No clients remaining, stopping channel {channel_id}")
+                                proxy_server.stop_channel(channel_id)
+                except Exception as e:
+                    logger.error(f"Error during client cleanup: {e}")
+
+        return StreamingHttpResponse(
+            generate(),
+            content_type='video/MP2T'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error setting up stream: {e}")
+        return JsonResponse({'error': 'Internal server error'}, status=500)
 
 @csrf_exempt
 @require_http_methods(["POST"])
@@ -127,3 +164,24 @@ def change_stream(request, channel_id):
     except Exception as e:
         logger.error(f"Failed to change stream: {e}")
         return JsonResponse({'error': str(e)}, status=500)
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def channel_status(request, channel_id):
+    """Debug endpoint to check channel state"""
+    status = {
+        'exists': channel_id in proxy_server.stream_managers,
+        'connected': False,
+        'buffer_size': 0,
+        'active_clients': 0
+    }
+    
+    if channel_id in proxy_server.stream_managers:
+        manager = proxy_server.stream_managers[channel_id]
+        status.update({
+            'connected': manager.connected,
+            'buffer_size': len(proxy_server.stream_buffers[channel_id].buffer),
+            'active_clients': len(proxy_server.client_managers[channel_id].active_clients)
+        })
+    
+    return JsonResponse(status)
