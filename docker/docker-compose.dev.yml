@@ -3,7 +3,7 @@ services:
     # build:
     #   context: ..
     #   dockerfile: docker/Dockerfile.dev
-    image: dispatcharr/dispatcharr:dev
+    image: dispatcharr/dispatcharr
     container_name: dispatcharr_dev
     ports:
       - "5656:5656"
@@ -12,6 +12,5 @@ services:
       - ../:/app
     environment:
       - DISPATCHARR_ENV=dev
-      - DB_ENGINE=sqlite
       - REDIS_HOST=localhost
       - CELERY_BROKER_URL=redis://localhost:6379/0

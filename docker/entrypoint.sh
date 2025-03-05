@@ -85,7 +85,12 @@ if [ "$DISPATCHARR_ENV" = "dev" ]; then
     echo "🚀 Development Mode - Setting up Frontend..."
 
     # Install Node.js
-    apt-get update && apt-get install -y nodejs
+    echo "=== setting up nodejs ==="
+    curl -sL https://deb.nodesource.com/setup_23.x -o /tmp/nodesource_setup.sh
+    bash /tmp/nodesource_setup.sh
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        nodejs
 
     # Install frontend dependencies
     cd /app/frontend && npm install
@@ -94,12 +99,18 @@ if [ "$DISPATCHARR_ENV" = "dev" ]; then
     # Start React development server
     echo "🚀 Starting React Dev Server..."
     cd /app/frontend
-    su - $POSTGRES_USER -c "PORT=9191 /app/frontend/node_modules/pm2/bin/pm2 --name dev-server start npm -- start"
+    su - $POSTGRES_USER -c "cd /app/frontend && /app/frontend/node_modules/pm2/bin/pm2 --name dev-server start npm -- run start"
     ./node_modules/pm2/bin/pm2 logs &
     react_pid=$(cat /home/dispatch/.pm2/pids/dev-server*)
     echo "✅ React started with PID $react_pid"
     pids+=("$react_pid")
     cd /app
+else
+    echo "🚀 Starting nginx..."
+    nginx
+    nginx_pid=$(pgrep nginx | sort  | head -n1)
+    echo "✅ nginx started with PID $nginx_pid"
+    pids+=("$nginx_pid")
 fi
 
 # If running in `dev` or `aio`, start Postgres, Redis, and Celery
@@ -206,12 +217,6 @@ su - $POSTGRES_USER -c "cd /app && gunicorn --workers=4 --worker-class=gevent --
 gunicorn_pid=$(pgrep -x gunicorn | sort | head -n1)
 echo "✅ Gunicorn started with PID $gunicorn_pid"
 pids+=("$gunicorn_pid")
-
-echo "🚀 Starting nginx..."
-nginx
-nginx_pid=$(pgrep nginx | sort  | head -n1)
-echo "✅ nginx started with PID $nginx_pid"
-pids+=("$nginx_pid")
 
 # Log PIDs
 echo "📝 Process PIDs: ${pids[*]}"
