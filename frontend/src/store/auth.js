@@ -29,7 +29,6 @@ const useAuthStore = create((set, get) => ({
   setIsAuthenticated: (isAuthenticated) => set({ isAuthenticated }),
 
   initData: async () => {
-    console.log('fetching data');
     await Promise.all([
       useChannelsStore.getState().fetchChannels(),
       useChannelsStore.getState().fetchChannelGroups(),
@@ -43,7 +42,6 @@ const useAuthStore = create((set, get) => ({
   },
 
   getToken: async () => {
-    const expiration = localStorage.getItem('tokenExpiration');
     const tokenExpiration = localStorage.getItem('tokenExpiration');
     let accessToken = null;
     if (isTokenExpired(tokenExpiration)) {

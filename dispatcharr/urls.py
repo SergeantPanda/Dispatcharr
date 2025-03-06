@@ -6,6 +6,7 @@ from django.views.generic import TemplateView, RedirectView
 from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
+from .routing import websocket_urlpatterns
 
 # Define schema_view for Swagger
 schema_view = get_schema_view(
@@ -24,7 +25,7 @@ schema_view = get_schema_view(
 urlpatterns = [
     # API Routes
     path('api/', include(('apps.api.urls', 'api'), namespace='api')),
-    path('api', RedirectView.as_view(url='/api/', permanent=True)), 
+    path('api', RedirectView.as_view(url='/api/', permanent=True)),
 
     # Admin
     path('admin', RedirectView.as_view(url='/admin/', permanent=True)),
@@ -56,6 +57,8 @@ urlpatterns = [
     path('<path:unused_path>', TemplateView.as_view(template_name='index.html')),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+urlpatterns += websocket_urlpatterns
 
 # Serve static files for development (React's JS, CSS, etc.)
 if settings.DEBUG:

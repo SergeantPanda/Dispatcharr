@@ -1,7 +1,14 @@
 // frontend/src/components/forms/SuperuserForm.js
 import React, { useState } from 'react';
 import axios from 'axios';
-import { Box, Paper, Typography, Grid as Grid2, TextField, Button } from '@mui/material';
+import {
+  Box,
+  Paper,
+  Typography,
+  Grid2,
+  TextField,
+  Button,
+} from '@mui/material';
 
 function SuperuserForm({ onSuccess }) {
   const [formData, setFormData] = useState({
@@ -58,8 +65,13 @@ function SuperuserForm({ onSuccess }) {
           </Typography>
         )}
         <form onSubmit={handleSubmit}>
-          <Grid2 container spacing={2} justifyContent="center" direction="column">
-            <Grid2 item xs={12}>
+          <Grid2
+            container
+            spacing={2}
+            justifyContent="center"
+            direction="column"
+          >
+            <Grid2 xs={12}>
               <TextField
                 label="Username"
                 variant="standard"
@@ -71,7 +83,7 @@ function SuperuserForm({ onSuccess }) {
                 size="small"
               />
             </Grid2>
-            <Grid2 item xs={12}>
+            <Grid2 xs={12}>
               <TextField
                 label="Password"
                 variant="standard"
@@ -84,7 +96,7 @@ function SuperuserForm({ onSuccess }) {
                 size="small"
               />
             </Grid2>
-            <Grid2 item xs={12}>
+            <Grid2 xs={12}>
               <TextField
                 label="Email (optional)"
                 variant="standard"
@@ -96,8 +108,13 @@ function SuperuserForm({ onSuccess }) {
                 size="small"
               />
             </Grid2>
-            <Grid2 item xs={12}>
-              <Button type="submit" variant="contained" color="primary" fullWidth>
+            <Grid2 xs={12}>
+              <Button
+                type="submit"
+                variant="contained"
+                color="primary"
+                fullWidth
+              >
                 Create Superuser
               </Button>
             </Grid2>

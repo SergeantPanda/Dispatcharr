@@ -183,7 +183,7 @@ const M3U = ({ playlist = null, isOpen, onClose }) => {
               error={
                 formik.touched.user_agent && Boolean(formik.errors.user_agent)
               }
-              helperText={formik.touched.user_agent && formik.errors.user_agent}
+              // helperText={formik.touched.user_agent && formik.errors.user_agent}
               variant="standard"
             >
               {userAgents.map((option, index) => (

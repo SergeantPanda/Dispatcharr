@@ -53,11 +53,13 @@ const StreamsTable = () => {
 
   // Fallback: Individual creation (optional)
   const createChannelFromStream = async (stream) => {
+    setIsLoading(true);
     await API.createChannelFromStream({
       channel_name: stream.name,
       channel_number: null,
       stream_id: stream.id,
     });
+    setIsLoading(false);
   };
 
   // Bulk creation: create channels from selected streams in one API call
@@ -67,6 +69,7 @@ const StreamsTable = () => {
       .getRowModel()
       .rows.filter((row) => row.getIsSelected());
 
+    setIsLoading(true);
     await API.createChannelsFromStreams(
       selected.map((sel) => ({
         stream_id: sel.original.id,
@@ -82,14 +85,18 @@ const StreamsTable = () => {
   };
 
   const deleteStream = async (id) => {
+    setIsLoading(true);
     await API.deleteStream(id);
+    setIsLoading(false);
   };
 
   const deleteStreams = async () => {
+    setIsLoading(true);
     const selected = table
       .getRowModel()
       .rows.filter((row) => row.getIsSelected());
     await API.deleteStreams(selected.map((stream) => stream.original.id));
+    setIsLoading(false);
   };
 
   const closeStreamForm = () => {
@@ -134,7 +141,7 @@ const StreamsTable = () => {
           size="small"
           color="warning"
           onClick={() => editStream(row.original)}
-          disabled={row.original.m3u_account}
+          disabled={row.original.m3u_account ? true : false}
           sx={{ p: 0 }}
         >
           <EditIcon fontSize="small" />
