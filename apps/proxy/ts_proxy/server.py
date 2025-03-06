@@ -76,27 +76,45 @@ class ClientManager:
         self.cleanup_timer: Optional[threading.Timer] = None
         self._proxy_server = None
         self._channel_id = None
+        self.initialization_time: float = time.time()
+        self.grace_period: float = 30.0  # 30 second grace period
         
     def start_cleanup_timer(self, proxy_server, channel_id):
         """Start timer to cleanup idle channels"""
-        self._proxy_server = proxy_server
-        self._channel_id = channel_id
-        if self.cleanup_timer:
-            self.cleanup_timer.cancel()
-        self.cleanup_timer = threading.Timer(
-            Config.CLIENT_TIMEOUT, 
-            self._cleanup_idle_channel,
-            args=[proxy_server, channel_id]
-        )
-        self.cleanup_timer.daemon = True
-        self.cleanup_timer.start()
-        
-    def _cleanup_idle_channel(self, proxy_server, channel_id):
-        """Stop channel if no clients connected"""
         with self.lock:
+            self._proxy_server = proxy_server
+            self._channel_id = channel_id
+            self.initialization_time = time.time()
+            if self.cleanup_timer:
+                self.cleanup_timer.cancel()
+            self._start_new_timer()
+
+    def _start_new_timer(self):
+        """Start a new cleanup timer"""
+        with self.lock:
+            if self.cleanup_timer:
+                self.cleanup_timer.cancel()
+            self.cleanup_timer = threading.Timer(
+                Config.CLIENT_TIMEOUT,
+                self._cleanup_idle_channel
+            )
+            self.cleanup_timer.daemon = True
+            self.cleanup_timer.start()
+            
+    def _cleanup_idle_channel(self):
+        """Stop channel if no clients connected and grace period expired"""
+        with self.lock:
+            current_time = time.time()
+            if current_time - self.initialization_time < self.grace_period:
+                logging.info(f"Channel {self._channel_id} still in grace period, restarting timer")
+                self._start_new_timer()
+                return
+                
             if not self.active_clients:
-                logging.info(f"No clients connected for {Config.CLIENT_TIMEOUT}s, stopping channel {channel_id}")
-                proxy_server.stop_channel(channel_id)
+                logging.info(f"No clients connected for {Config.CLIENT_TIMEOUT}s, stopping channel {self._channel_id}")
+                self._proxy_server.stop_channel(self._channel_id)
+            else:
+                self._start_new_timer()
 
     def add_client(self, client_id: int) -> None:
         """Add new client connection"""
@@ -162,6 +180,7 @@ class StreamFetcher:
 
     def _process_stream(self, response: requests.Response) -> None:
         """Process incoming stream data"""
+        first_chunk = True
         for chunk in response.iter_content(chunk_size=Config.CHUNK_SIZE):
             if not self.manager.running:
                 logging.info("Stream fetch stopped - shutting down")
@@ -176,6 +195,12 @@ class StreamFetcher:
                 with self.buffer.lock:
                     self.buffer.buffer.append(chunk)
                     self.buffer.index += 1
+                    
+                    # Signal ready after first chunk is buffered
+                    if first_chunk and hasattr(self.manager, 'ready_event') and self.manager.ready_event:
+                        logging.info("First chunk received, signaling channel ready")
+                        self.manager.ready_event.set()
+                        first_chunk = False
 
     def _handle_connection_error(self, error: Exception) -> None:
         """Handle stream connection errors"""
@@ -199,8 +224,6 @@ def wait_for_running(manager: StreamManager, delay: float) -> bool:
     return True
 
 class ProxyServer:
-    """Manages TS proxy server instance"""
-    
     def __init__(self, user_agent: Optional[str] = None):
         self.stream_managers: Dict[str, StreamManager] = {}
         self.stream_buffers: Dict[str, StreamBuffer] = {}
@@ -208,37 +231,112 @@ class ProxyServer:
         self.fetch_threads: Dict[str, threading.Thread] = {}
         self.user_agent: str = user_agent or Config.DEFAULT_USER_AGENT
         self.lock: threading.Lock = threading.Lock()
-        # Add unique identifier for proxy streams
-        self.proxy_type: str = "ts"  # Identify this as TS proxy
+        self._initialization_status: Dict[str, bool] = {}
+        self._channel_ready_events: Dict[str, threading.Event] = {}
 
     def initialize_channel(self, url: str, channel_id: str) -> None:
         """Initialize a new channel stream"""
-        if channel_id in self.stream_managers:
-            self.stop_channel(channel_id)
+        with self.lock:
+            logging.info(f"Starting initialization for channel {channel_id}")
             
-        self.stream_managers[channel_id] = StreamManager(
-            url, 
-            channel_id,
-            user_agent=self.user_agent
-        )
-        self.stream_buffers[channel_id] = StreamBuffer()
-        self.client_managers[channel_id] = ClientManager()
-        
-        # Start cleanup timer immediately after initialization
-        self.client_managers[channel_id].start_cleanup_timer(self, channel_id)
-        
-        fetcher = StreamFetcher(
-            self.stream_managers[channel_id], 
-            self.stream_buffers[channel_id]
-        )
-        
-        self.fetch_threads[channel_id] = threading.Thread(
-            target=fetcher.fetch_loop,
-            name=f"StreamFetcher-{channel_id}",
-            daemon=True
-        )
-        self.fetch_threads[channel_id].start()
-        logging.info(f"Initialized channel {channel_id} with URL {url}")
+            # Create ready event
+            ready_event = threading.Event()
+            self._channel_ready_events[channel_id] = ready_event
+            
+            # Track initialization status
+            self._initialization_status[channel_id] = False
+            
+            if channel_id in self.stream_managers:
+                logging.info(f"Stopping existing channel {channel_id}")
+                self.stop_channel(channel_id)
+            
+            try:
+                # Create manager first
+                manager = StreamManager(url, channel_id, user_agent=self.user_agent)
+                manager.ready_event = ready_event
+                self.stream_managers[channel_id] = manager
+                
+                # Create buffer and client manager
+                self.stream_buffers[channel_id] = StreamBuffer()
+                self.client_managers[channel_id] = ClientManager()
+                
+                # Start fetch thread
+                fetcher = StreamFetcher(manager, self.stream_buffers[channel_id])
+                thread = threading.Thread(
+                    target=fetcher.fetch_loop,
+                    name=f"StreamFetcher-{channel_id}",
+                    daemon=True
+                )
+                self.fetch_threads[channel_id] = thread
+                
+                # Mark initialization started
+                self._initialization_status[channel_id] = True
+                
+                # Start thread
+                thread.start()
+                
+                # Wait for ready signal or timeout
+                if not ready_event.wait(timeout=10.0):
+                    raise TimeoutError("Channel initialization timed out")
+                
+                logging.info(f"Completed initialization for channel {channel_id}")
+                
+            except Exception as e:
+                logging.error(f"Error during channel initialization: {e}")
+                self._cleanup_channel(channel_id)
+                raise
+
+    def is_channel_ready(self, channel_id: str) -> bool:
+        """Check if channel is fully initialized and ready"""
+        with self.lock:
+            channel_exists = (
+                channel_id in self._initialization_status and
+                channel_id in self.stream_managers and
+                channel_id in self.stream_buffers and
+                channel_id in self.client_managers and
+                channel_id in self._channel_ready_events
+            )
+            
+            if not channel_exists:
+                logging.debug(f"Channel {channel_id} missing components")
+                return False
+                
+            is_ready = (
+                self._initialization_status[channel_id] and
+                self.stream_managers[channel_id].connected and 
+                len(self.stream_buffers[channel_id].buffer) > 0 and
+                self._channel_ready_events[channel_id].is_set()  # Changed: Check if event IS set
+            )
+            
+            logging.debug(f"Channel {channel_id} ready state check:")
+            logging.debug(f"- Initialization status: {self._initialization_status[channel_id]}")
+            logging.debug(f"- Connected: {self.stream_managers[channel_id].connected}")
+            logging.debug(f"- Buffer size: {len(self.stream_buffers[channel_id].buffer)}")
+            logging.debug(f"- Ready event set: {self._channel_ready_events[channel_id].is_set()}")
+            logging.debug(f"Final ready state: {is_ready}")
+            
+            return is_ready
+
+    def _cleanup_channel(self, channel_id: str) -> None:
+        """Remove channel resources"""
+        with self.lock:
+            logging.info(f"Cleaning up channel {channel_id}")
+            try:
+                if channel_id in self.stream_managers:
+                    self.stream_managers[channel_id].stop()
+                if channel_id in self.fetch_threads and self.fetch_threads[channel_id].is_alive():
+                    self.fetch_threads[channel_id].join(timeout=5)
+            except Exception as e:
+                logging.error(f"Error during cleanup: {e}")
+            finally:
+                # Remove from all collections
+                self.stream_managers.pop(channel_id, None)
+                self.stream_buffers.pop(channel_id, None)
+                self.client_managers.pop(channel_id, None)
+                self.fetch_threads.pop(channel_id, None)
+                self._initialization_status.pop(channel_id, None)
+                self._channel_ready_events.pop(channel_id, None)
+                logging.info(f"Cleanup complete for channel {channel_id}")
 
     def stop_channel(self, channel_id: str) -> None:
         """Stop and cleanup a channel"""
@@ -255,13 +353,8 @@ class ProxyServer:
             finally:
                 self._cleanup_channel(channel_id)
             
-    def _cleanup_channel(self, channel_id: str) -> None:
-        """Remove channel resources"""
-        for collection in [self.stream_managers, self.stream_buffers, 
-                         self.client_managers, self.fetch_threads]:
-            collection.pop(channel_id, None)
-
     def shutdown(self) -> None:
         """Stop all channels and cleanup"""
         for channel_id in list(self.stream_managers.keys()):
             self.stop_channel(channel_id)
+        logging.info("Proxy server shutdown complete")

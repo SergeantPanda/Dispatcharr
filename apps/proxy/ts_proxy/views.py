@@ -20,7 +20,7 @@ def initialize_stream(request, channel_id):
         url = data.get('url')
         if not url:
             return JsonResponse({'error': 'No URL provided'}, status=400)
-        
+            
         # Stop existing channel if it exists
         if channel_id in proxy_server.stream_managers:
             proxy_server.stop_channel(channel_id)
@@ -28,11 +28,10 @@ def initialize_stream(request, channel_id):
         # Start the channel
         proxy_server.initialize_channel(url, channel_id)
         
-        # Wait for connection to be established
+        # Wait for connection to be established and initial buffer
         manager = proxy_server.stream_managers[channel_id]
         wait_start = time.time()
         
-        # Wait for both connection and initial buffer
         while not manager.connected or len(proxy_server.stream_buffers[channel_id].buffer) == 0:
             if time.time() - wait_start > Config.CONNECTION_TIMEOUT:
                 proxy_server.stop_channel(channel_id)
@@ -49,14 +48,16 @@ def initialize_stream(request, channel_id):
         # Reset client timeout since we just initialized
         if channel_id in proxy_server.client_managers:
             proxy_server.client_managers[channel_id].last_client_time = time.time()
-        
+            
         logger.info(f"Stream ready for channel {channel_id} with {len(proxy_server.stream_buffers[channel_id].buffer)} buffered chunks")
             
         return JsonResponse({
             'message': 'Stream initialized and connected',
             'channel': channel_id,
-            'url': url
+            'url': url,
+            'buffer_size': len(proxy_server.stream_buffers[channel_id].buffer)
         })
+        
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
     except Exception as e:
@@ -72,18 +73,13 @@ def stream_ts(request, channel_id):
     logger.info(f"Stream request received for channel {channel_id}")
     
     try:
-        with proxy_server.lock:  # Single atomic lock scope
-            # Check channel exists
-            if channel_id not in proxy_server.stream_managers:
-                logger.error(f"Channel {channel_id} not found")
-                return JsonResponse({'error': 'Channel not found'}, status=404)
+        with proxy_server.lock:
+            if not proxy_server.is_channel_ready(channel_id):
+                logger.error(f"Channel {channel_id} not ready or not found")
+                return JsonResponse({'error': 'Channel not ready'}, status=404)
             
+            # Get all references under the same lock
             manager = proxy_server.stream_managers[channel_id]
-            if not manager.connected:
-                logger.error(f"Channel {channel_id} not connected")
-                return JsonResponse({'error': 'Stream not connected'}, status=503)
-                
-            # Get all references we need under the same lock
             buffer = proxy_server.stream_buffers[channel_id]
             client_manager = proxy_server.client_managers[channel_id]
             initial_index = buffer.index
