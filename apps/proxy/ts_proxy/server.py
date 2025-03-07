@@ -178,6 +178,7 @@ class ProxyServer:
         self.client_managers: Dict[str, ClientManager] = {}
         self.fetch_threads: Dict[str, threading.Thread] = {}
         self.user_agent: str = user_agent or Config.DEFAULT_USER_AGENT
+        self.lock: threading.RLock = threading.RLock()  # Add a thread-safe lock
 
     def initialize_channel(self, url: str, channel_id: str) -> None:
         """Initialize a new channel stream"""
