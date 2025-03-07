@@ -9,6 +9,8 @@ from django.conf import settings
 from django.core.cache import cache
 from .models import M3UAccount
 from apps.channels.models import Stream
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +122,7 @@ def refresh_single_m3u_account(account_id):
             # Extract tvg-id
             tvg_id_match = re.search(r'tvg-id="([^"]*)"', line)
             tvg_id = tvg_id_match.group(1) if tvg_id_match else ""
-            
+
             fallback_name = line.split(",", 1)[-1].strip() if "," in line else "Default Stream"
 
             name = tvg_name_match.group(1) if tvg_name_match else fallback_name
@@ -178,6 +180,14 @@ def refresh_single_m3u_account(account_id):
 
     logger.info(f"Completed parsing. Created {created_count} new Streams, updated {updated_count} existing Streams, excluded {excluded_count} Streams.")
     release_lock('refresh_single_m3u_account', account_id)
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        "updates",
+        {
+            "type": "m3u_refresh",
+            "message": {"success": True, "message": "M3U refresh completed successfully"}
+        },
+    )
     return f"Account {account_id} => Created {created_count}, updated {updated_count}, excluded {excluded_count} Streams."
 
 def process_uploaded_m3u_file(file, account):

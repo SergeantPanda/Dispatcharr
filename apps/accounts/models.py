@@ -9,7 +9,7 @@ class User(AbstractUser):
     """
     avatar_config = models.JSONField(default=dict, blank=True, null=True)
     channel_groups = models.ManyToManyField(
-        'channels.ChannelGroup',  # Updated reference to renamed model
+        'dispatcharr_channels.ChannelGroup',  # Updated reference to renamed model
         blank=True,
         related_name="users"
     )

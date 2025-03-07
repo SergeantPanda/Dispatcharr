@@ -32,6 +32,7 @@ import { TableHelper } from '../../helpers';
 import utils from '../../utils';
 import logo from '../../images/logo.png';
 import useVideoStore from '../../store/useVideoStore';
+import useSettingsStore from '../../store/settings';
 
 const ChannelsTable = () => {
   const [channel, setChannel] = useState(null);
@@ -42,9 +43,12 @@ const ChannelsTable = () => {
   const [textToCopy, setTextToCopy] = useState('');
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const { showVideo } = useVideoStore.getState(); // or useVideoStore()
 
   const { channels, isLoading: channelsLoading } = useChannelsStore();
-  const { showVideo } = useVideoStore.getState(); // or useVideoStore()
+  const {
+    environment: { env_mode },
+  } = useSettingsStore();
 
   // Configure columns
   const columns = useMemo(
@@ -100,11 +104,17 @@ const ChannelsTable = () => {
   };
 
   const deleteChannel = async (id) => {
+    setIsLoading(true);
     await API.deleteChannel(id);
+    setIsLoading(false);
   };
 
   function handleWatchStream(channelNumber) {
-    showVideo(`/output/stream/${channelNumber}/`);
+    let vidUrl = `/output/stream/${channelNumber}/`;
+    if (env_mode == 'dev') {
+      vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
+    }
+    showVideo(vidUrl);
   }
 
   // (Optional) bulk delete, but your endpoint is @TODO
@@ -131,7 +141,9 @@ const ChannelsTable = () => {
       const rowOrder = table.getRowModel().rows.map((row) => row.original.id);
 
       // Call our custom API endpoint
+      setIsLoading(true);
       const result = await API.assignChannelNumbers(rowOrder);
+      setIsLoading(false);
 
       // We might get { message: "Channels have been auto-assigned!" }
       setSnackbarMessage(result.message || 'Channels assigned');

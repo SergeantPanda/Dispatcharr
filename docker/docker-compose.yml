@@ -1,6 +1,6 @@
 services:
   web:
-    image: dispatcharr/dispatcharr
+    image: dispatcharr/dispatcharr:alpha-v1
     container_name: dispatcharr_web
     ports:
       - 9191:9191
@@ -16,9 +16,7 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
 
   celery:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
+    image: dispatcharr/dispatcharr:alpha-v1
     container_name: dispatcharr_celery
     depends_on:
       - db

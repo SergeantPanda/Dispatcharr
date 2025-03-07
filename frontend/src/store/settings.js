@@ -3,6 +3,7 @@ import api from '../api';
 
 const useSettingsStore = create((set) => ({
   settings: {},
+  environment: {},
   isLoading: false,
   error: null,
 
@@ -10,15 +11,16 @@ const useSettingsStore = create((set) => ({
     set({ isLoading: true, error: null });
     try {
       const settings = await api.getSettings();
+      const env = await api.getEnvironmentSettings();
       set({
         settings: settings.reduce((acc, setting) => {
           acc[setting.key] = setting;
           return acc;
         }, {}),
         isLoading: false,
+        environment: env,
       });
     } catch (error) {
-      console.error('Failed to fetch settings:', error);
       set({ error: 'Failed to load settings.', isLoading: false });
     }
   },

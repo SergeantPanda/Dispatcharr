@@ -81,7 +81,7 @@ class LineupAPIView(APIView):
             {
                 "GuideNumber": str(ch.channel_number),
                 "GuideName": ch.channel_name,
-                "URL": request.build_absolute_uri(f"/player/stream/{ch.id}")
+                "URL": request.build_absolute_uri(f"/output/stream/{ch.id}")
             }
             for ch in channels
         ]

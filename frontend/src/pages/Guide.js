@@ -20,6 +20,7 @@ import useChannelsStore from '../store/channels';
 import logo from '../images/logo.png';
 import useVideoStore from '../store/useVideoStore'; // NEW import
 import useAlertStore from '../store/alerts';
+import useSettingsStore from '../store/settings';
 
 /** Layout constants */
 const CHANNEL_WIDTH = 120; // Width of the channel/logo column
@@ -46,6 +47,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const [selectedProgram, setSelectedProgram] = useState(null);
   const [loading, setLoading] = useState(true);
   const { showAlert } = useAlertStore();
+  const {
+    environment: { env_mode },
+  } = useSettingsStore();
 
   const guideRef = useRef(null);
 
@@ -172,9 +176,12 @@ export default function TVChannelGuide({ startDate, endDate }) {
       return;
     }
     // Build a playable stream URL for that channel
-    const url =
-      window.location.origin + '/output/stream/' + matched.channel_number;
-    showVideo(url);
+    let vidUrl = `/output/stream/${matched.channel_number}/`;
+    if (env_mode == 'dev') {
+      vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
+    }
+
+    showVideo(vidUrl);
 
     // Optionally close the modal
     setSelectedProgram(null);

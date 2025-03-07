@@ -16,7 +16,7 @@ export default class API {
    * A static method so we can do:  await API.getAuthToken()
    */
   static async getAuthToken() {
-    return await useAuthStore.getState().getToken(); 
+    return await useAuthStore.getState().getToken();
   }
 
   static async login(username, password) {
@@ -500,7 +500,7 @@ export default class API {
     return retval;
   }
 
-  // Notice there's a duplicated "refreshPlaylist" method above; 
+  // Notice there's a duplicated "refreshPlaylist" method above;
   // you might want to rename or remove one if it's not needed.
 
   static async addEPG(values) {
@@ -696,6 +696,18 @@ export default class API {
 
   static async getSettings() {
     const response = await fetch(`${host}/api/core/settings/`, {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${await API.getAuthToken()}`,
+      },
+    });
+
+    const retval = await response.json();
+    return retval;
+  }
+
+  static async getEnvironmentSettings() {
+    const response = await fetch(`${host}/api/core/settings/env/`, {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${await API.getAuthToken()}`,

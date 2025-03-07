@@ -8,3 +8,4 @@ node_modules/
 staticfiles/
 docker/DockerfileAIO
 docker/Dockerfile DEV
+static/
