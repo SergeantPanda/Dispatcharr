@@ -201,12 +201,13 @@ def wait_for_running(manager: StreamManager, delay: float) -> bool:
 class ProxyServer:
     """Manages TS proxy server instance"""
     
-    def __init__(self, user_agent: Optional[str] = None):
-        self.stream_managers: Dict[str, StreamManager] = {}
-        self.stream_buffers: Dict[str, StreamBuffer] = {}
-        self.client_managers: Dict[str, ClientManager] = {}
-        self.fetch_threads: Dict[str, threading.Thread] = {}
-        self.user_agent: str = user_agent or Config.DEFAULT_USER_AGENT
+    def __init__(self, user_agent=None):
+        self.stream_managers = {}
+        self.stream_buffers = {}
+        self.client_managers = {}
+        self.fetch_threads = {}
+        self.user_agent = user_agent or "Dispatcharr/1.0"
+        self.lock = threading.RLock()  # Add a reentrant lock for thread safety
 
     def initialize_channel(self, url: str, channel_id: str) -> None:
         """Initialize a new channel stream"""
@@ -262,3 +263,28 @@ class ProxyServer:
         """Stop all channels and cleanup"""
         for channel_id in list(self.stream_managers.keys()):
             self.stop_channel(channel_id)
+
+    def is_channel_ready(self, channel_id: str) -> bool:
+        """Check if a channel is ready for streaming"""
+        with self.lock:
+            if channel_id not in self.stream_managers:
+                return False
+                
+            if channel_id not in self.stream_buffers:
+                return False
+                
+            manager = self.stream_managers[channel_id]
+            buffer = self.stream_buffers[channel_id]
+            
+            # Stream manager must be connected and have data in buffer
+            if not manager.connected:
+                return False
+                
+            if not manager.ready_event.is_set():
+                return False
+                
+            # Check buffer has data
+            if len(buffer.buffer) < 1:
+                return False
+                
+            return True
