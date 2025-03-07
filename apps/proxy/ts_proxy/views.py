@@ -101,25 +101,52 @@ def stream_ts(request, channel_id):
             
             try:
                 # Add client to manager
-                proxy_server.client_managers[channel_id].add_client(client_id)
+                if channel_id in proxy_server.client_managers:
+                    proxy_server.client_managers[channel_id].add_client(client_id)
+                else:
+                    logger.error(f"No client manager found for channel {channel_id}")
+                    return
                 
-                buffer = proxy_server.stream_buffers[channel_id]
-                last_index = buffer.index
+                buffer = proxy_server.stream_buffers.get(channel_id)
+                if not buffer:
+                    logger.error(f"No buffer found for channel {channel_id}")
+                    return
+                
+                last_index = 0
                 
                 while True:
-                    with buffer.lock:
-                        if buffer.index > last_index:
-                            chunks_behind = buffer.index - last_index
-                            start_pos = max(0, len(buffer.buffer) - chunks_behind)
-                            
-                            for i in range(start_pos, len(buffer.buffer)):
-                                yield buffer.buffer[i]
-                            last_index = buffer.index
-                    
-                    time.sleep(0.1)  # Short sleep between checks
+                    try:
+                        # Check if channel still exists
+                        if channel_id not in proxy_server.stream_managers:
+                            logger.warning(f"Channel {channel_id} no longer exists")
+                            break
+                        
+                        # Check if new data is available
+                        with buffer.lock:
+                            if buffer.index > last_index:
+                                chunks_behind = buffer.index - last_index
+                                start_pos = max(0, len(buffer.buffer) - chunks_behind)
+                                
+                                for i in range(start_pos, len(buffer.buffer)):
+                                    yield buffer.buffer[i]
+                                last_index = buffer.index
+                        
+                        time.sleep(0.1)  # Short sleep between checks
+                        
+                    except BrokenPipeError:
+                        # Client disconnected - this is normal
+                        logger.debug(f"Client {client_id} disconnected (broken pipe)")
+                        break
+                    except ConnectionResetError:
+                        # Client disconnected abruptly
+                        logger.debug(f"Client {client_id} connection reset")
+                        break
+                    except Exception as e:
+                        logger.error(f"Streaming error for client {client_id}: {e}")
+                        break
                     
             except Exception as e:
-                logger.error(f"Streaming error for client {client_id}: {e}")
+                logger.error(f"Client {client_id} stream error: {e}")
             finally:
                 # Clean up client
                 try:
@@ -276,3 +303,19 @@ def change_stream(request, channel_id):
     except Exception as e:
         logger.error(f"Failed to change stream: {e}")
         return JsonResponse({'error': str(e)}, status=500)
+
+def cleanup_channel(channel_id):
+    """Stop a channel when no longer needed"""
+    logger.info(f"Cleaning up channel {channel_id} after all clients disconnected")
+    
+    try:
+        with proxy_server.lock:
+            # Check if channel exists
+            if channel_id in proxy_server.stream_managers:
+                # Stop the channel
+                proxy_server.stop_channel(channel_id)
+                logger.info(f"Channel {channel_id} stopped and resources released")
+            else:
+                logger.warning(f"Channel {channel_id} not found for cleanup")
+    except Exception as e:
+        logger.error(f"Error during channel cleanup: {e}", exc_info=True)

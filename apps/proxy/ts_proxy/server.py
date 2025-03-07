@@ -16,76 +16,174 @@ from typing import Optional, Set, Deque, Dict
 from apps.proxy.config import TSConfig as Config
 
 class StreamManager:
-    """Manages TS stream state and connection handling"""
+    """Manages a connection to a TS stream"""
     
-    def __init__(self, initial_url: str, channel_id: str, user_agent: Optional[str] = None):
-        self.current_url: str = initial_url
-        self.channel_id: str = channel_id
-        self.user_agent: str = user_agent or Config.DEFAULT_USER_AGENT
-        self.url_changed: threading.Event = threading.Event()
-        self.running: bool = True
-        self.session: requests.Session = self._create_session()
-        self.connected: bool = False
-        self.retry_count: int = 0
-        logging.info(f"Initialized stream manager for channel {channel_id}")
-
-    def _create_session(self) -> requests.Session:
-        """Create and configure requests session"""
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': self.user_agent,
-            'Connection': 'keep-alive'
-        })
-        return session
-
-    def update_url(self, new_url: str) -> bool:
-        """Update stream URL and signal connection change"""
-        if new_url != self.current_url:
-            logging.info(f"Stream switch initiated: {self.current_url} -> {new_url}")
-            self.current_url = new_url
-            self.connected = False
-            self.url_changed.set()
+    def __init__(self, url, buffer, user_agent=None):
+        self.url = url
+        self.buffer = buffer
+        self.running = True
+        self.connected = False
+        self.session = requests.Session()
+        self.user_agent = user_agent or "Dispatcharr/1.0"
+        self.ready_event = threading.Event()
+        self.retry_count = 0
+        self.max_retries = 3
+        self.session.headers.update({'User-Agent': self.user_agent})
+    
+    def connect(self):
+        """Establish connection to the stream"""
+        try:
+            self.retry_count += 1
+            logging.info(f"Connecting to stream: {self.url} (attempt {self.retry_count}/{self.max_retries})")
+            
+            self.response = self.session.get(
+                self.url,
+                stream=True,
+                timeout=10
+            )
+            
+            if self.response.status_code != 200:
+                logging.error(f"Failed to connect: HTTP {self.response.status_code}")
+                return False
+                
+            self.connected = True
+            self.ready_event.set()
+            logging.info("Stream connected successfully")
             return True
+            
+        except Exception as e:
+            logging.error(f"Connection error: {e}")
+            self.connected = False
+            return False
+    
+    def should_retry(self):
+        """Check if we should retry connecting"""
+        return self.retry_count < self.max_retries
+    
+    def fetch_chunk(self):
+        """Fetch the next chunk from the stream"""
+        if not self.connected or not hasattr(self, 'response'):
+            return False
+            
+        try:
+            chunk = next(self.response.iter_content(chunk_size=4096))
+            if chunk:
+                self.buffer.add_chunk(chunk)
+                return True
+        except StopIteration:
+            # End of stream
+            logging.warning("End of stream reached")
+            self.connected = False
+        except Exception as e:
+            logging.error(f"Error reading from stream: {e}")
+            self.connected = False
+            
         return False
-
-    def should_retry(self) -> bool:
-        """Check if connection retry is allowed"""
-        return self.retry_count < Config.MAX_RETRIES
-
-    def stop(self) -> None:
-        """Clean shutdown of stream manager"""
+    
+    def update_url(self, new_url):
+        """Change the URL for this stream"""
+        if self.url == new_url:
+            return False
+            
+        self.url = new_url
+        self.retry_count = 0
+        
+        # Disconnect current stream
+        self.connected = False
+        if hasattr(self, 'response'):
+            try:
+                self.response.close()
+            except:
+                pass
+            
+        # Reconnect with new URL
+        return self.connect()
+    
+    def stop(self):
+        """Stop the stream manager"""
         self.running = False
-        if self.session:
-            self.session.close()
+        self.connected = False
+        
+        # Close the response if it exists
+        if hasattr(self, 'response'):
+            try:
+                self.response.close()
+            except:
+                pass
 
 class StreamBuffer:
-    """Manages stream data buffering"""
+    """Buffer for storing stream chunks"""
     
-    def __init__(self):
-        self.buffer: Deque[bytes] = deque(maxlen=Config.BUFFER_SIZE)
-        self.lock: threading.Lock = threading.Lock()
-        self.index: int = 0
+    def __init__(self, max_length=1000):
+        self.buffer = []
+        self.lock = threading.RLock()
+        self.max_length = max_length
+        self.index = 0
+    
+    def add_chunk(self, chunk):
+        """Add a chunk to the buffer"""
+        with self.lock:
+            self.buffer.append(chunk)
+            self.index += 1
+            
+            # Prevent buffer from growing too large
+            if len(self.buffer) > self.max_length:
+                # Remove oldest chunks
+                self.buffer = self.buffer[-self.max_length:]
+    
+    def get_chunks(self, start_pos=0):
+        """Get chunks starting from position"""
+        with self.lock:
+            if start_pos >= len(self.buffer):
+                return []
+            return self.buffer[start_pos:]
 
 class ClientManager:
-    """Manages active client connections"""
+    def __init__(self, channel_id=None):
+        self.active_clients = {}
+        self.cleanup_timer = None
+        self.lock = threading.RLock()
+        self.channel_id = channel_id  # Store channel ID for cleanup
+        
+    def add_client(self, client_id):
+        with self.lock:
+            self.active_clients[client_id] = time.time()
+            # Cancel any pending cleanup
+            if self.cleanup_timer:
+                self.cleanup_timer.cancel()
+                self.cleanup_timer = None
     
-    def __init__(self):
-        self.active_clients: Set[int] = set()
-        self.lock: threading.Lock = threading.Lock()
-
-    def add_client(self, client_id: int) -> None:
-        """Add new client connection"""
+    def remove_client(self, client_id):
         with self.lock:
-            self.active_clients.add(client_id)
-            logging.info(f"New client connected: {client_id} (total: {len(self.active_clients)})")
-
-    def remove_client(self, client_id: int) -> int:
-        """Remove client and return remaining count"""
+            if client_id in self.active_clients:
+                del self.active_clients[client_id]
+                logging.info(f"Client disconnected: {client_id} (remaining: {len(self.active_clients)})")
+                
+            # Start cleanup timer if this was the last client
+            if not self.active_clients and not self.cleanup_timer:
+                self.schedule_cleanup()
+    
+    def schedule_cleanup(self):
+        """Schedule cleanup if no clients reconnect within the grace period"""
+        if not self.cleanup_timer:
+            # Wait 30 seconds before cleanup
+            self.cleanup_timer = threading.Timer(30.0, self.trigger_cleanup)
+            self.cleanup_timer.daemon = True
+            self.cleanup_timer.start()
+            logging.info("Scheduled stream cleanup in 30 seconds if no new clients connect")
+    
+    def trigger_cleanup(self):
+        """Trigger actual cleanup if still no clients"""
         with self.lock:
-            self.active_clients.remove(client_id)
-            remaining = len(self.active_clients)
-            logging.info(f"Client disconnected: {client_id} (remaining: {remaining})")
-            return remaining
+            if not self.active_clients:
+                logging.info("No clients reconnected, triggering stream shutdown")
+                # Import cleanup function to avoid circular import
+                from apps.proxy.ts_proxy.views import cleanup_channel
+                
+                # Use the stored channel_id
+                if self.channel_id:
+                    cleanup_channel(self.channel_id)
+            self.cleanup_timer = None
 
 class StreamFetcher:
     """Handles stream data fetching"""
@@ -180,47 +278,117 @@ class ProxyServer:
         self.user_agent: str = user_agent or Config.DEFAULT_USER_AGENT
         self.lock: threading.RLock = threading.RLock()  # Add a thread-safe lock
 
-    def initialize_channel(self, url: str, channel_id: str) -> None:
-        """Initialize a new channel stream"""
-        if channel_id in self.stream_managers:
-            self.stop_channel(channel_id)
+    def initialize_channel(self, url, channel_id):
+        """Initialize a new channel with the given URL"""
+        with self.lock:
+            # Create buffer and stream manager
+            self.stream_buffers[channel_id] = StreamBuffer()
+            self.stream_managers[channel_id] = StreamManager(
+                url, 
+                self.stream_buffers[channel_id],
+                user_agent=self.user_agent
+            )
             
-        self.stream_managers[channel_id] = StreamManager(
-            url, 
-            channel_id,
-            user_agent=self.user_agent
-        )
-        self.stream_buffers[channel_id] = StreamBuffer()
-        self.client_managers[channel_id] = ClientManager()
-        
-        fetcher = StreamFetcher(
-            self.stream_managers[channel_id], 
-            self.stream_buffers[channel_id]
-        )
-        
-        self.fetch_threads[channel_id] = threading.Thread(
-            target=fetcher.fetch_loop,
-            name=f"StreamFetcher-{channel_id}",
-            daemon=True
-        )
-        self.fetch_threads[channel_id].start()
-        logging.info(f"Initialized channel {channel_id} with URL {url}")
+            # Pass channel_id to ClientManager constructor
+            self.client_managers[channel_id] = ClientManager(channel_id=channel_id)
+            
+            # Start a thread to fetch from the stream
+            thread = threading.Thread(
+                target=self._fetch_stream,
+                args=(self.stream_managers[channel_id], channel_id),
+                daemon=True
+            )
+            self.fetch_threads[channel_id] = thread
+            thread.start()
+            
+            logging.info(f"Initialized channel {channel_id} with URL {url}")
+    
+    def _fetch_stream(self, manager, channel_id):
+        """Internal method to continuously fetch from a stream"""
+        try:
+            # Connect to the stream
+            if not manager.connect():
+                logging.error(f"Failed to connect to stream for channel {channel_id}")
+                return
+                
+            # Continue fetching until stopped
+            while manager.running:
+                try:
+                    # Fetch next chunk of data
+                    manager.fetch_chunk()
+                    
+                    # Check for client activity and possibly stop if no clients
+                    with self.lock:
+                        if channel_id in self.client_managers:
+                            client_count = len(self.client_managers[channel_id].active_clients)
 
-    def stop_channel(self, channel_id: str) -> None:
-        """Stop and cleanup a channel"""
-        if channel_id in self.stream_managers:
-            logging.info(f"Stopping channel {channel_id}")
-            try:
-                self.stream_managers[channel_id].stop()
-                if channel_id in self.fetch_threads:
-                    self.fetch_threads[channel_id].join(timeout=5)
-                    if self.fetch_threads[channel_id].is_alive():
-                        logging.warning(f"Fetch thread for channel {channel_id} did not stop cleanly")
-            except Exception as e:
-                logging.error(f"Error stopping channel {channel_id}: {e}")
-            finally:
-                self._cleanup_channel(channel_id)
-            
+                            if client_count == 0:
+                                # Check if we've been running with no clients for a while
+                                if not hasattr(manager, 'no_clients_since'):
+                                    manager.no_clients_since = time.time()
+                                elif time.time() - manager.no_clients_since > 60:  # 60 second timeout
+                                    logging.info(f"No clients for channel {channel_id} for 60 seconds, stopping")
+                                    manager.stop()
+                            else:
+                                # Reset the counter
+                                if hasattr(manager, 'no_clients_since'):
+                                    delattr(manager, 'no_clients_since')
+                        
+                except Exception as e:
+                    if manager.running:
+                        logging.error(f"Error fetching from stream: {e}")
+                        
+                        # If we lose connection but are still supposed to be running,
+                        # try to reconnect after a short delay
+                        if not manager.connected:
+                            time.sleep(2)
+                            manager.connect()
+                
+                # Small delay to prevent tight CPU loop
+                time.sleep(0.01)
+                
+        except Exception as e:
+            logging.error(f"Fetch thread error: {e}")
+        finally:
+            # Make sure we're marked as disconnected when thread ends
+            manager.connected = False
+            logging.info(f"Fetch thread for channel {channel_id} exited")
+
+    def stop_channel(self, channel_id):
+        """Stop a channel and clean up resources"""
+        with self.lock:
+            if channel_id in self.stream_managers:
+                try:
+                    # Stop the stream manager
+                    manager = self.stream_managers[channel_id]
+                    manager.stop()
+                    
+                    # Wait for thread to end gracefully
+                    if channel_id in self.fetch_threads:
+                        thread = self.fetch_threads[channel_id]
+                        if thread and thread.is_alive():
+                            thread.join(timeout=2.0)  # Wait up to 2 seconds
+                    
+                    # Clean up all resources
+                    self.stream_managers.pop(channel_id, None)
+                    self.stream_buffers.pop(channel_id, None)
+                    
+                    # Handle client manager cleanup
+                    if channel_id in self.client_managers:
+                        client_manager = self.client_managers[channel_id]
+                        # Cancel any cleanup timer
+                        if client_manager.cleanup_timer:
+                            client_manager.cleanup_timer.cancel()
+                        self.client_managers.pop(channel_id, None)
+                        
+                    self.fetch_threads.pop(channel_id, None)
+                    
+                    logging.info(f"Channel {channel_id} stopped and resources released")
+                    return True
+                except Exception as e:
+                    logging.error(f"Error stopping channel {channel_id}: {e}")
+            return False
+
     def _cleanup_channel(self, channel_id: str) -> None:
         """Remove channel resources"""
         for collection in [self.stream_managers, self.stream_buffers, 
