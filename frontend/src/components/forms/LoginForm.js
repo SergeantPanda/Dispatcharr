@@ -66,7 +66,7 @@ const LoginForm = () => {
             justifyContent="center"
             direction="column"
           >
-            <Grid2 item xs={12}>
+            <Grid2 xs={12}>
               <TextField
                 label="Username"
                 variant="standard"
@@ -78,7 +78,7 @@ const LoginForm = () => {
                 size="small"
               />
             </Grid2>
-            <Grid2 item xs={12}>
+            <Grid2 xs={12}>
               <TextField
                 label="Password"
                 variant="standard"
@@ -91,7 +91,7 @@ const LoginForm = () => {
                 size="small"
               />
             </Grid2>
-            <Grid2 item xs={12}>
+            <Grid2 xs={12}>
               <Button
                 type="submit"
                 variant="contained"

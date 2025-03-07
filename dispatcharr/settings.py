@@ -6,6 +6,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = 'REPLACE_ME_WITH_A_REAL_SECRET'
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_DB = os.environ.get("REDIS_DB", "0")
 
 DEBUG = True
 ALLOWED_HOSTS = ["*"]
@@ -13,7 +14,7 @@ ALLOWED_HOSTS = ["*"]
 INSTALLED_APPS = [
     'apps.api',
     'apps.accounts',
-    'apps.channels',
+    'apps.channels.apps.ChannelsConfig',
     'apps.dashboard',
     'apps.epg',
     'apps.hdhr',
@@ -22,6 +23,8 @@ INSTALLED_APPS = [
     'apps.proxy.apps.ProxyConfig', 
     'core',
     'drf_yasg',
+    'daphne',
+    'channels',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -69,6 +72,15 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'dispatcharr.wsgi.application'
 ASGI_APPLICATION = 'dispatcharr.asgi.application'
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [(REDIS_HOST, 6379, REDIS_DB)],  # Ensure Redis is running
+        },
+    },
+}
 
 if os.getenv('DB_ENGINE', None) == 'sqlite':
     DATABASES = {

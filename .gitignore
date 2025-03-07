@@ -6,5 +6,6 @@ __pycache__/
 node_modules/
 .history/
 staticfiles/
+static/
 docker/DockerfileAIO
 docker/Dockerfile DEV

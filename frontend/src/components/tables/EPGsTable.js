@@ -75,7 +75,9 @@ const EPGsTable = () => {
   };
 
   const deleteEPG = async (id) => {
+    setIsLoading(true);
     await API.deleteEPG(id);
+    setIsLoading(false);
   };
 
   const refreshEPG = async (id) => {
