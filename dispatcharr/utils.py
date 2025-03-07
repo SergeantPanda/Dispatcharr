@@ -1,6 +1,8 @@
 # dispatcharr/utils.py
 from django.http import JsonResponse
 from django.core.exceptions import ValidationError
+import redis
+from django.conf import settings
 
 def json_error_response(message, status=400):
     """Return a standardized error JSON response."""
@@ -20,4 +22,17 @@ def validate_logo_file(file):
         raise ValidationError('Unsupported file type. Allowed types: JPEG, PNG, GIF.')
     if file.size > 2 * 1024 * 1024:
         raise ValidationError('File too large. Max 2MB.')
+
+def release_all_proxy_locks():
+    """Release any stuck proxy locks"""
+    redis_client = redis.Redis(
+        host=settings.REDIS_HOST,
+        port=settings.REDIS_PORT,
+        db=settings.REDIS_DB
+    )
+    
+    # Clear any stuck locks
+    pattern = "proxy:lock:*"
+    for key in redis_client.scan_iter(pattern):
+        redis_client.delete(key)
 
