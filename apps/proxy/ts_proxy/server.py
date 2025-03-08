@@ -81,26 +81,26 @@ class StreamManager:
         return False
     
     def update_url(self, new_url):
-        """Change the URL for this stream"""
+        """Change the URL for this stream with smooth transition"""
         if self.url == new_url:
+            logging.debug(f"URL unchanged: {new_url}")
             return False
             
+        logging.info(f"Switching stream URL: {self.url} → {new_url}")
         self.url = new_url
+        
+        # Don't directly close the existing connection here
+        # Instead, let the fetch thread detect the URL change and reconnect
+        
+        # Reset retry counter for the new connection
         self.retry_count = 0
         
-        # Disconnect current stream
-        self.connected = False
-        if hasattr(self, 'response'):
-            try:
-                self.response.close()
-            except:
-                pass
-            
-        # Reconnect with new URL
-        return self.connect()
+        # Signal that we need to reconnect (but don't stop running)
+        self.running = True
+        return True
     
     def stop(self):
-        """Stop the stream manager"""
+        """Stop the stream manager and close all connections"""
         self.running = False
         self.connected = False
         
@@ -108,8 +108,15 @@ class StreamManager:
         if hasattr(self, 'response'):
             try:
                 self.response.close()
-            except:
-                pass
+                logging.debug(f"Closed stream connection to {self.url}")
+            except Exception as e:
+                logging.warning(f"Error closing connection: {e}")
+        
+        # Close the session to free up resources
+        try:
+            self.session.close()
+        except Exception as e:
+            logging.warning(f"Error closing session: {e}")
 
 class StreamBuffer:
     """Buffer for storing stream chunks"""
@@ -536,6 +543,47 @@ class ProxyServer:
                 try:
                     current_time = time.time()
                     
+                    # Check for switch requests if using Redis
+                    if self.redis_client:
+                        # Check for URL switch requests
+                        switch_key = f"ts_proxy:switch:{channel_id}"
+                        new_url = self.redis_client.get(switch_key)
+                        if new_url:
+                            try:
+                                # Clear the switch request
+                                self.redis_client.delete(switch_key)
+                                
+                                # Convert to string if needed
+                                if isinstance(new_url, bytes):
+                                    new_url = new_url.decode('utf-8')
+                                
+                                logging.info(f"Received switch request for channel {channel_id}: {new_url}")
+                                
+                                # Use separate thread to avoid blocking
+                                if new_url != manager.url:
+                                    threading.Thread(
+                                        target=self.switch_stream,
+                                        args=(channel_id, new_url),
+                                        daemon=True
+                                    ).start()
+                                    return  # Exit this fetch thread
+                            except Exception as e:
+                                logging.error(f"Error processing switch request: {e}")
+                    
+                    # Check for reset requests
+                    if self.redis_client:
+                        reset_key = f"ts_proxy:reset_channel:{channel_id}"
+                        if self.redis_client.exists(reset_key):
+                            logging.info(f"Reset request detected for channel {channel_id}")
+                            self.redis_client.delete(reset_key)
+                            # Start reset in a separate thread to avoid blocking
+                            threading.Thread(
+                                target=self.reset_channel,
+                                args=(channel_id,),
+                                daemon=True
+                            ).start()
+                            return  # Exit this fetch thread
+                    
                     # Fetch next chunk of data
                     fetched = manager.fetch_chunk()
                     
@@ -544,19 +592,20 @@ class ProxyServer:
                         try:
                             # Update active channel status with worker ID and extend TTL
                             if self.redis_client:
-                                # Store additional metadata about this channel
                                 pipe = self.redis_client.pipeline()
+                                # Set worker ID with 60s TTL
                                 pipe.set(f"ts_proxy:active_channel:{channel_id}", worker_id, ex=60)
-                                pipe.set(f"ts_proxy:channel_owner:{channel_id}", worker_id)
+                                # Set current timestamp as heartbeat
+                                pipe.set(f"ts_proxy:heartbeat:{channel_id}", str(current_time), ex=60)
                                 pipe.execute()
                                 last_heartbeat = current_time
                         except Exception as e:
                             logging.warning(f"Failed to update stream heartbeat: {e}")
                     
-                    # If no data fetched, small sleep to prevent tight loop
+                    # Small delay to prevent tight CPU loop if needed
                     if not fetched:
                         time.sleep(0.05)
-                    
+                        
                 except Exception as e:
                     if manager.running:
                         logging.error(f"Error fetching from stream: {e}")
@@ -621,6 +670,113 @@ class ProxyServer:
         """Stop all channels and cleanup"""
         for channel_id in list(self.stream_managers.keys()):
             self.stop_channel(channel_id)
+
+    def switch_stream(self, channel_id, new_url):
+        """Switch a channel to a new URL with clean transition"""
+        with self.lock:
+            if channel_id not in self.stream_managers:
+                logging.warning(f"Cannot switch non-existent channel: {channel_id}")
+                return False
+            
+            if channel_id not in self.stream_buffers:
+                logging.warning(f"No buffer found for channel {channel_id}")
+                return False
+                
+            # Don't switch if URL is the same
+            if self.stream_managers[channel_id].url == new_url:
+                logging.info(f"URL unchanged for channel {channel_id}: {new_url}")
+                return False
+                
+            logging.info(f"Switching stream URL for {channel_id}: {self.stream_managers[channel_id].url} → {new_url}")
+            
+            # Keep reference to existing objects
+            existing_buffer = self.stream_buffers[channel_id]
+            client_manager = self.client_managers.get(channel_id)
+            
+            # 1. First fully stop the old manager and thread
+            old_manager = self.stream_managers[channel_id]
+            old_manager.running = False
+            old_manager.stop()  # This will close any connections
+            
+            # 2. Remove the channel from our tracking (temporarily)
+            if channel_id in self.fetch_threads:
+                old_thread = self.fetch_threads.pop(channel_id)
+                # Give thread a moment to exit
+                wait_start = time.time()
+                while old_thread.is_alive() and time.time() - wait_start < 1.0:
+                    time.sleep(0.1)
+                
+            # 3. Create a completely new manager with the new URL
+            new_manager = StreamManager(
+                new_url,
+                existing_buffer,  # Reuse buffer for continuous playback
+                user_agent=self.user_agent
+            )
+            self.stream_managers[channel_id] = new_manager
+            
+            # 4. Start a fresh fetch thread
+            thread = threading.Thread(
+                target=self._fetch_stream,
+                args=(new_manager, channel_id),
+                daemon=True
+            )
+            self.fetch_threads[channel_id] = thread
+            thread.start()
+            
+            # 5. Update metadata
+            if self.redis_client:
+                self.redis_client.set(f"ts_proxy:channel_url:{channel_id}", new_url)
+            
+            logging.info(f"Stream switched for channel {channel_id}: {new_url}")
+            return True
+
+    def reset_channel(self, channel_id):
+        """Stop and completely reinitialize a channel"""
+        with self.lock:
+            if channel_id not in self.stream_managers:
+                logging.warning(f"Cannot reset non-existent channel: {channel_id}")
+                return False
+                
+            # Get current URL before stopping
+            current_url = self.stream_managers[channel_id].url
+            
+            # Stop the channel
+            self.stop_channel(channel_id)
+            
+            # Wait a moment for resources to clean up
+            time.sleep(0.5)
+            
+            # Reinitialize with same URL
+            self.initialize_channel(current_url, channel_id)
+            logging.info(f"Channel {channel_id} reset with URL {current_url}")
+            return True
+
+    def is_channel_active(self, channel_id):
+        """Check if a channel is truly active with recent heartbeats"""
+        if channel_id in self.stream_managers:
+            # Channel exists in this worker
+            return True
+            
+        # Check Redis for remote workers
+        if not self.redis_client:
+            return False
+            
+        # Get worker ID
+        worker_id_bytes = self.redis_client.get(f"ts_proxy:active_channel:{channel_id}")
+        if not worker_id_bytes:
+            return False
+            
+        # Check heartbeat
+        last_heartbeat = self.redis_client.get(f"ts_proxy:heartbeat:{channel_id}")
+        if not last_heartbeat:
+            return False
+            
+        # Verify recent heartbeat
+        try:
+            last_beat_time = float(last_heartbeat.decode('utf-8') if isinstance(last_heartbeat, bytes) else last_heartbeat)
+            return time.time() - last_beat_time < 30  # Active if heartbeat within 30 seconds
+        except (ValueError, TypeError):
+            return False  # Invalid heartbeat format
 
 def is_valid_ts_packet(data, offset=0):
     """Check if the data at offset is a valid TS packet"""

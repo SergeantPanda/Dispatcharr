@@ -108,25 +108,27 @@ def initialize_stream(request, channel_id):
         if redis_client:
             redis_client.set(f"ts_proxy:channel_url:{channel_id}", url)
         
-        # Check if channel already exists anywhere
-        channel_exists = False
-        channel_in_this_worker = channel_id in proxy_server.stream_managers
-        
-        if channel_in_this_worker:
+        # Check if channel already exists in this worker
+        if channel_id in proxy_server.stream_managers:
             # Channel exists in this worker - update URL if needed
-            channel_exists = True
             current_url = proxy_server.stream_managers[channel_id].url
             if url != current_url:
                 logger.info(f"Updating URL for channel {channel_id}: {current_url} -> {url}")
-                proxy_server.stream_managers[channel_id].update_url(url)
+                proxy_server.switch_stream(channel_id, url)
+                
+                # Update active status
+                if redis_client:
+                    import os
+                    worker_id = os.getpid()
+                    redis_client.set(f"ts_proxy:active_channel:{channel_id}", str(worker_id), ex=60)
             else:
                 logger.info(f"Channel {channel_id} already using URL {url}")
                 
-            # Refresh active status
-            if redis_client:
-                import os
-                worker_id = os.getpid()
-                redis_client.set(f"ts_proxy:active_channel:{channel_id}", str(worker_id), ex=60)
+                # Refresh active status
+                if redis_client:
+                    import os
+                    worker_id = os.getpid()
+                    redis_client.set(f"ts_proxy:active_channel:{channel_id}", str(worker_id), ex=60)
                 
             return JsonResponse({
                 'message': 'Stream URL updated',
@@ -137,16 +139,34 @@ def initialize_stream(request, channel_id):
         
         # Check if channel exists in another worker
         if redis_client:
-            worker_id = redis_client.get(f"ts_proxy:active_channel:{channel_id}")
-            if worker_id:
-                channel_exists = True
-                logger.info(f"Channel {channel_id} already exists in worker {worker_id}")
-                return JsonResponse({
-                    'message': 'Stream already initialized in another worker',
-                    'channel': channel_id,
-                    'worker': worker_id,
-                    'url': url
-                })
+            # Get worker ID and last heartbeat
+            worker_id_bytes = redis_client.get(f"ts_proxy:active_channel:{channel_id}")
+            last_heartbeat = None
+            
+            if worker_id_bytes:
+                worker_id = worker_id_bytes.decode('utf-8') if isinstance(worker_id_bytes, bytes) else worker_id_bytes
+                last_heartbeat = redis_client.get(f"ts_proxy:heartbeat:{channel_id}")
+                
+                # If we have a recent heartbeat (within 30 seconds), the channel is likely active
+                if last_heartbeat:
+                    try:
+                        last_beat_time = float(last_heartbeat.decode('utf-8') if isinstance(last_heartbeat, bytes) else last_heartbeat)
+                        if time.time() - last_beat_time < 30:  # Channel is active if heartbeat is within 30 seconds
+                            logger.info(f"Channel {channel_id} already exists in worker {worker_id} with recent heartbeat")
+                            return JsonResponse({
+                                'message': 'Stream already initialized in another worker',
+                                'channel': channel_id,
+                                'worker': worker_id,
+                                'url': url
+                            })
+                    except (ValueError, TypeError):
+                        # Invalid heartbeat format, treat as inactive
+                        pass
+                
+                # If we get here, worker exists but no recent heartbeat - clean up stale entries
+                logger.info(f"Found stale channel {channel_id} in worker {worker_id}, cleaning up")
+                redis_client.delete(f"ts_proxy:active_channel:{channel_id}")
+                redis_client.delete(f"ts_proxy:heartbeat:{channel_id}")
         
         # Use persistent lock to ensure only one worker initializes the stream
         lock_key = f"ts_proxy:channel_lock:{channel_id}"
@@ -165,6 +185,9 @@ def initialize_stream(request, channel_id):
                     import os
                     worker_id = os.getpid()
                     redis_client.set(f"ts_proxy:active_channel:{channel_id}", str(worker_id), ex=60)
+                    
+                    # Set initial heartbeat
+                    redis_client.set(f"ts_proxy:heartbeat:{channel_id}", str(time.time()), ex=60)
                     
                     # Initialize the stream in this worker
                     if channel_id in proxy_server.stream_managers:
@@ -234,25 +257,43 @@ def change_stream(request, channel_id):
         if not new_url:
             return JsonResponse({'error': 'No URL provided'}, status=400)
         
-        # Store in memory
+        # Store in memory and Redis
         channel_urls[channel_id] = new_url
-        
-        # Store in Redis for other workers
         if redis_client:
             redis_client.set(f"ts_proxy:channel_url:{channel_id}", new_url)
             
         # Update in local worker if channel exists
         if channel_id in proxy_server.stream_managers:
-            manager = proxy_server.stream_managers[channel_id]
-            if manager.update_url(new_url):
+            if proxy_server.switch_stream(channel_id, new_url):
                 logger.info(f"Updated URL for channel {channel_id}")
                 return JsonResponse({
                     'message': 'Stream URL updated',
                     'channel': channel_id,
                     'url': new_url
                 })
+            else:
+                logger.info(f"URL unchanged for channel {channel_id}")
+                return JsonResponse({
+                    'message': 'Stream URL unchanged',
+                    'channel': channel_id, 
+                    'url': new_url
+                })
         else:
-            # Initialize channel if it doesn't exist
+            # Check if it's active in another worker
+            if redis_client:
+                worker_id_bytes = redis_client.get(f"ts_proxy:active_channel:{channel_id}")
+                if worker_id_bytes:
+                    # Channel exists in another worker, signal it to switch
+                    worker_id = worker_id_bytes.decode('utf-8') if isinstance(worker_id_bytes, bytes) else worker_id_bytes
+                    redis_client.set(f"ts_proxy:switch:{channel_id}", new_url, ex=30)
+                    logger.info(f"Signaled worker {worker_id} to switch channel {channel_id} to {new_url}")
+                    return JsonResponse({
+                        'message': 'Stream switch request sent to worker',
+                        'channel': channel_id,
+                        'url': new_url
+                    })
+            
+            # Initialize channel if it doesn't exist anywhere
             proxy_server.initialize_channel(new_url, channel_id)
             logger.info(f"Created new channel {channel_id} with URL {new_url}")
             return JsonResponse({
@@ -261,15 +302,80 @@ def change_stream(request, channel_id):
                 'url': new_url
             })
             
-        return JsonResponse({
-            'message': 'URL unchanged',
-            'channel': channel_id,
-            'url': new_url
-        })
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
     except Exception as e:
         logger.error(f"Failed to change stream: {e}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def reset_stream(request, channel_id):
+    """Hard reset a stream channel"""
+    try:
+        logger.info(f"Reset request received for channel {channel_id}")
+        
+        # Check if channel exists in this worker
+        if channel_id in proxy_server.stream_managers:
+            logger.info(f"Resetting channel {channel_id} in this worker")
+            proxy_server.reset_channel(channel_id)
+            return JsonResponse({
+                'message': 'Stream reset successfully',
+                'channel': channel_id,
+                'in_worker': True
+            })
+        
+        # Check if channel exists in another worker with valid heartbeat
+        if redis_client:
+            worker_id_bytes = redis_client.get(f"ts_proxy:active_channel:{channel_id}")
+            if worker_id_bytes:
+                worker_id = worker_id_bytes.decode('utf-8') if isinstance(worker_id_bytes, bytes) else worker_id_bytes
+                
+                # Check for recent heartbeat
+                heartbeat = redis_client.get(f"ts_proxy:heartbeat:{channel_id}")
+                if heartbeat:
+                    try:
+                        last_beat_time = float(heartbeat.decode('utf-8') if isinstance(heartbeat, bytes) else heartbeat)
+                        if time.time() - last_beat_time < 30:
+                            # Channel is active in another worker - set reset flag
+                            logger.info(f"Channel {channel_id} exists in worker {worker_id}, signaling reset")
+                            redis_client.setex(f"ts_proxy:reset_channel:{channel_id}", 30, "1")
+                            return JsonResponse({
+                                'message': 'Reset request sent to worker',
+                                'channel': channel_id,
+                                'worker': worker_id,
+                                'remote': True
+                            })
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Stale entry - clean up and allow reinitialization
+                logger.info(f"Found stale channel entry for {channel_id} in worker {worker_id}, cleaning up")
+                redis_client.delete(f"ts_proxy:active_channel:{channel_id}")
+                redis_client.delete(f"ts_proxy:heartbeat:{channel_id}")
+        
+        # Channel doesn't exist anywhere or is stale
+        url = find_channel_url(request, channel_id)
+        if url:
+            # Re-initialize the channel
+            logger.info(f"Channel {channel_id} not found, initializing with URL {url}")
+            
+            # Use normal initialization with lock
+            import os
+            worker_id = os.getpid()
+            initialize_with_lock(channel_id, url, worker_id)
+            
+            return JsonResponse({
+                'message': 'Channel not found, initialized new stream',
+                'channel': channel_id,
+                'url': url
+            })
+        else:
+            logger.warning(f"Channel {channel_id} not found and no URL available")
+            return JsonResponse({'error': 'Channel not found and no URL available'}, status=404)
+            
+    except Exception as e:
+        logger.error(f"Failed to reset stream: {e}", exc_info=True)
         return JsonResponse({'error': str(e)}, status=500)
 
 def cleanup_channel(channel_id):
