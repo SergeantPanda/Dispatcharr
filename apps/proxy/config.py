@@ -24,13 +24,20 @@ class TSConfig(BaseConfig):
     DEFAULT_USER_AGENT = "Dispatcharr/1.0"
     CONNECTION_TIMEOUT = 15
     MAX_RETRIES = 3
-    STREAM_BUFFER_SIZE = 1000
     
-    # Stream cleanup delay in seconds (0 for immediate)
-    # How long to wait after all clients disconnect before cleaning up the stream
+    # Stream settings
+    STREAM_BUFFER_SIZE = 1000
     STREAM_CLEANUP_DELAY = 0
     
-    # Set to True to enable verbose debug logging
+    # Client connection settings
+    # How many chunks back from the latest to start new clients
+    # Larger value = more initial buffering, smoother playback but higher latency
+    CLIENT_START_BUFFER_SIZE = 200  # Previously hardcoded to 50
+    
+    # Maximum initial burst size in bytes (750KB default)
+    CLIENT_INITIAL_BURST_SIZE = 750_000
+    
+    # Debug settings
     DEBUG_LOGGING = False
     
     # Redis settings

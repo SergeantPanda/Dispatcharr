@@ -375,7 +375,7 @@ def initialize_with_lock(channel_id, url, worker_pid):
         proxy_server.initialize_channel(url, channel_id)
 
 def create_streaming_response(channel_id, is_origin_worker):
-    """Create the streaming response for the client"""
+    """Create the streaming response with optimized delivery"""
     def generate():
         client_id = id(threading.current_thread())
         
@@ -397,60 +397,98 @@ def create_streaming_response(channel_id, is_origin_worker):
                 logger.error(f"No buffer found for channel {channel_id}")
                 return
                 
-            # Set up streaming loop variables
+            # Set up streaming variables - MOVED EARLIER
             local_index = None  # Start from dynamic position
             empty_reads = 0
             last_data_time = time.time()
             has_sent_data = False
             
+            # Pre-buffering for client
+            initial_chunks = []
+            from apps.proxy.config import TSConfig
+            
+            # Client-side buffer size from config (with fallback)
+            initial_burst_size = getattr(TSConfig, 'CLIENT_INITIAL_BURST_SIZE', 750_000)
+            
+            # Pre-buffer - get a good amount of data before sending anything
+            if not is_origin_worker:
+                prebuffer_start = time.time()
+                logger.info(f"Pre-buffering data for channel {channel_id}")
+                
+                # Collect data for up to 3 seconds or until we have enough
+                while time.time() - prebuffer_start < 3.0:
+                    chunks = buffer.get_chunks(local_index)
+                    if chunks:
+                        initial_chunks.extend(chunks)
+                        local_index = buffer.local_index
+                        # Check if we have enough data
+                        total_size = sum(len(c) for c in initial_chunks)
+                        if total_size > initial_burst_size:
+                            break
+                    else:
+                        time.sleep(0.1)
+                
+                if initial_chunks:
+                    logger.info(f"Pre-buffered {len(initial_chunks)} chunks ({sum(len(c) for c in initial_chunks)} bytes)")
+                else:
+                    logger.warning(f"Failed to pre-buffer any data for {channel_id}")
+            
+            # Send any pre-buffered chunks first
+            for chunk in initial_chunks:
+                yield chunk
+            
+            # Rest of the function continues...
+            data_sent = 0
+            burst_mode = True
             while True:
                 try:
-                    # Check if stream is still active
+                    # Check if the channel is still active
                     if is_origin_worker and channel_id not in proxy_server.stream_managers:
-                        logger.info(f"Channel {channel_id} no longer exists")
                         break
                     elif not is_origin_worker:
                         active = redis_client and redis_client.get(f"ts_proxy:active_channel:{channel_id}")
                         if not active:
-                            logger.info(f"Channel {channel_id} no longer active")
                             break
                     
-                    # Get chunks with new dynamic start
+                    # Get more chunks
                     chunks = buffer.get_chunks(local_index)
                     
                     if chunks:
-                        # Reset empty read counter when we get data
+                        # Reset empty counter
                         empty_reads = 0
                         last_data_time = time.time()
                         has_sent_data = True
                         
                         for chunk in chunks:
                             yield chunk
+                            data_sent += len(chunk)
                             
-                        # Update local index for next read
+                        # Update local index
                         local_index = buffer.local_index
-                        logger.debug(f"Sent {len(chunks)} chunks to client, next index: {local_index}")
+                        
+                        # If we're still in burst mode and have sent enough data,
+                        # switch to regular mode and add a small delay for rate limiting
+                        if burst_mode and data_sent >= initial_burst_size:
+                            burst_mode = False
+                            # Small delay after initial burst to pace delivery
+                            time.sleep(0.1)
                     else:
-                        # Increment empty read counter
+                        # No data available right now
                         empty_reads += 1
                         
                         # Different timeouts for before/after first data
                         timeout = 30 if not has_sent_data else 10
                         
-                        # Give up after too many empty reads or too much time
                         if empty_reads > 150 or (time.time() - last_data_time > timeout):
-                            logger.warning(f"No data received for channel {channel_id} for too long, disconnecting")
+                            logger.warning(f"No data received for channel {channel_id} for too long")
                             break
-                            
-                        # Backoff for efficiency
+                        
+                        # Progressive backoff
                         sleep_time = min(0.1 * (empty_reads / 10), 0.5)
                         time.sleep(sleep_time)
                 
-                except BrokenPipeError:
-                    logger.debug(f"Client {client_id} disconnected (broken pipe)")
-                    break
-                except ConnectionResetError: 
-                    logger.debug(f"Client {client_id} connection reset")
+                except (BrokenPipeError, ConnectionResetError):
+                    # Client disconnected
                     break
                 except Exception as e:
                     logger.error(f"Streaming error: {e}")
@@ -459,7 +497,6 @@ def create_streaming_response(channel_id, is_origin_worker):
         except Exception as e:
             logger.error(f"Client error: {e}")
         finally:
-            # Clean up client tracking
             if is_origin_worker and channel_id in proxy_server.client_managers:
                 proxy_server.client_managers[channel_id].remove_client(client_id)
             logger.info(f"Client {client_id} disconnected from channel {channel_id}")

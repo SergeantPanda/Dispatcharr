@@ -140,7 +140,7 @@ class StreamBuffer:
             return self.buffer[start_pos:]
 
 class SharedStreamBuffer:
-    """Buffer that uses Redis as the primary storage with minimal local caching"""
+    """Buffer that uses Redis as the primary storage with TS packet awareness"""
     
     def __init__(self, channel_id, redis_client=None, max_length=None):
         from apps.proxy.config import TSConfig as Config
@@ -150,8 +150,16 @@ class SharedStreamBuffer:
         self.lock = threading.RLock()
         self.local_index = 0
         
+        # TS packet size and chunk sizing
+        self.TS_PACKET_SIZE = 188
+        self.CHUNK_SIZE = 4096 * 4  # Larger chunks, must be multiple of TS_PACKET_SIZE
+        self.PACKETS_PER_CHUNK = self.CHUNK_SIZE // self.TS_PACKET_SIZE
+        
+        # Buffer for partial packets
+        self.partial_buffer = b''
+        
         # Only keep a small local cache for the most recent chunks
-        self.local_cache_size = 10  
+        self.local_cache_size = 5  # Reduce memory usage
         self.local_cache = {}  # Index -> chunk mapping
         
         # For statistics
@@ -171,43 +179,66 @@ class SharedStreamBuffer:
         logging.debug(f"SharedStreamBuffer initialized for {channel_id}")
     
     def add_chunk(self, chunk):
-        """Add a chunk to shared Redis buffer"""
+        """Add a chunk to shared Redis buffer with improved TS packet alignment"""
         try:
-            # Always store in local cache
-            with self.lock:
-                self.local_index += 1
-                index = self.local_index
-                self.local_cache[index] = chunk
+            # Combine with any previous partial data
+            data = self.partial_buffer + chunk
+            
+            # Find the first sync byte (0x47) to align the TS packets
+            sync_pos = 0
+            while sync_pos < len(data) - 188:
+                if data[sync_pos] == 0x47 and data[sync_pos + 188] == 0x47:
+                    # Found two consecutive sync bytes at the correct interval
+                    break
+                sync_pos += 1
+            
+            # If we found proper alignment
+            if sync_pos < len(data) - 188:
+                # Discard data before the first proper sync byte
+                data = data[sync_pos:]
                 
-                # Keep local cache within size limit
-                if len(self.local_cache) > self.local_cache_size:
-                    oldest = min(self.local_cache.keys())
-                    del self.local_cache[oldest]
+                # Calculate how many complete TS packets we have
+                complete_packets = len(data) // 188
+                complete_packet_bytes = complete_packets * 188
+                
+                # Extract the aligned TS packets
+                ts_data = data[:complete_packet_bytes]
+                # Store remainder for next time
+                self.partial_buffer = data[complete_packet_bytes:]
+                
+                # Now store the properly aligned TS data in Redis
             
-            self.chunks_stored += 1
-            
-            # Also try to store in Redis if available
+            # Process only if we have complete TS packets
+            if len(ts_data) == 0:
+                return True
+                
+            # Store in Redis with proper TS packet alignment
             if self.redis_available and self.redis_client:
                 try:
-                    # Use channel-specific index key
+                    # Get next index atomically
                     index_key = f"ts_proxy:buffer:{self.channel_id}:index"
-                    chunk_key_prefix = f"ts_proxy:buffer:{self.channel_id}:chunk:"
+                    index = self.redis_client.incr(index_key)
                     
-                    # Store the chunk first
-                    chunk_key = f"{chunk_key_prefix}{index}"
-                    self.redis_client.setex(chunk_key, 30, chunk)
+                    # Store chunk with 45s TTL (longer than default)
+                    chunk_key = f"ts_proxy:buffer:{self.channel_id}:chunk:{index}"
+                    self.redis_client.setex(chunk_key, 45, ts_data)
                     
-                    # Then update the index atomically
-                    self.redis_client.set(index_key, str(index))
+                    # Update our local tracking
+                    with self.lock:
+                        self.local_index = index
+                        self.local_cache[index] = ts_data
+                        
+                        # Keep local cache size in check
+                        if len(self.local_cache) > self.local_cache_size:
+                            oldest = min(self.local_cache.keys())
+                            del self.local_cache[oldest]
                     
-                    # Log periodic progress
-                    if index % 50 == 0:
-                        logging.info(f"Stored chunk {index} for channel {self.channel_id} in Redis (size: {len(chunk)} bytes)")
+                    self.chunks_stored += 1
                     
-                    # Clean up old chunks
-                    if index > self.max_length:
-                        old_index = index - self.max_length
-                        self.redis_client.delete(f"{chunk_key_prefix}{old_index}")
+                    # Periodic logging
+                    if self.chunks_stored % 50 == 0:
+                        pkts = len(ts_data) // self.TS_PACKET_SIZE
+                        logging.info(f"Stored chunk {index} for channel {self.channel_id} in Redis ({pkts} TS packets)")
                     
                     return True
                 except Exception as e:
@@ -225,6 +256,7 @@ class SharedStreamBuffer:
             # First, check if Redis has any data for this channel
             if self.redis_available and self.redis_client:
                 try:
+                    from apps.proxy.config import TSConfig
                     # Get current index from Redis
                     index_key = f"ts_proxy:buffer:{self.channel_id}:index"
                     current_index_raw = self.redis_client.get(index_key)
@@ -238,10 +270,10 @@ class SharedStreamBuffer:
                     
                     # If no start_index provided, use a relative starting point
                     if start_index is None or start_index == 0:
-                        # Start from the newest chunk minus 50 chunks (or from 1 if less than 50)
-                        # This ensures a new client gets some recent data without trying to load everything
-                        start_index = max(1, current_index - 50)
-                        logging.debug(f"No start_index provided, starting from {start_index} (current: {current_index})")
+                        # Use the configurable buffer size
+                        buffer_size = getattr(TSConfig, 'CLIENT_START_BUFFER_SIZE', 200)
+                        start_index = max(1, current_index - buffer_size)
+                        logging.debug(f"Starting client at index {start_index} (current: {current_index}, buffer: {buffer_size})")
                     
                     # Nothing new to fetch
                     if start_index > current_index:
@@ -589,3 +621,19 @@ class ProxyServer:
         """Stop all channels and cleanup"""
         for channel_id in list(self.stream_managers.keys()):
             self.stop_channel(channel_id)
+
+def is_valid_ts_packet(data, offset=0):
+    """Check if the data at offset is a valid TS packet"""
+    # TS packets start with 0x47 (71 in decimal) sync byte
+    if len(data) < offset + 188:
+        return False
+    
+    # Check sync byte
+    if data[offset] != 0x47:
+        return False
+        
+    # If this is a complete packet, the next sync byte should be at offset+188
+    if len(data) >= offset + 188 + 1 and data[offset + 188] == 0x47:
+        return True
+        
+    return True  # Assume valid if we don't have the next packet to check
