@@ -76,7 +76,7 @@ class TSConfig(BaseConfig):
     # How many chunks back from the latest to start new clients
     # Larger value = more initial buffering, smoother playback but higher latency
     # Value of 500 chunks equals approximately 4MB of initial data
-    CLIENT_START_BUFFER_SIZE = 500
+    CLIENT_START_BUFFER_SIZE = 1000
     
     # Maximum bytes to send in initial data burst to clients
     # Helps quickly fill client's buffer for smooth start
@@ -98,7 +98,7 @@ class TSConfig(BaseConfig):
     # Local cache settings
     # Number of recent chunks to keep in local worker memory
     # Higher values reduce Redis load but use more RAM per worker
-    LOCAL_CACHE_SIZE = 10
+    LOCAL_CACHE_SIZE = 100
     
     # How long to wait for a missing chunk before skipping
     MISSING_CHUNK_MAX_WAIT = 2.0
