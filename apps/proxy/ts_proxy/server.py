@@ -114,10 +114,11 @@ class StreamManager:
 class StreamBuffer:
     """Buffer for storing stream chunks"""
     
-    def __init__(self, max_length=1000):
+    def __init__(self, max_length=None):
         self.buffer = []
         self.lock = threading.RLock()
-        self.max_length = max_length
+        # Use config value by default, with parameter override if provided
+        self.max_length = max_length if max_length is not None else Config.STREAM_BUFFER_SIZE
         self.index = 0
     
     def add_chunk(self, chunk):
@@ -160,23 +161,33 @@ class ClientManager:
                 logging.info(f"Client disconnected: {client_id} (remaining: {len(self.active_clients)})")
                 
             # Start cleanup timer if this was the last client
-            if not self.active_clients and not self.cleanup_timer:
+            if not self.active_clients:
                 self.schedule_cleanup()
     
     def schedule_cleanup(self):
         """Schedule cleanup if no clients reconnect within the grace period"""
-        if not self.cleanup_timer:
-            # Wait 30 seconds before cleanup
-            self.cleanup_timer = threading.Timer(30.0, self.trigger_cleanup)
+        if self.cleanup_timer:
+            return
+            
+        # Get cleanup delay from config
+        cleanup_delay = getattr(Config, 'STREAM_CLEANUP_DELAY', 0)
+        
+        if cleanup_delay <= 0:
+            # Immediate cleanup
+            logging.info("No clients connected, cleaning up immediately")
+            self.trigger_cleanup()
+        else:
+            # Delayed cleanup
+            self.cleanup_timer = threading.Timer(cleanup_delay, self.trigger_cleanup)
             self.cleanup_timer.daemon = True
             self.cleanup_timer.start()
-            logging.info("Scheduled stream cleanup in 30 seconds if no new clients connect")
+            logging.info(f"Scheduled stream cleanup in {cleanup_delay} seconds if no new clients connect")
     
     def trigger_cleanup(self):
         """Trigger actual cleanup if still no clients"""
         with self.lock:
             if not self.active_clients:
-                logging.info("No clients reconnected, triggering stream shutdown")
+                logging.info("No clients, triggering stream shutdown")
                 # Import cleanup function to avoid circular import
                 from apps.proxy.ts_proxy.views import cleanup_channel
                 
@@ -281,8 +292,9 @@ class ProxyServer:
     def initialize_channel(self, url, channel_id):
         """Initialize a new channel with the given URL"""
         with self.lock:
-            # Create buffer and stream manager
+            # Create buffer using config value for size
             self.stream_buffers[channel_id] = StreamBuffer()
+            
             self.stream_managers[channel_id] = StreamManager(
                 url, 
                 self.stream_buffers[channel_id],
@@ -301,7 +313,7 @@ class ProxyServer:
             self.fetch_threads[channel_id] = thread
             thread.start()
             
-            logging.info(f"Initialized channel {channel_id} with URL {url}")
+            logging.info(f"Initialized channel {channel_id} with URL {url} (buffer size: {self.stream_buffers[channel_id].max_length})")
     
     def _fetch_stream(self, manager, channel_id):
         """Internal method to continuously fetch from a stream"""
@@ -312,10 +324,27 @@ class ProxyServer:
                 return
                 
             # Continue fetching until stopped
+            last_heartbeat = 0
             while manager.running:
                 try:
+                    current_time = time.time()
+                    
                     # Fetch next chunk of data
                     manager.fetch_chunk()
+                    
+                    # Update heartbeat in Redis every 15 seconds if available
+                    if current_time - last_heartbeat >= 15:
+                        try:
+                            # Import here to avoid circular imports
+                            import sys
+                            if 'apps.proxy.ts_proxy.views' in sys.modules:
+                                redis_client = sys.modules['apps.proxy.ts_proxy.views'].redis_client
+                                if redis_client:
+                                    # Update active channel status with 60-second expiry
+                                    redis_client.set(f"ts_proxy:active_channel:{channel_id}", "1", ex=60)
+                                    last_heartbeat = current_time
+                        except Exception as e:
+                            logging.warning(f"Failed to update stream heartbeat: {e}")
                     
                     # Check for client activity and possibly stop if no clients
                     with self.lock:

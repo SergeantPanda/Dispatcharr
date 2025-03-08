@@ -20,5 +20,12 @@ class HLSConfig(BaseConfig):
     BUFFER_READY_TIMEOUT = 30.0
 
 class TSConfig(BaseConfig):
-    BUFFER_SIZE = 1000
-    RECONNECT_DELAY = 5
+    """Configuration for TS Proxy"""
+    DEFAULT_USER_AGENT = "Dispatcharr/1.0"
+    CONNECTION_TIMEOUT = 15
+    MAX_RETRIES = 3
+    STREAM_BUFFER_SIZE = 1000
+    
+    # Stream cleanup delay in seconds (0 for immediate)
+    # How long to wait after all clients disconnect before cleaning up the stream
+    STREAM_CLEANUP_DELAY = 0

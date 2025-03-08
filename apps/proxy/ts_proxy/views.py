@@ -9,8 +9,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from .server import ProxyServer
 from django.conf import settings
-
-# Import the persistent lock that's already in your project
+from apps.proxy.config import TSConfig as Config
 from dispatcharr.persistent_lock import PersistentLock
 
 logger = logging.getLogger(__name__)
@@ -55,6 +54,8 @@ def stream_ts(request, channel_id):
             # Store in Redis for other workers
             if redis_client:
                 redis_client.set(f"ts_proxy:channel_url:{channel_id}", url)
+                # Also set an active channel marker for coordination
+                redis_client.set(f"ts_proxy:active_channel:{channel_id}", "1", ex=60)  # 60-second expiry as safety
         
         # 2. Check memory cache
         elif channel_id in channel_urls:
@@ -69,25 +70,72 @@ def stream_ts(request, channel_id):
         
         logger.info(f"URL for channel {channel_id}: {url}")
         
-        # Check if channel exists in this worker
+        # Channel initialization with worker coordination
         if channel_id not in proxy_server.stream_managers:
-            # Channel not initialized in this worker
+            # Check if we should initialize or another worker might have it already
+            should_initialize = True
+            
+            # If Redis available, check for active channel marker
+            if redis_client:
+                is_active = redis_client.get(f"ts_proxy:active_channel:{channel_id}")
+                
+                if is_active:
+                    # Channel is marked as active somewhere
+                    # Try to acquire a lock to see if we should take over
+                    lock_key = f"ts_proxy:init_lock:{channel_id}"
+                    
+                    # Use a modified approach that doesn't rely on non-blocking acquire
+                    lock_acquired = False
+                    try:
+                        # Use a much shorter timeout for this coordination lock
+                        # to avoid waiting too long if another worker is initializing
+                        persistent_lock = PersistentLock(redis_client, lock_key, lock_timeout=5)
+                        lock_acquired = persistent_lock.acquire()
+                        
+                        if lock_acquired:
+                            # We got the lock - check if channel needs initialization
+                            logger.info(f"Acquired lock for channel {channel_id}")
+                            # Release lock quickly since we just needed to check
+                            persistent_lock.release()
+                        else:
+                            # Could not acquire lock - another worker is handling this
+                            logger.info(f"Channel {channel_id} is being handled by another worker, waiting")
+                            # Give the other worker a moment to initialize
+                            time.sleep(2)
+                            
+                            # Check if channel is now in this worker (could have been added by another thread)
+                            if channel_id in proxy_server.stream_managers:
+                                should_initialize = False
+                    except Exception as e:
+                        logger.error(f"Error during lock operation: {e}")
+                        # If lock fails, default to initializing the stream
+                
+            # If we have no URL, we can't initialize
             if not url:
                 logger.error(f"No URL found for channel {channel_id} - cannot initialize")
                 return HttpResponseNotFound(f"Channel {channel_id} not found")
             
-            # Initialize the channel in this worker
-            logger.info(f"Initializing channel {channel_id} in current worker")
-            proxy_server.initialize_channel(url, channel_id)
-            
-            # Wait for channel to be ready (with timeout)
-            max_wait = 10
-            start_time = time.time()
-            while time.time() - start_time < max_wait:
-                if channel_id in proxy_server.stream_managers and proxy_server.stream_managers[channel_id].connected:
-                    logger.info(f"Channel {channel_id} ready for streaming")
-                    break
-                time.sleep(0.2)
+            # Initialize if needed
+            if should_initialize:
+                logger.info(f"Initializing channel {channel_id} in current worker")
+                proxy_server.initialize_channel(url, channel_id)
+                
+                # Mark as active in Redis
+                if redis_client:
+                    redis_client.set(f"ts_proxy:active_channel:{channel_id}", "1", ex=60)
+                    
+                # Wait for channel to be ready (with timeout)
+                max_wait = 10
+                start_time = time.time()
+                while time.time() - start_time < max_wait:
+                    if channel_id in proxy_server.stream_managers and proxy_server.stream_managers[channel_id].connected:
+                        logger.info(f"Channel {channel_id} ready for streaming")
+                        break
+                    time.sleep(0.2)
+        else:
+            # Channel already exists in this worker, just refresh active status
+            if redis_client:
+                redis_client.set(f"ts_proxy:active_channel:{channel_id}", "1", ex=60)
         
         # Make sure channel is initialized
         if channel_id not in proxy_server.stream_managers:
@@ -314,6 +362,16 @@ def cleanup_channel(channel_id):
             if channel_id in proxy_server.stream_managers:
                 # Stop the channel
                 proxy_server.stop_channel(channel_id)
+                
+                # Remove Redis markers if available
+                if redis_client:
+                    try:
+                        # Delete active channel marker
+                        redis_client.delete(f"ts_proxy:active_channel:{channel_id}")
+                        logger.info(f"Removed active marker for channel {channel_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clean Redis markers: {e}")
+                
                 logger.info(f"Channel {channel_id} stopped and resources released")
             else:
                 logger.warning(f"Channel {channel_id} not found for cleanup")
