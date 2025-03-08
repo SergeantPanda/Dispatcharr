@@ -139,6 +139,167 @@ class StreamBuffer:
                 return []
             return self.buffer[start_pos:]
 
+class SharedStreamBuffer:
+    """Buffer that uses Redis as the primary storage with minimal local caching"""
+    
+    def __init__(self, channel_id, redis_client=None, max_length=None):
+        from apps.proxy.config import TSConfig as Config
+        self.channel_id = channel_id
+        self.redis_client = redis_client
+        self.max_length = max_length or Config.STREAM_BUFFER_SIZE
+        self.lock = threading.RLock()
+        self.local_index = 0
+        
+        # Only keep a small local cache for the most recent chunks
+        self.local_cache_size = 10  
+        self.local_cache = {}  # Index -> chunk mapping
+        
+        # For statistics
+        self.chunks_stored = 0
+        self.chunks_retrieved = 0
+        
+        # Track if Redis is working
+        self.redis_available = False
+        if self.redis_client:
+            try:
+                self.redis_client.ping()
+                self.redis_available = True
+                logging.debug(f"Redis available for SharedStreamBuffer {channel_id}")
+            except Exception as e:
+                logging.error(f"Redis ping failed in SharedStreamBuffer: {e}")
+        
+        logging.debug(f"SharedStreamBuffer initialized for {channel_id}")
+    
+    def add_chunk(self, chunk):
+        """Add a chunk to shared Redis buffer"""
+        try:
+            # Always store in local cache
+            with self.lock:
+                self.local_index += 1
+                index = self.local_index
+                self.local_cache[index] = chunk
+                
+                # Keep local cache within size limit
+                if len(self.local_cache) > self.local_cache_size:
+                    oldest = min(self.local_cache.keys())
+                    del self.local_cache[oldest]
+            
+            self.chunks_stored += 1
+            
+            # Also try to store in Redis if available
+            if self.redis_available and self.redis_client:
+                try:
+                    # Use channel-specific index key
+                    index_key = f"ts_proxy:buffer:{self.channel_id}:index"
+                    chunk_key_prefix = f"ts_proxy:buffer:{self.channel_id}:chunk:"
+                    
+                    # Store the chunk first
+                    chunk_key = f"{chunk_key_prefix}{index}"
+                    self.redis_client.setex(chunk_key, 30, chunk)
+                    
+                    # Then update the index atomically
+                    self.redis_client.set(index_key, str(index))
+                    
+                    # Log periodic progress
+                    if index % 50 == 0:
+                        logging.info(f"Stored chunk {index} for channel {self.channel_id} in Redis (size: {len(chunk)} bytes)")
+                    
+                    # Clean up old chunks
+                    if index > self.max_length:
+                        old_index = index - self.max_length
+                        self.redis_client.delete(f"{chunk_key_prefix}{old_index}")
+                    
+                    return True
+                except Exception as e:
+                    logging.warning(f"Failed to store chunk in Redis: {e}")
+                    self.redis_available = False
+            
+            return True
+        except Exception as e:
+            logging.error(f"Error adding chunk to buffer: {e}")
+            return False
+    
+    def get_chunks(self, start_index=None):
+        """Get chunks starting from given index"""
+        try:
+            # First, check if Redis has any data for this channel
+            if self.redis_available and self.redis_client:
+                try:
+                    # Get current index from Redis
+                    index_key = f"ts_proxy:buffer:{self.channel_id}:index"
+                    current_index_raw = self.redis_client.get(index_key)
+                    
+                    if not current_index_raw:
+                        logging.debug(f"No index found in Redis for channel {self.channel_id}")
+                        return []
+                    
+                    # Convert to integer
+                    current_index = int(current_index_raw.decode('utf-8') if isinstance(current_index_raw, bytes) else current_index_raw)
+                    
+                    # If no start_index provided, use a relative starting point
+                    if start_index is None or start_index == 0:
+                        # Start from the newest chunk minus 50 chunks (or from 1 if less than 50)
+                        # This ensures a new client gets some recent data without trying to load everything
+                        start_index = max(1, current_index - 50)
+                        logging.debug(f"No start_index provided, starting from {start_index} (current: {current_index})")
+                    
+                    # Nothing new to fetch
+                    if start_index > current_index:
+                        return []
+                    
+                    # Determine range to fetch (limited batch size)
+                    fetch_start = max(1, start_index)
+                    fetch_end = min(current_index + 1, fetch_start + 100)  # Get up to 100 chunks at once
+                    
+                    # Fetch chunks from Redis
+                    redis_chunks = []
+                    for idx in range(fetch_start, fetch_end):
+                        chunk_key = f"ts_proxy:buffer:{self.channel_id}:chunk:{idx}"
+                        chunk = self.redis_client.get(chunk_key)
+                        if chunk:
+                            redis_chunks.append(chunk)
+                    
+                    # Update local tracking
+                    if redis_chunks:
+                        with self.lock:
+                            self.local_index = fetch_end
+                            self.chunks_retrieved += len(redis_chunks)
+                        
+                        # Log chunk retrieval only for significant retrievals
+                        if len(redis_chunks) > 5:
+                            logging.info(f"Retrieved {len(redis_chunks)} chunks from Redis for {self.channel_id} ({fetch_start}-{fetch_end-1})")
+                    
+                    return redis_chunks
+                
+                except Exception as e:
+                    logging.warning(f"Failed to get chunks from Redis: {e}")
+                    self.redis_available = False
+            
+            # If we get here, Redis failed or we're using local only
+            # Fetch from local cache
+            with self.lock:
+                if not self.local_cache:
+                    return []
+                    
+                if start_index is None:
+                    start_index = min(self.local_cache.keys())
+                    
+                cache_keys = sorted([k for k in self.local_cache.keys() if k >= start_index])
+                return [self.local_cache[k] for k in cache_keys]
+                    
+        except Exception as e:
+            logging.error(f"Error in get_chunks: {e}")
+            return []
+
+    def get_stats(self):
+        """Get buffer statistics"""
+        return {
+            'stored': self.chunks_stored,
+            'retrieved': self.chunks_retrieved,
+            'channel': self.channel_id,
+            'local_index': self.local_index
+        }
+
 class ClientManager:
     def __init__(self, channel_id=None):
         self.active_clients = {}
@@ -281,30 +442,41 @@ def wait_for_running(manager: StreamManager, delay: float) -> bool:
 class ProxyServer:
     """Manages TS proxy server instance"""
     
-    def __init__(self, user_agent: Optional[str] = None):
-        self.stream_managers: Dict[str, StreamManager] = {}
-        self.stream_buffers: Dict[str, StreamBuffer] = {}
-        self.client_managers: Dict[str, ClientManager] = {}
-        self.fetch_threads: Dict[str, threading.Thread] = {}
-        self.user_agent: str = user_agent or Config.DEFAULT_USER_AGENT
-        self.lock: threading.RLock = threading.RLock()  # Add a thread-safe lock
-
-    def initialize_channel(self, url, channel_id):
+    def __init__(self, user_agent=None, redis_client=None):
+        self.stream_managers = {}
+        self.stream_buffers = {}
+        self.client_managers = {}
+        self.fetch_threads = {}
+        self.user_agent = user_agent or "Dispatcharr/1.0"
+        self.lock = threading.RLock()
+        self.redis_client = redis_client  # Store Redis client reference
+    
+    def initialize_channel(self, url, channel_id, shared_buffer=None):
         """Initialize a new channel with the given URL"""
         with self.lock:
-            # Create buffer using config value for size
-            self.stream_buffers[channel_id] = StreamBuffer()
+            # Always use SharedStreamBuffer with Redis client
+            if shared_buffer:
+                self.stream_buffers[channel_id] = shared_buffer
+            else:
+                # Create a proper SharedStreamBuffer (not a regular StreamBuffer)
+                from apps.proxy.config import TSConfig as Config
+                self.stream_buffers[channel_id] = SharedStreamBuffer(
+                    channel_id, 
+                    redis_client=self.redis_client,
+                    max_length=Config.STREAM_BUFFER_SIZE
+                )
             
+            # Create stream manager with the shared buffer
             self.stream_managers[channel_id] = StreamManager(
                 url, 
                 self.stream_buffers[channel_id],
                 user_agent=self.user_agent
             )
             
-            # Pass channel_id to ClientManager constructor
+            # Initialize client manager
             self.client_managers[channel_id] = ClientManager(channel_id=channel_id)
             
-            # Start a thread to fetch from the stream
+            # Start fetch thread
             thread = threading.Thread(
                 target=self._fetch_stream,
                 args=(self.stream_managers[channel_id], channel_id),
@@ -313,8 +485,8 @@ class ProxyServer:
             self.fetch_threads[channel_id] = thread
             thread.start()
             
-            logging.info(f"Initialized channel {channel_id} with URL {url} (buffer size: {self.stream_buffers[channel_id].max_length})")
-    
+            logging.info(f"Initialized channel {channel_id} with URL {url}")
+
     def _fetch_stream(self, manager, channel_id):
         """Internal method to continuously fetch from a stream"""
         try:
@@ -325,44 +497,34 @@ class ProxyServer:
                 
             # Continue fetching until stopped
             last_heartbeat = 0
+            import os
+            worker_id = str(os.getpid())
+            
             while manager.running:
                 try:
                     current_time = time.time()
                     
                     # Fetch next chunk of data
-                    manager.fetch_chunk()
+                    fetched = manager.fetch_chunk()
                     
-                    # Update heartbeat in Redis every 15 seconds if available
+                    # Update heartbeat in Redis every 15 seconds
                     if current_time - last_heartbeat >= 15:
                         try:
-                            # Import here to avoid circular imports
-                            import sys
-                            if 'apps.proxy.ts_proxy.views' in sys.modules:
-                                redis_client = sys.modules['apps.proxy.ts_proxy.views'].redis_client
-                                if redis_client:
-                                    # Update active channel status with 60-second expiry
-                                    redis_client.set(f"ts_proxy:active_channel:{channel_id}", "1", ex=60)
-                                    last_heartbeat = current_time
+                            # Update active channel status with worker ID and extend TTL
+                            if self.redis_client:
+                                # Store additional metadata about this channel
+                                pipe = self.redis_client.pipeline()
+                                pipe.set(f"ts_proxy:active_channel:{channel_id}", worker_id, ex=60)
+                                pipe.set(f"ts_proxy:channel_owner:{channel_id}", worker_id)
+                                pipe.execute()
+                                last_heartbeat = current_time
                         except Exception as e:
                             logging.warning(f"Failed to update stream heartbeat: {e}")
                     
-                    # Check for client activity and possibly stop if no clients
-                    with self.lock:
-                        if channel_id in self.client_managers:
-                            client_count = len(self.client_managers[channel_id].active_clients)
-
-                            if client_count == 0:
-                                # Check if we've been running with no clients for a while
-                                if not hasattr(manager, 'no_clients_since'):
-                                    manager.no_clients_since = time.time()
-                                elif time.time() - manager.no_clients_since > 60:  # 60 second timeout
-                                    logging.info(f"No clients for channel {channel_id} for 60 seconds, stopping")
-                                    manager.stop()
-                            else:
-                                # Reset the counter
-                                if hasattr(manager, 'no_clients_since'):
-                                    delattr(manager, 'no_clients_since')
-                        
+                    # If no data fetched, small sleep to prevent tight loop
+                    if not fetched:
+                        time.sleep(0.05)
+                    
                 except Exception as e:
                     if manager.running:
                         logging.error(f"Error fetching from stream: {e}")
@@ -372,10 +534,9 @@ class ProxyServer:
                         if not manager.connected:
                             time.sleep(2)
                             manager.connect()
-                
-                # Small delay to prevent tight CPU loop
-                time.sleep(0.01)
-                
+            
+            logging.info(f"Stream manager for {channel_id} stopped")
+            
         except Exception as e:
             logging.error(f"Fetch thread error: {e}")
         finally:

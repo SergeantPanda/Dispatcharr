@@ -29,3 +29,14 @@ class TSConfig(BaseConfig):
     # Stream cleanup delay in seconds (0 for immediate)
     # How long to wait after all clients disconnect before cleaning up the stream
     STREAM_CLEANUP_DELAY = 0
+    
+    # Set to True to enable verbose debug logging
+    DEBUG_LOGGING = False
+    
+    # Redis settings
+    REDIS_CHUNK_TTL = 30  # How long to keep chunks in Redis (seconds)
+    REDIS_HEARTBEAT_INTERVAL = 15  # How often to update Redis heartbeat
+    REDIS_ACTIVE_TTL = 60  # TTL for active channel markers (seconds)
+    
+    # Local cache settings
+    LOCAL_CACHE_SIZE = 10  # Number of recent chunks to keep in memory
