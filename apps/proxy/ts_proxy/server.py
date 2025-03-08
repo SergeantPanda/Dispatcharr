@@ -15,6 +15,8 @@ import time
 from typing import Optional, Set, Deque, Dict
 from apps.proxy.config import TSConfig as Config
 from urllib.parse import urlparse
+import socket
+import ssl
 
 class StreamManager:
     """Manages a connection to a TS stream"""
@@ -41,110 +43,227 @@ class StreamManager:
         self.empty_response_count = 0
         self.max_empty_responses = 5
         self.min_data_size = 188  # Minimum size for valid TS packet
+        self.socket = None
+        self.recv_buffer = b''
+        # TS packet handling
+        self.TS_PACKET_SIZE = 188
+        self.recv_buffer = b''
+        self.min_data_size = 188  # Minimum size for valid TS packet
+        self.sync_state = False   # Track if we're in sync with TS packets
         
     def connect(self):
-        """Establish connection to the stream with enhanced handling for service protection"""
+        """Connect using direct socket with support for HTTP redirects"""
         try:
             self.retry_count += 1
             logging.info(f"Connecting to stream: {self.url} (attempt {self.retry_count}/{self.max_retries})")
             
-            # Some streaming services check Referer to prevent proxying
-            # Use the hostname from the URL as referer
+            # Parse URL
             parsed_url = urlparse(self.url)
-            base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-            self.session.headers.update({'Referer': base_url})
+            host = parsed_url.hostname
+            port = parsed_url.port or (443 if parsed_url.scheme == 'https' else 80)
+            path = parsed_url.path
+            if parsed_url.query:
+                path += '?' + parsed_url.query
+                
+            # Close existing socket if any
+            self._close_socket()
+                
+            # Create socket connection
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(15)  # 15 second timeout
             
-            # Use a longer timeout for initial connection
-            self.response = self.session.get(
-                self.url,
-                stream=True,
-                timeout=15
+            # Connect to host
+            if parsed_url.scheme == 'https':
+                context = ssl.create_default_context()
+                self.socket = context.wrap_socket(self.socket, server_hostname=host)
+                
+            self.socket.connect((host, port))
+            
+            # Send HTTP request
+            request = (
+                f"GET {path} HTTP/1.1\r\n"
+                f"Host: {host}\r\n"
+                f"User-Agent: {self.user_agent}\r\n"
+                f"Accept: */*\r\n"
+                f"Connection: keep-alive\r\n"
+                f"Accept-Encoding: identity\r\n"
+                f"Accept-Language: en_US\r\n"
+                f"Cache-Control: no-cache\r\n\r\n"
             )
             
-            if self.response.status_code != 200:
-                logging.error(f"Failed to connect: HTTP {self.response.status_code}")
-                return False
+            self.socket.sendall(request.encode('utf-8'))
+            
+            # Read HTTP response headers
+            header_data = b''
+            while b'\r\n\r\n' not in header_data:
+                chunk = self.socket.recv(1024)
+                if not chunk:
+                    logging.error("Connection closed during header reading")
+                    return False
+                header_data += chunk
                 
-            # Read a small chunk to verify the stream is actually sending data
-            # Some services send an empty response initially
-            try:
-                first_chunk = next(self.response.iter_content(chunk_size=1024), None)
-                if not first_chunk or len(first_chunk) < self.min_data_size:
-                    if self.empty_response_count < self.max_empty_responses:
-                        self.empty_response_count += 1
-                        logging.warning(f"Stream sent empty or too small initial data ({len(first_chunk) if first_chunk else 0} bytes), retrying ({self.empty_response_count}/{self.max_empty_responses})")
-                        
-                        # Close this connection and retry
-                        self.response.close()
-                        
-                        # Wait briefly before retrying
-                        time.sleep(1)
-                        return self.connect()
-                    else:
-                        logging.error(f"Stream sent empty data after {self.max_empty_responses} attempts")
-                        return False
-                else:
-                    # Reset counter on success
-                    self.empty_response_count = 0
+            # Split headers from any content received
+            header_end = header_data.find(b'\r\n\r\n') + 4
+            headers = header_data[:header_end].decode('utf-8', errors='ignore')
+            initial_content = header_data[header_end:]
+            
+            # Parse status line and headers
+            header_lines = headers.split('\r\n')
+            status_line = header_lines[0]
+            status_code = int(status_line.split(' ')[1]) if len(status_line.split(' ')) > 1 else 0
+            
+            # Check if it's a redirect (3xx status code)
+            if 300 <= status_code < 400:
+                # Extract Location header
+                location = None
+                for line in header_lines:
+                    if line.lower().startswith('location:'):
+                        location = line.split(':', 1)[1].strip()
+                        break
+                
+                if location:
+                    logging.info(f"Following redirect to: {location}")
                     
-                    # Send the first chunk to buffer
-                    self.buffer.add_chunk(first_chunk)
-            except StopIteration:
-                logging.warning("Stream closed immediately after connecting")
+                    # If location is a relative URL, make it absolute
+                    if not location.startswith('http'):
+                        if location.startswith('/'):
+                            location = f"{parsed_url.scheme}://{host}{location}"
+                        else:
+                            location = f"{parsed_url.scheme}://{host}/{location}"
+                    
+                    # Update the URL and try again
+                    self.url = location
+                    return self.connect()  # Recursive call to follow the redirect
+                else:
+                    logging.error("Received redirect without Location header")
+                    return False
+                    
+            # Check HTTP status code
+            if status_code != 200:
+                logging.error(f"Failed to connect: {status_line}")
                 return False
                 
+            # Process any initial content
+            if initial_content:
+                if len(initial_content) < self.min_data_size:
+                    logging.warning(f"Initial content too small ({len(initial_content)} bytes), might be incomplete")
+                else:
+                    self.buffer.add_chunk(initial_content)
+                    
             self.connected = True
             self.ready_event.set()
             logging.info("Stream connected successfully")
             return True
             
-        except requests.exceptions.Timeout:
+        except socket.timeout:
             logging.error("Connection timed out")
-            self.connected = False
+            self._close_socket()
             return False
-        except requests.exceptions.ConnectionError as e:
-            logging.error(f"Connection error: {e}")
-            self.connected = False
+        except socket.error as e:
+            logging.error(f"Socket error: {e}")
+            self._close_socket()
             return False
         except Exception as e:
             logging.error(f"Connection error: {e}")
-            self.connected = False
+            self._close_socket()
             return False
+    
+    def _close_socket(self):
+        """Close socket connection if it exists"""
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
     
     def should_retry(self):
         """Check if we should retry connecting"""
         return self.retry_count < self.max_retries
     
     def fetch_chunk(self):
-        """Fetch the next chunk from the stream with better error handling"""
-        if not self.connected or not hasattr(self, 'response'):
+        """Fetch data from socket with improved TS packet handling"""
+        if not self.connected or not self.socket:
             return False
             
         try:
-            chunk = next(self.response.iter_content(chunk_size=4096))
-            if chunk:
-                if len(chunk) < self.min_data_size:
-                    logging.warning(f"Received unusually small chunk ({len(chunk)} bytes)")
-                self.buffer.add_chunk(chunk)
-                return True
-        except StopIteration:
-            # End of stream - this isn't necessarily an error for short-lived streams
-            logging.warning("End of stream reached, attempting to reconnect")
-            self.connected = False
+            # Set a reasonable timeout for data availability
+            self.socket.settimeout(5.0)
             
-            # Try to reconnect immediately instead of giving up
-            if self.running:
-                time.sleep(0.5)  # Brief delay
-                return self.connect()
-        except requests.exceptions.ChunkedEncodingError:
-            logging.error("Connection error: incomplete chunk read")
+            # Read data chunk - use a multiple of TS packet size
+            chunk = self.socket.recv(188 * 32)  # Read 32 packets at a time
+            
+            if not chunk:
+                # Connection closed by server
+                logging.warning("Server closed connection, reconnecting")
+                self.connected = False
+                self._close_socket()
+                
+                # Try to reconnect immediately
+                if self.running:
+                    time.sleep(0.5)  # Brief delay
+                    return self.connect()
+            
+            # Add to buffer and process
+            return self._process_ts_data(chunk)
+                
+        except socket.timeout:
+            # No data available right now, but connection still active
+            return False
+        except socket.error as e:
+            logging.error(f"Socket error during read: {e}")
             self.connected = False
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Request error during read: {e}")
-            self.connected = False
+            self._close_socket()
         except Exception as e:
             logging.error(f"Error reading from stream: {e}")
             self.connected = False
+            self._close_socket()
+            
+        return False
+        
+    def _process_ts_data(self, chunk):
+        """Process received data with more forgiving TS packet handling"""
+        if not chunk:
+            return False
+            
+        # Add to existing buffer
+        self.recv_buffer += chunk
+        buffer_len = len(self.recv_buffer)
+            
+        # Need enough data to find sync
+        if buffer_len < 188:  # Need at least one packet
+            return False
+            
+        # If not in sync, find sync byte
+        if not self.sync_state:
+            # Look for the sync byte (0x47)
+            sync_pos = -1
+            for i in range(min(188, buffer_len - 188)):
+                if self.recv_buffer[i] == 0x47:
+                    sync_pos = i
+                    break
+                    
+            if sync_pos >= 0:
+                # Found sync - trim buffer
+                self.recv_buffer = self.recv_buffer[sync_pos:]
+                self.sync_state = True
+                logging.debug(f"TS sync acquired at position {sync_pos}")
+            else:
+                # Keep only the last part that might contain start of a sync
+                if buffer_len > 188:
+                    self.recv_buffer = self.recv_buffer[-188:]
+                return False
+        
+        # Now aligned to packet boundary, grab complete packets
+        packets = len(self.recv_buffer) // 188
+        if packets > 0:
+            # Extract complete packets
+            packet_data = self.recv_buffer[:packets * 188]
+            self.recv_buffer = self.recv_buffer[packets * 188:]
+            
+            # Send to buffer - no strict validation that could break the connection
+            self.buffer.add_chunk(packet_data)
+            return True
             
         return False
     
@@ -171,14 +290,7 @@ class StreamManager:
         """Stop the stream manager and close all connections"""
         self.running = False
         self.connected = False
-        
-        # Close the response if it exists
-        if hasattr(self, 'response'):
-            try:
-                self.response.close()
-                logging.debug(f"Closed stream connection to {self.url}")
-            except Exception as e:
-                logging.warning(f"Error closing connection: {e}")
+        self._close_socket()
         
         # Close the session to free up resources
         try:
@@ -225,16 +337,12 @@ class SharedStreamBuffer:
         self.lock = threading.RLock()
         self.local_index = 0
         
-        # TS packet size and chunk sizing
+        # TS packet handling constants
         self.TS_PACKET_SIZE = 188
-        self.CHUNK_SIZE = 4096 * 4  # Larger chunks, must be multiple of TS_PACKET_SIZE
-        self.PACKETS_PER_CHUNK = self.CHUNK_SIZE // self.TS_PACKET_SIZE
-        
-        # Buffer for partial packets
-        self.partial_buffer = b''
+        self.CHUNK_SIZE = 188 * 64  # Use multiple of TS packet size
         
         # Only keep a small local cache for the most recent chunks
-        self.local_cache_size = 5  # Reduce memory usage
+        self.local_cache_size = Config.LOCAL_CACHE_SIZE
         self.local_cache = {}  # Index -> chunk mapping
         
         # For statistics
@@ -254,57 +362,37 @@ class SharedStreamBuffer:
         logging.debug(f"SharedStreamBuffer initialized for {channel_id}")
     
     def add_chunk(self, chunk):
-        """Add a chunk to shared Redis buffer with improved TS packet alignment"""
+        """Add a chunk to shared Redis buffer with guaranteed TS packet alignment"""
         try:
-            # Combine with any previous partial data
-            data = self.partial_buffer + chunk
+            # Validate chunk is a multiple of TS packet size
+            if len(chunk) % self.TS_PACKET_SIZE != 0:
+                logging.warning(f"Received non-aligned chunk of size {len(chunk)}")
+                # Truncate to multiple of TS packet size
+                aligned_size = (len(chunk) // self.TS_PACKET_SIZE) * self.TS_PACKET_SIZE
+                chunk = chunk[:aligned_size]
+                
+                if not chunk:
+                    return False
             
-            # Find the first sync byte (0x47) to align the TS packets
-            sync_pos = 0
-            while sync_pos < len(data) - 188:
-                if data[sync_pos] == 0x47 and data[sync_pos + 188] == 0x47:
-                    # Found two consecutive sync bytes at the correct interval
-                    break
-                sync_pos += 1
-            
-            # If we found proper alignment
-            if sync_pos < len(data) - 188:
-                # Discard data before the first proper sync byte
-                data = data[sync_pos:]
-                
-                # Calculate how many complete TS packets we have
-                complete_packets = len(data) // 188
-                complete_packet_bytes = complete_packets * 188
-                
-                # Extract the aligned TS packets
-                ts_data = data[:complete_packet_bytes]
-                # Store remainder for next time
-                self.partial_buffer = data[complete_packet_bytes:]
-                
-                # Now store the properly aligned TS data in Redis
-            
-            # Process only if we have complete TS packets
-            if len(ts_data) == 0:
-                return True
-                
-            # Store in Redis with proper TS packet alignment
+            # Store aligned TS packets in Redis
             if self.redis_available and self.redis_client:
                 try:
                     # Get next index atomically
                     index_key = f"ts_proxy:buffer:{self.channel_id}:index"
                     index = self.redis_client.incr(index_key)
                     
-                    # Store chunk with 45s TTL (longer than default)
+                    # Store chunk with expiration time from config
+                    from apps.proxy.config import TSConfig as Config
                     chunk_key = f"ts_proxy:buffer:{self.channel_id}:chunk:{index}"
-                    self.redis_client.setex(chunk_key, 45, ts_data)
+                    self.redis_client.setex(chunk_key, Config.REDIS_CHUNK_TTL, chunk)
                     
                     # Update our local tracking
                     with self.lock:
                         self.local_index = index
-                        self.local_cache[index] = ts_data
+                        self.local_cache[index] = chunk
                         
                         # Keep local cache size in check
-                        if len(self.local_cache) > self.local_cache_size:
+                        while len(self.local_cache) > self.local_cache_size:
                             oldest = min(self.local_cache.keys())
                             del self.local_cache[oldest]
                     
@@ -312,10 +400,11 @@ class SharedStreamBuffer:
                     
                     # Periodic logging
                     if self.chunks_stored % 50 == 0:
-                        pkts = len(ts_data) // self.TS_PACKET_SIZE
+                        pkts = len(chunk) // self.TS_PACKET_SIZE
                         logging.info(f"Stored chunk {index} for channel {self.channel_id} in Redis ({pkts} TS packets)")
                     
                     return True
+                    
                 except Exception as e:
                     logging.warning(f"Failed to store chunk in Redis: {e}")
                     self.redis_available = False

@@ -509,28 +509,23 @@ def create_streaming_response(channel_id, is_origin_worker):
             last_data_time = time.time()
             has_sent_data = False
             
-            # Pre-buffering for client
+            # Pre-buffer phase
+            # Try to load a good amount of data before starting streaming
+            from apps.proxy.config import TSConfig as Config
+            initial_burst_size = Config.CLIENT_INITIAL_BURST_SIZE
+            
+            # Pre-buffer initial data
             initial_chunks = []
-            from apps.proxy.config import TSConfig
-            
-            # Client-side buffer size from config (with fallback)
-            initial_burst_size = getattr(TSConfig, 'CLIENT_INITIAL_BURST_SIZE', 750_000)
-            
-            # Pre-buffer - get a good amount of data before sending anything
-            if not is_origin_worker:
-                prebuffer_start = time.time()
-                logger.info(f"Pre-buffering data for channel {channel_id}")
-                
-                # Collect data for up to 3 seconds or until we have enough
-                while time.time() - prebuffer_start < 3.0:
+            if local_index is None:
+                # Pre-fill with existing data from buffer
+                pre_buffer_start = time.time()
+                while time.time() - pre_buffer_start < 2.0:  # Wait max 2 seconds for pre-buffer
                     chunks = buffer.get_chunks(local_index)
                     if chunks:
                         initial_chunks.extend(chunks)
                         local_index = buffer.local_index
-                        # Check if we have enough data
-                        total_size = sum(len(c) for c in initial_chunks)
-                        if total_size > initial_burst_size:
-                            break
+                        if sum(len(c) for c in initial_chunks) >= initial_burst_size // 2:
+                            break  # Got enough data to start
                     else:
                         time.sleep(0.1)
                 
@@ -539,12 +534,19 @@ def create_streaming_response(channel_id, is_origin_worker):
                 else:
                     logger.warning(f"Failed to pre-buffer any data for {channel_id}")
             
-            # Send any pre-buffered chunks first
+            # Send any pre-buffered chunks first - filtered to ensure packet alignment
+            filtered_chunks = []
             for chunk in initial_chunks:
-                yield chunk
+                if len(chunk) % 188 == 0:  # Ensure proper TS alignment
+                    filtered_chunks.append(chunk)
+            
+            # Only send initial burst if we have enough aligned data
+            if filtered_chunks:
+                for chunk in filtered_chunks:
+                    yield chunk
             
             # Rest of the function continues...
-            data_sent = 0
+            data_sent = sum(len(c) for c in filtered_chunks)
             burst_mode = True
             while True:
                 try:
@@ -566,9 +568,11 @@ def create_streaming_response(channel_id, is_origin_worker):
                         has_sent_data = True
                         
                         for chunk in chunks:
-                            yield chunk
-                            data_sent += len(chunk)
-                            
+                            # Verify chunk is valid before sending
+                            if len(chunk) % 188 == 0 and len(chunk) > 0:
+                                yield chunk
+                                data_sent += len(chunk)
+                        
                         # Update local index
                         local_index = buffer.local_index
                         
@@ -588,33 +592,20 @@ def create_streaming_response(channel_id, is_origin_worker):
                         if empty_reads > 150 or (time.time() - last_data_time > timeout):
                             logger.warning(f"No data received for channel {channel_id} for too long")
                             break
+                            
+                        # Small sleep to prevent tight loops
+                        time.sleep(0.1)
                         
-                        # Progressive backoff
-                        sleep_time = min(0.1 * (empty_reads / 10), 0.5)
-                        time.sleep(sleep_time)
-                
-                except (BrokenPipeError, ConnectionResetError):
-                    # Client disconnected
-                    break
                 except Exception as e:
-                    logger.error(f"Streaming error: {e}")
+                    logger.error(f"Error in streaming loop: {e}")
                     break
                     
         except Exception as e:
-            logger.error(f"Client error: {e}")
+            logger.error(f"Streaming error: {e}")
         finally:
+            # Cleanup
             if is_origin_worker and channel_id in proxy_server.client_managers:
+                logger.info(f"Client {client_id} disconnected from channel {channel_id}")
                 proxy_server.client_managers[channel_id].remove_client(client_id)
-            logger.info(f"Client {client_id} disconnected from channel {channel_id}")
     
-    # Return streaming response
-    response = StreamingHttpResponse(
-        generate(),
-        content_type='video/MP2T'
-    )
-    
-    # Important headers for streaming
-    response['Cache-Control'] = 'no-cache'
-    response['X-Accel-Buffering'] = 'no'
-    
-    return response
+    return StreamingHttpResponse(generate(), content_type='video/MP2T')
