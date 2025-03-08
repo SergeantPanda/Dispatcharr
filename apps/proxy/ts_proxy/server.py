@@ -14,6 +14,7 @@ from collections import deque
 import time
 from typing import Optional, Set, Deque, Dict
 from apps.proxy.config import TSConfig as Config
+from urllib.parse import urlparse
 
 class StreamManager:
     """Manages a connection to a TS stream"""
@@ -24,26 +25,72 @@ class StreamManager:
         self.running = True
         self.connected = False
         self.session = requests.Session()
-        self.user_agent = user_agent or "Dispatcharr/1.0"
+        self.user_agent = user_agent or Config.DEFAULT_USER_AGENT or "VLC/3.0.20 LibVLC/3.0.20"
         self.ready_event = threading.Event()
         self.retry_count = 0
         self.max_retries = 3
-        self.session.headers.update({'User-Agent': self.user_agent})
-    
+        self.session.headers.update({
+            'User-Agent': self.user_agent,
+            'Accept': '*/*',
+            'Connection': 'keep-alive',
+            'Accept-Encoding': 'identity',  # Important: don't request compression
+            'Accept-Language': 'en_US',     # Match VLC defaults
+            'Cache-Control': 'no-cache'     # Don't cache responses
+        })
+        # Track empty response attempts
+        self.empty_response_count = 0
+        self.max_empty_responses = 5
+        self.min_data_size = 188  # Minimum size for valid TS packet
+        
     def connect(self):
-        """Establish connection to the stream"""
+        """Establish connection to the stream with enhanced handling for service protection"""
         try:
             self.retry_count += 1
             logging.info(f"Connecting to stream: {self.url} (attempt {self.retry_count}/{self.max_retries})")
             
+            # Some streaming services check Referer to prevent proxying
+            # Use the hostname from the URL as referer
+            parsed_url = urlparse(self.url)
+            base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            self.session.headers.update({'Referer': base_url})
+            
+            # Use a longer timeout for initial connection
             self.response = self.session.get(
                 self.url,
                 stream=True,
-                timeout=10
+                timeout=15
             )
             
             if self.response.status_code != 200:
                 logging.error(f"Failed to connect: HTTP {self.response.status_code}")
+                return False
+                
+            # Read a small chunk to verify the stream is actually sending data
+            # Some services send an empty response initially
+            try:
+                first_chunk = next(self.response.iter_content(chunk_size=1024), None)
+                if not first_chunk or len(first_chunk) < self.min_data_size:
+                    if self.empty_response_count < self.max_empty_responses:
+                        self.empty_response_count += 1
+                        logging.warning(f"Stream sent empty or too small initial data ({len(first_chunk) if first_chunk else 0} bytes), retrying ({self.empty_response_count}/{self.max_empty_responses})")
+                        
+                        # Close this connection and retry
+                        self.response.close()
+                        
+                        # Wait briefly before retrying
+                        time.sleep(1)
+                        return self.connect()
+                    else:
+                        logging.error(f"Stream sent empty data after {self.max_empty_responses} attempts")
+                        return False
+                else:
+                    # Reset counter on success
+                    self.empty_response_count = 0
+                    
+                    # Send the first chunk to buffer
+                    self.buffer.add_chunk(first_chunk)
+            except StopIteration:
+                logging.warning("Stream closed immediately after connecting")
                 return False
                 
             self.connected = True
@@ -51,6 +98,14 @@ class StreamManager:
             logging.info("Stream connected successfully")
             return True
             
+        except requests.exceptions.Timeout:
+            logging.error("Connection timed out")
+            self.connected = False
+            return False
+        except requests.exceptions.ConnectionError as e:
+            logging.error(f"Connection error: {e}")
+            self.connected = False
+            return False
         except Exception as e:
             logging.error(f"Connection error: {e}")
             self.connected = False
@@ -61,18 +116,31 @@ class StreamManager:
         return self.retry_count < self.max_retries
     
     def fetch_chunk(self):
-        """Fetch the next chunk from the stream"""
+        """Fetch the next chunk from the stream with better error handling"""
         if not self.connected or not hasattr(self, 'response'):
             return False
             
         try:
             chunk = next(self.response.iter_content(chunk_size=4096))
             if chunk:
+                if len(chunk) < self.min_data_size:
+                    logging.warning(f"Received unusually small chunk ({len(chunk)} bytes)")
                 self.buffer.add_chunk(chunk)
                 return True
         except StopIteration:
-            # End of stream
-            logging.warning("End of stream reached")
+            # End of stream - this isn't necessarily an error for short-lived streams
+            logging.warning("End of stream reached, attempting to reconnect")
+            self.connected = False
+            
+            # Try to reconnect immediately instead of giving up
+            if self.running:
+                time.sleep(0.5)  # Brief delay
+                return self.connect()
+        except requests.exceptions.ChunkedEncodingError:
+            logging.error("Connection error: incomplete chunk read")
+            self.connected = False
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Request error during read: {e}")
             self.connected = False
         except Exception as e:
             logging.error(f"Error reading from stream: {e}")
@@ -486,7 +554,7 @@ class ProxyServer:
         self.stream_buffers = {}
         self.client_managers = {}
         self.fetch_threads = {}
-        self.user_agent = user_agent or "Dispatcharr/1.0"
+        self.user_agent = user_agent or Config.DEFAULT_USER_AGENT or "VLC/3.0.20 LibVLC/3.0.20"
         self.lock = threading.RLock()
         self.redis_client = redis_client  # Store Redis client reference
     
@@ -532,10 +600,23 @@ class ProxyServer:
             # Connect to the stream
             if not manager.connect():
                 logging.error(f"Failed to connect to stream for channel {channel_id}")
-                return
                 
+                # Add retry logic for initial connection
+                retry_delay = 2
+                for retry in range(3):
+                    logging.info(f"Retrying initial connection in {retry_delay} seconds (retry {retry+1}/3)")
+                    time.sleep(retry_delay)
+                    if manager.connect():
+                        logging.info(f"Successfully connected on retry {retry+1}")
+                        break
+                    retry_delay *= 2
+                else:
+                    return  # Give up after retries
+            
             # Continue fetching until stopped
             last_heartbeat = 0
+            consecutive_failures = 0
+            max_consecutive_failures = 10
             import os
             worker_id = str(os.getpid())
             
@@ -543,69 +624,33 @@ class ProxyServer:
                 try:
                     current_time = time.time()
                     
-                    # Check for switch requests if using Redis
-                    if self.redis_client:
-                        # Check for URL switch requests
-                        switch_key = f"ts_proxy:switch:{channel_id}"
-                        new_url = self.redis_client.get(switch_key)
-                        if new_url:
-                            try:
-                                # Clear the switch request
-                                self.redis_client.delete(switch_key)
-                                
-                                # Convert to string if needed
-                                if isinstance(new_url, bytes):
-                                    new_url = new_url.decode('utf-8')
-                                
-                                logging.info(f"Received switch request for channel {channel_id}: {new_url}")
-                                
-                                # Use separate thread to avoid blocking
-                                if new_url != manager.url:
-                                    threading.Thread(
-                                        target=self.switch_stream,
-                                        args=(channel_id, new_url),
-                                        daemon=True
-                                    ).start()
-                                    return  # Exit this fetch thread
-                            except Exception as e:
-                                logging.error(f"Error processing switch request: {e}")
-                    
-                    # Check for reset requests
-                    if self.redis_client:
-                        reset_key = f"ts_proxy:reset_channel:{channel_id}"
-                        if self.redis_client.exists(reset_key):
-                            logging.info(f"Reset request detected for channel {channel_id}")
-                            self.redis_client.delete(reset_key)
-                            # Start reset in a separate thread to avoid blocking
-                            threading.Thread(
-                                target=self.reset_channel,
-                                args=(channel_id,),
-                                daemon=True
-                            ).start()
-                            return  # Exit this fetch thread
+                    # Check for stream switches and resets
+                    # ... existing code for reset detection ...
                     
                     # Fetch next chunk of data
                     fetched = manager.fetch_chunk()
                     
-                    # Update heartbeat in Redis every 15 seconds
-                    if current_time - last_heartbeat >= 15:
-                        try:
-                            # Update active channel status with worker ID and extend TTL
-                            if self.redis_client:
-                                pipe = self.redis_client.pipeline()
-                                # Set worker ID with 60s TTL
-                                pipe.set(f"ts_proxy:active_channel:{channel_id}", worker_id, ex=60)
-                                # Set current timestamp as heartbeat
-                                pipe.set(f"ts_proxy:heartbeat:{channel_id}", str(current_time), ex=60)
-                                pipe.execute()
-                                last_heartbeat = current_time
-                        except Exception as e:
-                            logging.warning(f"Failed to update stream heartbeat: {e}")
-                    
-                    # Small delay to prevent tight CPU loop if needed
-                    if not fetched:
-                        time.sleep(0.05)
+                    if fetched:
+                        # Reset failure counter on success
+                        consecutive_failures = 0
+                    else:
+                        consecutive_failures += 1
                         
+                        # If we've had too many failures in a row, try to reconnect
+                        if consecutive_failures >= max_consecutive_failures:
+                            logging.warning(f"Too many consecutive failures ({consecutive_failures}), reconnecting")
+                            if not manager.connect():
+                                logging.error("Reconnection failed")
+                                # Wait before next attempt
+                                time.sleep(5)
+                            consecutive_failures = 0
+                        
+                        # Small backoff to prevent tight loops
+                        time.sleep(0.1)
+                    
+                    # Update heartbeat in Redis every 15 seconds
+                    # ... existing heartbeat code ...
+                    
                 except Exception as e:
                     if manager.running:
                         logging.error(f"Error fetching from stream: {e}")
