@@ -66,7 +66,7 @@ class TSConfig(BaseConfig):
     # Stream settings
     # Maximum number of chunks to keep per stream
     # Higher values use more memory but provide smoother playback
-    STREAM_BUFFER_SIZE = 1000
+    STREAM_BUFFER_SIZE = 5000
     
     # Time to wait before cleaning up a stream after clients disconnect (seconds)
     # Zero means immediate cleanup when no clients are connected
@@ -80,12 +80,12 @@ class TSConfig(BaseConfig):
     
     # Maximum bytes to send in initial data burst to clients
     # Helps quickly fill client's buffer for smooth start
-    CLIENT_INITIAL_BURST_SIZE = 750_000  # 750KB
+    CLIENT_INITIAL_BURST_SIZE = 1024_000  # 1024KB
     
     # Redis settings
     # How long to keep chunks in Redis before they expire (seconds)
     # Should be longer than heartbeat interval to prevent premature expiration
-    REDIS_CHUNK_TTL = 30
+    REDIS_CHUNK_TTL = 60
     
     # How often to update Redis heartbeat for active streams (seconds)
     # Used to detect if a stream process is still running
@@ -98,7 +98,7 @@ class TSConfig(BaseConfig):
     # Local cache settings
     # Number of recent chunks to keep in local worker memory
     # Higher values reduce Redis load but use more RAM per worker
-    LOCAL_CACHE_SIZE = 100
+    LOCAL_CACHE_SIZE = 1000
     
     # How long to wait for a missing chunk before skipping
     MISSING_CHUNK_MAX_WAIT = 2.0
