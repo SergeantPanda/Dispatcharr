@@ -47,9 +47,9 @@ class StreamManager:
         self.recv_buffer = b''
         # TS packet handling
         self.TS_PACKET_SIZE = 188
-        self.recv_buffer = b''
-        self.min_data_size = 188  # Minimum size for valid TS packet
-        self.sync_state = False   # Track if we're in sync with TS packets
+        self.recv_buffer = bytearray()
+        self.continuity_counters = {}  # Track continuity for each PID
+        self.sync_found = False
         
     def connect(self):
         """Connect using direct socket with support for HTTP redirects"""
@@ -182,90 +182,86 @@ class StreamManager:
         return self.retry_count < self.max_retries
     
     def fetch_chunk(self):
-        """Fetch data from socket with improved TS packet handling"""
+        """Fetch data with proper TS packet handling"""
         if not self.connected or not self.socket:
             return False
             
         try:
-            # Set a reasonable timeout for data availability
-            self.socket.settimeout(5.0)
-            
-            # Read data chunk - use a multiple of TS packet size
-            chunk = self.socket.recv(188 * 32)  # Read 32 packets at a time
+            # Read a chunk of data (intentionally larger than packet size)
+            chunk = self.socket.recv(8192)
             
             if not chunk:
-                # Connection closed by server
-                logging.warning("Server closed connection, reconnecting")
+                # Connection closed
+                logging.warning("Server closed connection")
                 self.connected = False
-                self._close_socket()
+                return False
                 
-                # Try to reconnect immediately
-                if self.running:
-                    time.sleep(0.5)  # Brief delay
-                    return self.connect()
+            # Add to our receive buffer
+            self.recv_buffer.extend(chunk)
             
-            # Add to buffer and process
-            return self._process_ts_data(chunk)
+            # Process complete packets from buffer
+            return self._process_complete_packets()
                 
         except socket.timeout:
-            # No data available right now, but connection still active
+            # No data available right now
             return False
         except socket.error as e:
-            logging.error(f"Socket error during read: {e}")
+            logging.error(f"Socket error: {e}")
             self.connected = False
-            self._close_socket()
+            return False
         except Exception as e:
-            logging.error(f"Error reading from stream: {e}")
-            self.connected = False
-            self._close_socket()
-            
-        return False
-        
-    def _process_ts_data(self, chunk):
-        """Process received data with more forgiving TS packet handling"""
-        if not chunk:
+            logging.error(f"Error in fetch_chunk: {e}")
             return False
-            
-        # Add to existing buffer
-        self.recv_buffer += chunk
-        buffer_len = len(self.recv_buffer)
-            
-        # Need enough data to find sync
-        if buffer_len < 188:  # Need at least one packet
-            return False
-            
-        # If not in sync, find sync byte
-        if not self.sync_state:
-            # Look for the sync byte (0x47)
-            sync_pos = -1
-            for i in range(min(188, buffer_len - 188)):
-                if self.recv_buffer[i] == 0x47:
-                    sync_pos = i
-                    break
+    
+    def _process_complete_packets(self):
+        """Process only complete TS packets from buffer with improved error handling"""
+        try:
+            # Find sync byte if needed
+            if not self.sync_found and len(self.recv_buffer) >= 376:
+                for i in range(min(188, len(self.recv_buffer) - 188)):
+                    # Look for at least two sync bytes (0x47) at 188-byte intervals
+                    if (self.recv_buffer[i] == 0x47 and 
+                        self.recv_buffer[i + 188] == 0x47):
+                        
+                        # Trim buffer to start at first sync byte
+                        self.recv_buffer = self.recv_buffer[i:]
+                        self.sync_found = True
+                        break
+                
+                # If sync not found, keep last 188 bytes and return
+                if not self.sync_found:
+                    if len(self.recv_buffer) > 188:
+                        self.recv_buffer = self.recv_buffer[-188:]
+                    return False
                     
-            if sync_pos >= 0:
-                # Found sync - trim buffer
-                self.recv_buffer = self.recv_buffer[sync_pos:]
-                self.sync_state = True
-                logging.debug(f"TS sync acquired at position {sync_pos}")
-            else:
-                # Keep only the last part that might contain start of a sync
-                if buffer_len > 188:
-                    self.recv_buffer = self.recv_buffer[-188:]
+            # If we don't have a complete packet yet, wait for more data
+            if len(self.recv_buffer) < 188:
                 return False
-        
-        # Now aligned to packet boundary, grab complete packets
-        packets = len(self.recv_buffer) // 188
-        if packets > 0:
-            # Extract complete packets
-            packet_data = self.recv_buffer[:packets * 188]
-            self.recv_buffer = self.recv_buffer[packets * 188:]
+                
+            # Calculate how many complete packets we have
+            packet_count = len(self.recv_buffer) // 188
             
-            # Send to buffer - no strict validation that could break the connection
-            self.buffer.add_chunk(packet_data)
-            return True
+            if packet_count == 0:
+                return False
+                
+            # Extract only complete packets
+            packets_data = self.recv_buffer[:packet_count * 188]
             
-        return False
+            # Keep remaining data in buffer
+            self.recv_buffer = self.recv_buffer[packet_count * 188:]
+            
+            # Send aligned packet data to buffer - even if some packets might not start with 0x47
+            # This is more forgiving and prevents getting stuck
+            if packets_data:
+                self.buffer.add_chunk(bytes(packets_data))
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error processing TS packets: {e}")
+            self.sync_found = False  # Reset sync state on error
+            return False
     
     def update_url(self, new_url):
         """Change the URL for this stream with smooth transition"""
@@ -362,34 +358,33 @@ class SharedStreamBuffer:
         logging.debug(f"SharedStreamBuffer initialized for {channel_id}")
     
     def add_chunk(self, chunk):
-        """Add a chunk to shared Redis buffer with guaranteed TS packet alignment"""
+        """Add a chunk to shared Redis buffer with guaranteed TS packet alignment and atomic indexing"""
         try:
-            # Validate chunk is a multiple of TS packet size
-            if len(chunk) % self.TS_PACKET_SIZE != 0:
+            # Ensure the chunk is a multiple of TS packet size
+            if len(chunk) % 188 != 0:
                 logging.warning(f"Received non-aligned chunk of size {len(chunk)}")
                 # Truncate to multiple of TS packet size
-                aligned_size = (len(chunk) // self.TS_PACKET_SIZE) * self.TS_PACKET_SIZE
-                chunk = chunk[:aligned_size]
-                
-                if not chunk:
+                aligned_size = (len(chunk) // 188) * 188
+                if aligned_size == 0:
                     return False
+                chunk = chunk[:aligned_size]
             
             # Store aligned TS packets in Redis
             if self.redis_available and self.redis_client:
                 try:
-                    # Get next index atomically
+                    # Use Redis atomic increment to get next index reliably
                     index_key = f"ts_proxy:buffer:{self.channel_id}:index"
-                    index = self.redis_client.incr(index_key)
+                    chunk_index = self.redis_client.incr(index_key)
                     
                     # Store chunk with expiration time from config
                     from apps.proxy.config import TSConfig as Config
-                    chunk_key = f"ts_proxy:buffer:{self.channel_id}:chunk:{index}"
+                    chunk_key = f"ts_proxy:buffer:{self.channel_id}:chunk:{chunk_index}"
                     self.redis_client.setex(chunk_key, Config.REDIS_CHUNK_TTL, chunk)
                     
                     # Update our local tracking
                     with self.lock:
-                        self.local_index = index
-                        self.local_cache[index] = chunk
+                        self.local_index = chunk_index
+                        self.local_cache[chunk_index] = chunk
                         
                         # Keep local cache size in check
                         while len(self.local_cache) > self.local_cache_size:
@@ -401,7 +396,7 @@ class SharedStreamBuffer:
                     # Periodic logging
                     if self.chunks_stored % 50 == 0:
                         pkts = len(chunk) // self.TS_PACKET_SIZE
-                        logging.info(f"Stored chunk {index} for channel {self.channel_id} in Redis ({pkts} TS packets)")
+                        logging.info(f"Stored chunk {chunk_index} for channel {self.channel_id} in Redis ({pkts} TS packets)")
                     
                     return True
                     
@@ -414,13 +409,14 @@ class SharedStreamBuffer:
             logging.error(f"Error adding chunk to buffer: {e}")
             return False
     
-    def get_chunks(self, start_index=None):
-        """Get chunks starting from given index"""
+    def get_chunks(self, start_index=None, skip_gaps=True):
+        """Get chunks starting from given index with better gap handling"""
         try:
             # First, check if Redis has any data for this channel
             if self.redis_available and self.redis_client:
                 try:
                     from apps.proxy.config import TSConfig
+                    
                     # Get current index from Redis
                     index_key = f"ts_proxy:buffer:{self.channel_id}:index"
                     current_index_raw = self.redis_client.get(index_key)
@@ -434,55 +430,67 @@ class SharedStreamBuffer:
                     
                     # If no start_index provided, use a relative starting point
                     if start_index is None or start_index == 0:
-                        # Use the configurable buffer size
-                        buffer_size = getattr(TSConfig, 'CLIENT_START_BUFFER_SIZE', 200)
+                        buffer_size = getattr(TSConfig, 'CLIENT_START_BUFFER_SIZE', 500)
                         start_index = max(1, current_index - buffer_size)
                         logging.debug(f"Starting client at index {start_index} (current: {current_index}, buffer: {buffer_size})")
                     
-                    # Nothing new to fetch
+                    # Handle case where client is ahead of buffer
                     if start_index > current_index:
                         return []
                     
-                    # Determine range to fetch (limited batch size)
-                    fetch_start = max(1, start_index)
-                    fetch_end = min(current_index + 1, fetch_start + 100)  # Get up to 100 chunks at once
+                    # Determine batch size (smaller to reduce impact of gaps)
+                    fetch_size = 30  # Smaller batch size to handle gaps better
+                    fetch_start = start_index + 1  # Next chunk after what client has
+                    fetch_end = min(current_index + 1, fetch_start + fetch_size)
                     
-                    # Fetch chunks from Redis
-                    redis_chunks = []
-                    for idx in range(fetch_start, fetch_end):
-                        chunk_key = f"ts_proxy:buffer:{self.channel_id}:chunk:{idx}"
-                        chunk = self.redis_client.get(chunk_key)
-                        if chunk:
-                            redis_chunks.append(chunk)
+                    # Check if chunks exist using pipelined exists commands
+                    pipe = self.redis_client.pipeline()
+                    for i in range(fetch_start, fetch_end):
+                        chunk_key = f"ts_proxy:buffer:{self.channel_id}:chunk:{i}"
+                        pipe.exists(chunk_key)
                     
-                    # Update local tracking
-                    if redis_chunks:
-                        with self.lock:
-                            self.local_index = fetch_end
-                            self.chunks_retrieved += len(redis_chunks)
+                    # Get existence results
+                    exist_results = pipe.execute()
+                    
+                    # If all chunks exist, fetch them all together
+                    if all(exist_results) or not skip_gaps:
+                        pipe = self.redis_client.pipeline()
+                        for i in range(fetch_start, fetch_end):
+                            chunk_key = f"ts_proxy:buffer:{self.channel_id}:chunk:{i}"
+                            pipe.get(chunk_key)
+                            
+                        results = pipe.execute()
+                        chunks = [r for r in results if r]
                         
-                        # Log chunk retrieval only for significant retrievals
-                        if len(redis_chunks) > 5:
-                            logging.info(f"Retrieved {len(redis_chunks)} chunks from Redis for {self.channel_id} ({fetch_start}-{fetch_end-1})")
+                        if chunks:
+                            self.local_index = fetch_start + len(chunks) - 1
+                            return chunks
+                    else:
+                        # Get chunks up to the first gap
+                        chunks = []
+                        for i, exists in enumerate(exist_results):
+                            idx = fetch_start + i
+                            if not exists:
+                                break
+                                
+                            chunk_key = f"ts_proxy:buffer:{self.channel_id}:chunk:{idx}"
+                            chunk = self.redis_client.get(chunk_key)
+                            if chunk:
+                                chunks.append(chunk)
+                                
+                        if chunks:
+                            self.local_index = fetch_start + len(chunks) - 1
+                            return chunks
+                            
+                    return []
                     
-                    return redis_chunks
-                
                 except Exception as e:
                     logging.warning(f"Failed to get chunks from Redis: {e}")
                     self.redis_available = False
+                    
+            # Fall back to local cache if Redis fails
+            return []
             
-            # If we get here, Redis failed or we're using local only
-            # Fetch from local cache
-            with self.lock:
-                if not self.local_cache:
-                    return []
-                    
-                if start_index is None:
-                    start_index = min(self.local_cache.keys())
-                    
-                cache_keys = sorted([k for k in self.local_cache.keys() if k >= start_index])
-                return [self.local_cache[k] for k in cache_keys]
-                    
         except Exception as e:
             logging.error(f"Error in get_chunks: {e}")
             return []

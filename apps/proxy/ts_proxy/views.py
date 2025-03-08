@@ -481,7 +481,7 @@ def initialize_with_lock(channel_id, url, worker_pid):
         proxy_server.initialize_channel(url, channel_id)
 
 def create_streaming_response(channel_id, is_origin_worker):
-    """Create the streaming response with optimized delivery"""
+    """Create the streaming response with improved gap handling"""
     def generate():
         client_id = id(threading.current_thread())
         
@@ -503,29 +503,29 @@ def create_streaming_response(channel_id, is_origin_worker):
                 logger.error(f"No buffer found for channel {channel_id}")
                 return
                 
-            # Set up streaming variables - MOVED EARLIER
-            local_index = None  # Start from dynamic position
+            # Set up streaming variables
+            local_index = None
             empty_reads = 0
             last_data_time = time.time()
             has_sent_data = False
+            gap_detected = False
+            gap_start_time = 0
+            max_gap_wait = 0.5  # Wait max 0.5s for a missing chunk before skipping
             
             # Pre-buffer phase
-            # Try to load a good amount of data before starting streaming
-            from apps.proxy.config import TSConfig as Config
-            initial_burst_size = Config.CLIENT_INITIAL_BURST_SIZE
+            initial_burst_size = 1024 * 1024  # 1MB initial burst
             
             # Pre-buffer initial data
             initial_chunks = []
             if local_index is None:
-                # Pre-fill with existing data from buffer
                 pre_buffer_start = time.time()
-                while time.time() - pre_buffer_start < 2.0:  # Wait max 2 seconds for pre-buffer
-                    chunks = buffer.get_chunks(local_index)
+                while time.time() - pre_buffer_start < 2.0:
+                    chunks = buffer.get_chunks(local_index, skip_gaps=False)
                     if chunks:
                         initial_chunks.extend(chunks)
                         local_index = buffer.local_index
                         if sum(len(c) for c in initial_chunks) >= initial_burst_size // 2:
-                            break  # Got enough data to start
+                            break
                     else:
                         time.sleep(0.1)
                 
@@ -534,23 +534,15 @@ def create_streaming_response(channel_id, is_origin_worker):
                 else:
                     logger.warning(f"Failed to pre-buffer any data for {channel_id}")
             
-            # Send any pre-buffered chunks first - filtered to ensure packet alignment
-            filtered_chunks = []
+            # Send pre-buffered chunks
             for chunk in initial_chunks:
-                if len(chunk) % 188 == 0:  # Ensure proper TS alignment
-                    filtered_chunks.append(chunk)
-            
-            # Only send initial burst if we have enough aligned data
-            if filtered_chunks:
-                for chunk in filtered_chunks:
+                if len(chunk) % 188 == 0 and len(chunk) > 0:
                     yield chunk
             
-            # Rest of the function continues...
-            data_sent = sum(len(c) for c in filtered_chunks)
-            burst_mode = True
+            # Main streaming loop
             while True:
                 try:
-                    # Check if the channel is still active
+                    # Check if channel is active
                     if is_origin_worker and channel_id not in proxy_server.stream_managers:
                         break
                     elif not is_origin_worker:
@@ -558,50 +550,69 @@ def create_streaming_response(channel_id, is_origin_worker):
                         if not active:
                             break
                     
-                    # Get more chunks
-                    chunks = buffer.get_chunks(local_index)
-                    
-                    if chunks:
-                        # Reset empty counter
-                        empty_reads = 0
-                        last_data_time = time.time()
-                        has_sent_data = True
-                        
-                        for chunk in chunks:
-                            # Verify chunk is valid before sending
-                            if len(chunk) % 188 == 0 and len(chunk) > 0:
-                                yield chunk
-                                data_sent += len(chunk)
-                        
-                        # Update local index
-                        local_index = buffer.local_index
-                        
-                        # If we're still in burst mode and have sent enough data,
-                        # switch to regular mode and add a small delay for rate limiting
-                        if burst_mode and data_sent >= initial_burst_size:
-                            burst_mode = False
-                            # Small delay after initial burst to pace delivery
-                            time.sleep(0.1)
+                    # Use different strategies depending on state
+                    if gap_detected:
+                        # We're waiting for a gap to resolve
+                        if time.time() - gap_start_time > max_gap_wait:
+                            # Gap timeout - skip this chunk
+                            logger.debug(f"Skipping missing chunk(s) after {max_gap_wait}s wait")
+                            local_index += 1  # Skip to next chunk
+                            gap_detected = False
+                        else:
+                            # Try get the specific chunk
+                            chunk_key = f"ts_proxy:buffer:{channel_id}:chunk:{local_index + 1}"
+                            chunk = redis_client.get(chunk_key)
+                            if chunk:
+                                # Found it!
+                                if len(chunk) % 188 == 0 and len(chunk) > 0:
+                                    yield chunk
+                                local_index += 1
+                                gap_detected = False
+                                empty_reads = 0
+                                last_data_time = time.time()
+                            else:
+                                # Still waiting
+                                time.sleep(0.05)
                     else:
-                        # No data available right now
-                        empty_reads += 1
+                        # Normal mode - get next chunk batch
+                        chunks = buffer.get_chunks(local_index)
                         
-                        # Different timeouts for before/after first data
-                        timeout = 30 if not has_sent_data else 10
-                        
-                        if empty_reads > 150 or (time.time() - last_data_time > timeout):
-                            logger.warning(f"No data received for channel {channel_id} for too long")
-                            break
+                        if chunks:
+                            # Reset counters
+                            empty_reads = 0
+                            last_data_time = time.time()
+                            has_sent_data = True
                             
-                        # Small sleep to prevent tight loops
-                        time.sleep(0.1)
-                        
+                            # Process chunks
+                            for chunk in chunks:
+                                if len(chunk) % 188 == 0 and len(chunk) > 0:
+                                    yield chunk
+                            
+                            # Did we get the expected number of chunks?
+                            if buffer.local_index > local_index + len(chunks):
+                                # There's a gap - set gap detection mode
+                                gap_detected = True
+                                gap_start_time = time.time()
+                                local_index += len(chunks)
+                            else:
+                                # Normal update
+                                local_index = buffer.local_index
+                        else:
+                            # Normal empty read handling
+                            empty_reads += 1
+                            timeout = 30 if not has_sent_data else 10
+                            
+                            if empty_reads > 50 or (time.time() - last_data_time > timeout):
+                                logger.warning(f"No data for channel {channel_id} for too long")
+                                break
+                                
+                            # Prevent CPU spinning
+                            time.sleep(0.1)
+                            
                 except Exception as e:
-                    logger.error(f"Error in streaming loop: {e}")
+                    logger.error(f"Streaming error: {e}")
                     break
                     
-        except Exception as e:
-            logger.error(f"Streaming error: {e}")
         finally:
             # Cleanup
             if is_origin_worker and channel_id in proxy_server.client_managers:

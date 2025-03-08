@@ -99,3 +99,15 @@ class TSConfig(BaseConfig):
     # Number of recent chunks to keep in local worker memory
     # Higher values reduce Redis load but use more RAM per worker
     LOCAL_CACHE_SIZE = 10
+    
+    # How long to wait for a missing chunk before skipping
+    MISSING_CHUNK_MAX_WAIT = 2.0
+    
+    # Maximum empty reads before terminating stream
+    MAX_EMPTY_READS = 100
+    
+    # How many recent chunks to check when skipping missing ones
+    SKIP_CHUNK_SEARCH_RANGE = 50
+    
+    # Don't log every missing chunk, only significant ones
+    LOG_MISSING_CHUNK_THRESHOLD = 20
