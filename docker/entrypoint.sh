@@ -94,16 +94,9 @@ if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
 
 else
     echo "🚀 Starting nginx..."
-    # Set default NGINX_PORT if not already set
-    export NGINX_PORT=${NGINX_PORT:-9191}
-    echo "Configuring nginx to listen on port $NGINX_PORT"
-
-    # Process nginx.conf using environment variables
-    envsubst '$NGINX_PORT' < /app/docker/nginx.conf > /etc/nginx/conf.d/default.conf
-
     nginx
     nginx_pid=$(pgrep nginx | sort  | head -n1)
-    echo "✅ nginx started with PID $nginx_pid on port $NGINX_PORT"
+    echo "✅ nginx started with PID $nginx_pid"
     pids+=("$nginx_pid")
 fi
 
