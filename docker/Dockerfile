@@ -14,20 +14,20 @@ ENV PATH="/dispatcharrpy/bin:$PATH" \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential \
-        curl \
-        gcc \
-        git \
-        libpcre3 \
-        libpcre3-dev \
-        python3-dev \
-        wget && \
+    build-essential \
+    curl \
+    gcc \
+    git \
+    libpcre3 \
+    libpcre3-dev \
+    python3-dev \
+    wget && \
     echo "=== setting up nodejs ===" && \
     curl -sL https://deb.nodesource.com/setup_23.x -o /tmp/nodesource_setup.sh && \
     bash /tmp/nodesource_setup.sh && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        nodejs && \
+    nodejs && \
     python -m pip install virtualenv && \
     virtualenv /dispatcharrpy && \
     git clone -b ${BRANCH} ${REPO_URL} /app && \
@@ -55,16 +55,17 @@ COPY --from=builder /app /app
 # Install base dependencies with memory optimization
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        curl \
-        ffmpeg \
-        libpcre3 \
-        libpq-dev \
-        nginx \
-        procps \
-        streamlink \
-        wget \
-        gnupg2 \
-        lsb-release && \
+    curl \
+    ffmpeg \
+    libpcre3 \
+    libpq-dev \
+    nginx \
+    procps \
+    streamlink \
+    wget \
+    gnupg2 \
+    gettext-base \
+    lsb-release && \
     cp /app/docker/nginx.conf /etc/nginx/sites-enabled/default && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
