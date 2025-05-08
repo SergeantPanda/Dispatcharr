@@ -4,10 +4,11 @@ FROM sergeantpanda/dispatcharr:base AS base
 # --- Build frontend ---
 FROM node:20 AS frontend-builder
 WORKDIR /app
-COPY . /app
+COPY --from=base /app /app
+WORKDIR /app/frontend
 RUN corepack enable && corepack prepare yarn@stable --activate && \
-    cd frontend && yarn install && yarn build && \
-    rm -rf frontend/node_modules frontend/.cache
+    yarn install && yarn build && \
+    rm -rf node_modules .cache
 
 # --- Final image based on the base ---
 FROM sergeantpanda/dispatcharr:base AS final
