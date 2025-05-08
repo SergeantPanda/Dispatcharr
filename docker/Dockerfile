@@ -19,6 +19,8 @@ WORKDIR /app
 COPY . /app
 # Copy nginx configuration
 COPY ./docker/nginx.conf /etc/nginx/sites-enabled/default
+# Clean out existing frontend folder
+RUN rm -rf /app/frontend
 # Copy built frontend assets
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
