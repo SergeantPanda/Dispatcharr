@@ -1,0 +1,46 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV VIRTUAL_ENV=/dispatcharrpy
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# --- Install system-level base dependencies ---
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa
+
+
+RUN apt-get update && apt install -y \
+    curl wget gnupg2 ca-certificates lsb-release build-essential \
+    gcc libpcre3 libpcre3-dev libpq-dev procps streamlink \
+    libva-drm2 libva-x11-2 libva-dev libva-wayland2 \
+    i965-va-driver intel-media-va-driver mesa-va-drivers \
+    python3.13 python3.13-dev python3.13-venv python3-pip \
+    nginx \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- Create Python virtual environment ---
+RUN python3.13 -m venv $VIRTUAL_ENV && $VIRTUAL_ENV/bin/pip install --upgrade pip
+
+# --- Install Python dependencies ---
+COPY requirements.txt /tmp/requirements.txt
+RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+
+# --- Add FFmpeg binaries from lscr.io/linuxserver/ffmpeg ---
+COPY --from=lscr.io/linuxserver/ffmpeg:latest /usr/local/bin/ffmpeg /usr/local/bin/
+COPY --from=lscr.io/linuxserver/ffmpeg:latest /usr/local/bin/ffprobe /usr/local/bin/
+COPY --from=lscr.io/linuxserver/ffmpeg:latest /usr/local/lib/ /usr/local/lib/
+
+# --- Set up Redis 7.x ---
+RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | \
+    tee /etc/apt/sources.list.d/redis.list && \
+    apt-get update && apt-get install -y redis-server && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- Set up PostgreSQL 14.x ---
+RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | \
+    tee /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && apt-get install -y postgresql-14 postgresql-contrib-14 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
