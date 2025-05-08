@@ -35,4 +35,4 @@ RUN if [ -n "$TIMESTAMP" ]; then \
     cat /app/version.py; \
     fi
 
-CMD ["/app/docker/entrypoint.sh"]
+ENTRYPOINT ["/app/docker/entrypoint.sh"]

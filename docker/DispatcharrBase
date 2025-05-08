@@ -1,4 +1,5 @@
-FROM ubuntu:24.04
+# --- Stage 1: Get FFmpeg from lscr.io ---
+FROM lscr.io/linuxserver/ffmpeg:latest AS ffmpeg
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV VIRTUAL_ENV=/dispatcharrpy
@@ -10,13 +11,15 @@ RUN apt-get update && apt-get install -y \
     && add-apt-repository -y ppa:deadsnakes/ppa
 
 
-RUN apt-get update && apt install -y \
+RUN apt-get install -y \
     curl wget gnupg2 ca-certificates lsb-release build-essential \
     gcc libpcre3 libpcre3-dev libpq-dev procps streamlink \
     libva-drm2 libva-x11-2 libva-dev libva-wayland2 \
     i965-va-driver intel-media-va-driver mesa-va-drivers \
     python3.13 python3.13-dev python3.13-venv python3-pip \
-    nginx \
+    libstdc++6 libglib2.0-0 libgomp1 libvdpau1 libva2 \
+    libxcb-shape0 libv4l-0 ocl-icd-libopencl1 \
+    alsa-base libasound2t64 nginx \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- Create Python virtual environment ---
@@ -25,11 +28,6 @@ RUN python3.13 -m venv $VIRTUAL_ENV && $VIRTUAL_ENV/bin/pip install --upgrade pi
 # --- Install Python dependencies ---
 COPY requirements.txt /tmp/requirements.txt
 RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
-
-# --- Add FFmpeg binaries from lscr.io/linuxserver/ffmpeg ---
-COPY --from=lscr.io/linuxserver/ffmpeg:latest /usr/local/bin/ffmpeg /usr/local/bin/
-COPY --from=lscr.io/linuxserver/ffmpeg:latest /usr/local/bin/ffprobe /usr/local/bin/
-COPY --from=lscr.io/linuxserver/ffmpeg:latest /usr/local/lib/ /usr/local/lib/
 
 # --- Set up Redis 7.x ---
 RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg && \
