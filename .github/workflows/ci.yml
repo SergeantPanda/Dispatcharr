@@ -101,6 +101,8 @@ jobs:
             ghcr.io/${{ steps.meta.outputs.repo_owner }}/${{ steps.meta.outputs.repo_name }}:${{ steps.version.outputs.version }}-${{ steps.timestamp.outputs.timestamp }}
             ghcr.io/${{ steps.meta.outputs.repo_owner }}/${{ steps.meta.outputs.repo_name }}:${{ steps.version.outputs.sha_short }}
           build-args: |
+            REPO_OWNER=${{ steps.meta.outputs.repo_owner }}
+            REPO_NAME=${{ steps.meta.outputs.repo_name }}
             BRANCH=${{ github.ref_name }}
             REPO_URL=https://github.com/${{ github.repository }}
             TIMESTAMP=${{ steps.timestamp.outputs.timestamp }}

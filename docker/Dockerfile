@@ -6,8 +6,13 @@ RUN corepack enable && corepack prepare yarn@stable --activate && \
     yarn install && yarn build && \
     rm -rf node_modules .cache
 
-# --- Final image based on the base ---
-FROM sergeantpanda/dispatcharr:base AS final
+# --- Define base image build arguments ---
+ARG REPO_OWNER=dispatcharr
+ARG REPO_NAME=dispatcharr
+ARG BASE_TAG=base
+
+# --- Final image based on the dynamic base ---
+FROM ghcr.io/${REPO_OWNER}/${REPO_NAME}:${BASE_TAG} AS final
 ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 WORKDIR /app
