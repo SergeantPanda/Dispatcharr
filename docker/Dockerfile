@@ -1,6 +1,3 @@
-# Base image with Python, Redis, PostgreSQL, FFmpeg, Nginx
-FROM sergeantpanda/dispatcharr:base AS base
-
 # --- Build frontend ---
 FROM node:20 AS frontend-builder
 WORKDIR /app/frontend
