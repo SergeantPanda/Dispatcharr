@@ -3,9 +3,8 @@ FROM sergeantpanda/dispatcharr:base AS base
 
 # --- Build frontend ---
 FROM node:20 AS frontend-builder
-WORKDIR /app
-COPY --from=base /app /app
 WORKDIR /app/frontend
+COPY ./frontend /app/frontend
 RUN corepack enable && corepack prepare yarn@stable --activate && \
     yarn install && yarn build && \
     rm -rf node_modules .cache
