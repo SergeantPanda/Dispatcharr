@@ -17,10 +17,19 @@ WORKDIR /app
 
 # Copy application code
 COPY . /app
+# Copy nginx configuration
+COPY ./docker/nginx.conf /etc/nginx/sites-enabled/default
 # Copy built frontend assets
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 # Run Django collectstatic
 RUN python manage.py collectstatic --noinput
+
+# Update version.py with build timestamp if provided
+RUN if [ -n "$TIMESTAMP" ]; then \
+    echo "Updating timestamp to ${TIMESTAMP} in version.py" && \
+    sed -i "s|__timestamp__ = None.*|__timestamp__ = '${TIMESTAMP}'    # Set during CI/CD build process|" /app/version.py && \
+    cat /app/version.py; \
+    fi
 
 CMD ["/app/docker/entrypoint.sh"]
