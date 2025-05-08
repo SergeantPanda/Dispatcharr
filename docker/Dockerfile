@@ -25,6 +25,9 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 # Run Django collectstatic
 RUN python manage.py collectstatic --noinput
 
+# Add timestamp argument
+ARG TIMESTAMP
+
 # Update version.py with build timestamp if provided
 RUN if [ -n "$TIMESTAMP" ]; then \
     echo "Updating timestamp to ${TIMESTAMP} in version.py" && \
