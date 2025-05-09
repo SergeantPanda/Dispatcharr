@@ -1,3 +1,8 @@
+# Define base image build arguments (must be before any FROM)
+ARG REPO_OWNER=dispatcharr
+ARG REPO_NAME=dispatcharr
+ARG BASE_TAG=base
+
 # --- Build frontend ---
 FROM node:20 AS frontend-builder
 WORKDIR /app/frontend
