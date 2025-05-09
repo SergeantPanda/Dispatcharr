@@ -6,10 +6,10 @@ RUN corepack enable && corepack prepare yarn@stable --activate && \
     yarn install && yarn build && \
     rm -rf node_modules .cache
 
-# --- Define base image build arguments ---
-ARG REPO_OWNER=dispatcharr
-ARG REPO_NAME=dispatcharr
-ARG BASE_TAG=base
+# --- Redeclare build arguments for the next stage ---
+ARG REPO_OWNER
+ARG REPO_NAME
+ARG BASE_TAG
 
 # --- Final image based on the dynamic base ---
 FROM ghcr.io/${REPO_OWNER}/${REPO_NAME}:${BASE_TAG} AS final

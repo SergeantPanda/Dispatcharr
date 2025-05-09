@@ -103,6 +103,7 @@ jobs:
           build-args: |
             REPO_OWNER=${{ steps.meta.outputs.repo_owner }}
             REPO_NAME=${{ steps.meta.outputs.repo_name }}
+            BASE_TAG=base
             BRANCH=${{ github.ref_name }}
             REPO_URL=https://github.com/${{ github.repository }}
             TIMESTAMP=${{ steps.timestamp.outputs.timestamp }}
