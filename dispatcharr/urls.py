@@ -53,6 +53,9 @@ urlpatterns = [
     # Optionally, serve the raw Swagger JSON
     path('swagger.json', schema_view.without_ui(cache_timeout=0), name='schema-json'),
 
+    # Images
+    path('images/', include('apps.images.urls', namespace='images')),
+
     # Catch-all routes should always be last
     path('', TemplateView.as_view(template_name='index.html')),  # React entry point
     path('<path:unused_path>', TemplateView.as_view(template_name='index.html')),

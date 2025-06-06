@@ -1,11 +1,12 @@
 from django.http import HttpResponse
 from django.urls import reverse
-from apps.channels.models import Channel, ChannelProfile
+from apps.channels.models import Channel, ChannelProfile, Logo
 from apps.epg.models import ProgramData
 from django.utils import timezone
 from datetime import datetime, timedelta
 import re
 import html  # Add this import for XML escaping
+import hashlib  # Add this import for hashing
 
 def generate_m3u(request, profile_name=None):
     """
@@ -391,7 +392,21 @@ def generate_epg(request, profile_name=None):
 
                         # Add icon if available
                         if 'icon' in custom_data:
-                            xml_lines.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
+                            icon_url = custom_data["icon"]
+
+                            if use_cached_logos and icon_url.startswith(('http://', 'https://')):
+                                # Hash the URL to create a cache key
+                                url_hash = hashlib.md5(icon_url.encode()).hexdigest()
+
+                                # Create a cached URL that nginx can intercept and handle
+                                cached_icon = request.build_absolute_uri(
+                                    reverse('images:proxy', args=[url_hash])
+                                ) + f"?url={html.escape(icon_url)}"
+                            else:
+                                # When caching is disabled, use the direct URL
+                                cached_icon = icon_url
+
+                            xml_lines.append(f'    <icon src="{html.escape(cached_icon)}" />')
 
                         # Add special flags as proper tags
                         if custom_data.get('previously_shown', False):
