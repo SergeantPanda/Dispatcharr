@@ -18,9 +18,10 @@ def generate_m3u(request, profile_name=None):
     The stream URL now points to the new stream_view that uses StreamProfile.
     Supports both GET and POST methods for compatibility with IPTVSmarters.
     """
-    # Check if this is a POST request with data (which we don't want to allow)
+    # Check if this is a POST request and the body is not empty (which we don't want to allow)
     if request.method == "POST" and request.body:
-        return HttpResponseForbidden("POST requests with content are not allowed")
+        if request.body.decode() != '{}':
+            return HttpResponseForbidden("POST requests with body are not allowed, body is: {}".format(request.body.decode()))
 
     if profile_name is not None:
         channel_profile = ChannelProfile.objects.get(name=profile_name)
