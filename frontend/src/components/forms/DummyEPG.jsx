@@ -37,6 +37,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     useState('');
   const [endedTitleTemplate, setEndedTitleTemplate] = useState('');
   const [endedDescriptionTemplate, setEndedDescriptionTemplate] = useState('');
+  const [channelLogoUrl, setChannelLogoUrl] = useState('');
+  const [programPosterUrl, setProgramPosterUrl] = useState('');
   const [timezoneOptions, setTimezoneOptions] = useState([]);
   const [loadingTimezones, setLoadingTimezones] = useState(true);
 
@@ -59,6 +61,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
         upcoming_description_template: '',
         ended_title_template: '',
         ended_description_template: '',
+        channel_logo_url: '',
+        program_poster_url: '',
         name_source: 'channel',
         stream_index: 1,
         category: '',
@@ -107,6 +111,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       formattedUpcomingDescription: '',
       formattedEndedTitle: '',
       formattedEndedDescription: '',
+      formattedChannelLogoUrl: '',
+      formattedProgramPosterUrl: '',
       error: null,
     };
 
@@ -165,6 +171,21 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       ...result.timeGroups,
       ...result.dateGroups,
     };
+
+    // Add normalized versions of all groups for cleaner URLs
+    // These remove all non-alphanumeric characters and convert to lowercase
+    Object.keys(allGroups).forEach((key) => {
+      const value = allGroups[key];
+      if (value) {
+        // Remove all non-alphanumeric characters (except spaces temporarily)
+        // then replace spaces with nothing, and convert to lowercase
+        const normalized = String(value)
+          .replace(/[^a-zA-Z0-9\s]/g, '')
+          .replace(/\s+/g, '')
+          .toLowerCase();
+        allGroups[`${key}_normalize`] = normalized;
+      }
+    });
 
     // Calculate formatted time strings if time was extracted
     if (result.timeGroups.hour) {
@@ -305,6 +326,30 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       );
     }
 
+    // Format channel logo URL
+    if (channelLogoUrl && (result.titleMatch || result.timeMatch)) {
+      result.formattedChannelLogoUrl = channelLogoUrl.replace(
+        /\{(\w+)\}/g,
+        (match, key) => {
+          const value = allGroups[key];
+          // URL encode the value to handle spaces and special characters
+          return value ? encodeURIComponent(String(value)) : match;
+        }
+      );
+    }
+
+    // Format program poster URL
+    if (programPosterUrl && (result.titleMatch || result.timeMatch)) {
+      result.formattedProgramPosterUrl = programPosterUrl.replace(
+        /\{(\w+)\}/g,
+        (match, key) => {
+          const value = allGroups[key];
+          // URL encode the value to handle spaces and special characters
+          return value ? encodeURIComponent(String(value)) : match;
+        }
+      );
+    }
+
     return result;
   }, [
     titlePattern,
@@ -317,6 +362,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     upcomingDescriptionTemplate,
     endedTitleTemplate,
     endedDescriptionTemplate,
+    channelLogoUrl,
+    programPosterUrl,
     form.values.custom_properties?.timezone,
     form.values.custom_properties?.output_timezone,
   ]);
@@ -347,6 +394,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             custom.upcoming_description_template || '',
           ended_title_template: custom.ended_title_template || '',
           ended_description_template: custom.ended_description_template || '',
+          channel_logo_url: custom.channel_logo_url || '',
+          program_poster_url: custom.program_poster_url || '',
           name_source: custom.name_source || 'channel',
           stream_index: custom.stream_index || 1,
           category: custom.category || '',
@@ -368,6 +417,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       );
       setEndedTitleTemplate(custom.ended_title_template || '');
       setEndedDescriptionTemplate(custom.ended_description_template || '');
+      setChannelLogoUrl(custom.channel_logo_url || '');
+      setProgramPosterUrl(custom.program_poster_url || '');
     } else {
       form.reset();
       setTitlePattern('');
@@ -380,6 +431,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       setUpcomingDescriptionTemplate('');
       setEndedTitleTemplate('');
       setEndedDescriptionTemplate('');
+      setChannelLogoUrl('');
+      setProgramPosterUrl('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [epg]);
@@ -544,7 +597,9 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
 
           <Text size="sm" c="dimmed">
             Use extracted groups from your patterns to format EPG titles and
-            descriptions. Reference groups using {'{groupname}'} syntax.
+            descriptions. Reference groups using {'{groupname}'} syntax. For
+            cleaner URLs, use {'{groupname_normalize}'} to get alphanumeric-only
+            lowercase versions.
           </Text>
 
           <TextInput
@@ -701,6 +756,30 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             description="EPG categories for these programs. Use commas to separate multiple (e.g., Sports, Live, HD). Note: Only added to the main event, not upcoming/ended filler programs."
             placeholder="Sports, Live"
             {...form.getInputProps('custom_properties.category')}
+          />
+
+          <TextInput
+            label="Channel Logo URL (Optional)"
+            description="Build a URL for the channel logo using regex groups. Example: https://example.com/logos/{league_normalize}/{team1_normalize}.png. Use {groupname_normalize} for cleaner URLs (alphanumeric-only, lowercase). This will be used as the channel <icon> in the EPG output."
+            placeholder="https://example.com/logos/{league_normalize}/{team1_normalize}.png"
+            value={channelLogoUrl}
+            onChange={(e) => {
+              const value = e.target.value;
+              setChannelLogoUrl(value);
+              form.setFieldValue('custom_properties.channel_logo_url', value);
+            }}
+          />
+
+          <TextInput
+            label="Program Poster URL (Optional)"
+            description="Build a URL for the program poster/icon using regex groups. Example: https://example.com/posters/{team1_normalize}-vs-{team2_normalize}.jpg. Use {groupname_normalize} for cleaner URLs (alphanumeric-only, lowercase). This will be used as the program <icon> in the EPG output."
+            placeholder="https://example.com/posters/{team1_normalize}-vs-{team2_normalize}.jpg"
+            value={programPosterUrl}
+            onChange={(e) => {
+              const value = e.target.value;
+              setProgramPosterUrl(value);
+              form.setFieldValue('custom_properties.program_poster_url', value);
+            }}
           />
 
           <Checkbox
@@ -973,12 +1052,46 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                       </>
                     )}
 
+                    {channelLogoUrl && (
+                      <>
+                        <Text size="xs" c="dimmed" mt="md">
+                          Channel Logo URL:
+                        </Text>
+                        <Text
+                          size="sm"
+                          fw={500}
+                          style={{ wordBreak: 'break-all' }}
+                        >
+                          {patternValidation.formattedChannelLogoUrl ||
+                            '(no matching groups)'}
+                        </Text>
+                      </>
+                    )}
+
+                    {programPosterUrl && (
+                      <>
+                        <Text size="xs" c="dimmed" mt="xs">
+                          Program Poster URL:
+                        </Text>
+                        <Text
+                          size="sm"
+                          fw={500}
+                          style={{ wordBreak: 'break-all' }}
+                        >
+                          {patternValidation.formattedProgramPosterUrl ||
+                            '(no matching groups)'}
+                        </Text>
+                      </>
+                    )}
+
                     {!titleTemplate &&
                       !descriptionTemplate &&
                       !upcomingTitleTemplate &&
                       !upcomingDescriptionTemplate &&
                       !endedTitleTemplate &&
-                      !endedDescriptionTemplate && (
+                      !endedDescriptionTemplate &&
+                      !channelLogoUrl &&
+                      !programPosterUrl && (
                         <Text size="xs" c="dimmed" fs="italic">
                           Add title or description templates above to see
                           formatted output preview
