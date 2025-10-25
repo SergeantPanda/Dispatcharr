@@ -356,6 +356,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
     categories = [cat.strip() for cat in category_string.split(',') if cat.strip()] if category_string else []
     include_date = custom_properties.get('include_date', True)
     include_live = custom_properties.get('include_live', False)
+    include_new = custom_properties.get('include_new', False)
 
     # Parse timezone name
     try:
@@ -749,6 +750,10 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                 if include_live:
                     main_event_custom_properties['live'] = True
 
+                # Add new flag if requested
+                if include_new:
+                    main_event_custom_properties['new'] = True
+
                 # Add program poster URL if provided
                 if program_poster_url:
                     main_event_custom_properties['icon'] = program_poster_url
@@ -912,6 +917,10 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                 if include_live:
                     program_custom_properties['live'] = True
 
+                # Add new flag if requested
+                if include_new:
+                    program_custom_properties['new'] = True
+
                 # Add program poster URL if provided
                 if program_poster_url:
                     program_custom_properties['icon'] = program_poster_url
@@ -977,6 +986,10 @@ def generate_dummy_epg(
         # Live tag
         if custom_data.get('live', False):
             xml_lines.append(f"    <live />")
+
+        # New tag
+        if custom_data.get('new', False):
+            xml_lines.append(f"    <new />")
 
         xml_lines.append(f"  </programme>")
 
@@ -1232,6 +1245,10 @@ def generate_epg(request, profile_name=None, user=None):
                     if custom_data.get('live', False):
                         yield f"    <live />\n"
 
+                    # New tag
+                    if custom_data.get('new', False):
+                        yield f"    <new />\n"
+
                     # Icon/poster URL
                     if 'icon' in custom_data:
                         yield f"    <icon src=\"{html.escape(custom_data['icon'])}\" />\n"
@@ -1276,6 +1293,10 @@ def generate_epg(request, profile_name=None, user=None):
                             # Live tag
                             if custom_data.get('live', False):
                                 yield f"    <live />\n"
+
+                            # New tag
+                            if custom_data.get('new', False):
+                                yield f"    <new />\n"
 
                             # Icon/poster URL
                             if 'icon' in custom_data:

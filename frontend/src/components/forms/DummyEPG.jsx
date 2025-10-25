@@ -68,6 +68,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
         category: '',
         include_date: true,
         include_live: false,
+        include_new: false,
       },
     },
     validate: {
@@ -401,6 +402,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           category: custom.category || '',
           include_date: custom.include_date ?? true,
           include_live: custom.include_live ?? false,
+          include_new: custom.include_new ?? false,
         },
       });
 
@@ -794,6 +796,14 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             label="Include Live Tag"
             description="Mark programs as live content with the <live /> tag in EPG output. Note: Only added to the main event, not upcoming/ended filler programs."
             {...form.getInputProps('custom_properties.include_live', {
+              type: 'checkbox',
+            })}
+          />
+
+          <Checkbox
+            label="Include New Tag"
+            description="Mark programs as new content with the <new /> tag in EPG output. Note: Only added to the main event, not upcoming/ended filler programs."
+            {...form.getInputProps('custom_properties.include_new', {
               type: 'checkbox',
             })}
           />
