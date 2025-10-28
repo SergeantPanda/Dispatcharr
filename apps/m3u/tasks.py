@@ -894,6 +894,12 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     for stream_info in batch:
         try:
             name, url = stream_info["name"], stream_info["url"]
+
+            # Validate URL length - maximum of 4096 characters
+            if url and len(url) > 4096:
+                logger.warning(f"Skipping stream '{name}': URL too long ({len(url)} characters, max 4096)")
+                continue
+
             tvg_id, tvg_logo = get_case_insensitive_attr(
                 stream_info["attributes"], "tvg-id", ""
             ), get_case_insensitive_attr(stream_info["attributes"], "tvg-logo", "")
