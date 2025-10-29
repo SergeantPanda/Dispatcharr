@@ -592,6 +592,9 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
         else:
             all_groups['starttime'] = f"{hour_12} {ampm}"
 
+        # Format long version that always includes minutes (e.g., "9:00 PM" instead of "9 PM")
+        all_groups['starttime_long'] = f"{hour_12}:{minute:02d} {ampm}"
+
         # Calculate end time based on program duration
         # Create a datetime for calculations
         temp_start = datetime.now(source_tz).replace(hour=hour_24, minute=minute, second=0, microsecond=0)
@@ -620,6 +623,9 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
             all_groups['endtime'] = f"{end_hour_12}:{end_minute:02d} {end_ampm}"
         else:
             all_groups['endtime'] = f"{end_hour_12} {end_ampm}"
+
+        # Format long version that always includes minutes (e.g., "9:00 PM" instead of "9 PM")
+        all_groups['endtime_long'] = f"{end_hour_12}:{end_minute:02d} {end_ampm}"
 
     # Generate programs
     programs = []

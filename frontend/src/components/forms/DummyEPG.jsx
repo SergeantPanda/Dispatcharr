@@ -246,6 +246,10 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           } else {
             allGroups.starttime = `${hour12} ${ampmDisplay}`;
           }
+
+          // Format long versions that always include minutes
+          allGroups.starttime_long = `${hour12}:${convertedMinute.toString().padStart(2, '0')} ${ampmDisplay}`;
+          allGroups.starttime24_long = `${hour24.toString().padStart(2, '0')}:${convertedMinute.toString().padStart(2, '0')}`;
         } else {
           // No timezone conversion - use original logic
           // Format 24-hour start time string
@@ -270,6 +274,9 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           } else {
             allGroups.starttime = `${hour12} ${ampmDisplay}`;
           }
+
+          // Format long version that always includes minutes
+          allGroups.starttime_long = `${hour12}:${minute.toString().padStart(2, '0')} ${ampmDisplay}`;
         }
 
         // Calculate end time based on program duration
@@ -306,12 +313,17 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           allGroups.endtime = `${endHour12} ${endAmpmDisplay}`;
         }
 
+        // Format long version that always includes minutes
+        allGroups.endtime_long = `${endHour12}:${endMinute.toString().padStart(2, '0')} ${endAmpmDisplay}`;
+
         // Store calculated placeholders for display in preview
         result.calculatedPlaceholders = {
           starttime: allGroups.starttime,
           starttime24: allGroups.starttime24,
+          starttime_long: allGroups.starttime_long,
           endtime: allGroups.endtime,
           endtime24: allGroups.endtime24,
+          endtime_long: allGroups.endtime_long,
         };
       } catch (e) {
         // If parsing fails, leave starttime/endtime as placeholders
