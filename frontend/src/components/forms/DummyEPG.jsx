@@ -106,6 +106,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       titleGroups: {},
       timeGroups: {},
       dateGroups: {},
+      calculatedPlaceholders: {},
       formattedTitle: '',
       formattedDescription: '',
       formattedUpcomingTitle: '',
@@ -223,11 +224,11 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           hour24 = outputDate.hour();
           const convertedMinute = outputDate.minute();
 
-          // Format 24-hour time string with converted time
+          // Format 24-hour start time string with converted time
           if (convertedMinute > 0) {
-            allGroups.time24 = `${hour24.toString().padStart(2, '0')}:${convertedMinute.toString().padStart(2, '0')}`;
+            allGroups.starttime24 = `${hour24.toString().padStart(2, '0')}:${convertedMinute.toString().padStart(2, '0')}`;
           } else {
-            allGroups.time24 = `${hour24.toString().padStart(2, '0')}:00`;
+            allGroups.starttime24 = `${hour24.toString().padStart(2, '0')}:00`;
           }
 
           // Convert to 12-hour format with converted time
@@ -239,19 +240,19 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             hour12 = hour24 - 12;
           }
 
-          // Format 12-hour time string with converted time
+          // Format 12-hour start time string with converted time
           if (convertedMinute > 0) {
-            allGroups.time = `${hour12}:${convertedMinute.toString().padStart(2, '0')} ${ampmDisplay}`;
+            allGroups.starttime = `${hour12}:${convertedMinute.toString().padStart(2, '0')} ${ampmDisplay}`;
           } else {
-            allGroups.time = `${hour12} ${ampmDisplay}`;
+            allGroups.starttime = `${hour12} ${ampmDisplay}`;
           }
         } else {
           // No timezone conversion - use original logic
-          // Format 24-hour time string
+          // Format 24-hour start time string
           if (minute > 0) {
-            allGroups.time24 = `${hour24.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+            allGroups.starttime24 = `${hour24.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
           } else {
-            allGroups.time24 = `${hour24.toString().padStart(2, '0')}:00`;
+            allGroups.starttime24 = `${hour24.toString().padStart(2, '0')}:00`;
           }
 
           // Convert to 12-hour format
@@ -263,15 +264,57 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             hour12 = hour24 - 12;
           }
 
-          // Format 12-hour time string
+          // Format 12-hour start time string
           if (minute > 0) {
-            allGroups.time = `${hour12}:${minute.toString().padStart(2, '0')} ${ampmDisplay}`;
+            allGroups.starttime = `${hour12}:${minute.toString().padStart(2, '0')} ${ampmDisplay}`;
           } else {
-            allGroups.time = `${hour12} ${ampmDisplay}`;
+            allGroups.starttime = `${hour12} ${ampmDisplay}`;
           }
         }
+
+        // Calculate end time based on program duration
+        const programDuration =
+          form.values.custom_properties?.program_duration || 180;
+
+        // Calculate end time by adding duration to start time
+        const startMinutes = hour24 * 60 + minute;
+        const endMinutes = startMinutes + programDuration;
+
+        let endHour24 = Math.floor(endMinutes / 60) % 24; // Wrap around 24 hours
+        const endMinute = endMinutes % 60;
+
+        // Format 24-hour end time string
+        if (endMinute > 0) {
+          allGroups.endtime24 = `${endHour24.toString().padStart(2, '0')}:${endMinute.toString().padStart(2, '0')}`;
+        } else {
+          allGroups.endtime24 = `${endHour24.toString().padStart(2, '0')}:00`;
+        }
+
+        // Convert to 12-hour format for endtime
+        const endAmpmDisplay = endHour24 < 12 ? 'AM' : 'PM';
+        let endHour12 = endHour24;
+        if (endHour24 === 0) {
+          endHour12 = 12;
+        } else if (endHour24 > 12) {
+          endHour12 = endHour24 - 12;
+        }
+
+        // Format 12-hour end time string
+        if (endMinute > 0) {
+          allGroups.endtime = `${endHour12}:${endMinute.toString().padStart(2, '0')} ${endAmpmDisplay}`;
+        } else {
+          allGroups.endtime = `${endHour12} ${endAmpmDisplay}`;
+        }
+
+        // Store calculated placeholders for display in preview
+        result.calculatedPlaceholders = {
+          starttime: allGroups.starttime,
+          starttime24: allGroups.starttime24,
+          endtime: allGroups.endtime,
+          endtime24: allGroups.endtime24,
+        };
       } catch (e) {
-        // If parsing fails, leave time/time24 as placeholders
+        // If parsing fails, leave starttime/endtime as placeholders
         console.error('Error formatting time:', e);
       }
     }
@@ -367,6 +410,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     programPosterUrl,
     form.values.custom_properties?.timezone,
     form.values.custom_properties?.output_timezone,
+    form.values.custom_properties?.program_duration,
   ]);
 
   useEffect(() => {
@@ -608,7 +652,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="title_template"
             name="title_template"
             label="Title Template"
-            description="Format the EPG title using extracted groups. Use {time} (12-hour: '10 PM') or {time24} (24-hour: '22:00'). Example: {league} - {team1} vs {team2} @ {time}"
+            description="Format the EPG title using extracted groups. Use {starttime} (12-hour: '10 PM'), {starttime24} (24-hour: '22:00'), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: {league} - {team1} vs {team2} ({starttime}-{endtime})"
             placeholder="{league} - {team1} vs {team2}"
             value={titleTemplate}
             onChange={(e) => {
@@ -622,8 +666,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="description_template"
             name="description_template"
             label="Description Template"
-            description="Format the EPG description using extracted groups. Use {time} (12-hour) or {time24} (24-hour). Example: Watch {team1} take on {team2} at {time}!"
-            placeholder="Watch {team1} take on {team2} in this exciting {league} matchup at {time}!"
+            description="Format the EPG description using extracted groups. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: Watch {team1} take on {team2} from {starttime} to {endtime}!"
+            placeholder="Watch {team1} take on {team2} in this exciting {league} matchup from {starttime} to {endtime}!"
             minRows={2}
             value={descriptionTemplate}
             onChange={(e) => {
@@ -652,8 +696,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="upcoming_title_template"
             name="upcoming_title_template"
             label="Upcoming Title Template"
-            description="Title for programs before the event starts. Use {time} (12-hour) or {time24} (24-hour). Example: {team1} vs {team2} starting at {time}."
-            placeholder="{team1} vs {team2} starting at {time}."
+            description="Title for programs before the event starts. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: {team1} vs {team2} starting at {starttime}."
+            placeholder="{team1} vs {team2} starting at {starttime}."
             value={upcomingTitleTemplate}
             onChange={(e) => {
               const value = e.target.value;
@@ -669,8 +713,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="upcoming_description_template"
             name="upcoming_description_template"
             label="Upcoming Description Template"
-            description="Description for programs before the event. Use {time} (12-hour) or {time24} (24-hour). Example: Upcoming: Watch the {league} match up where the {team1} take on the {team2} at {time}!"
-            placeholder="Upcoming: Watch the {league} match up where the {team1} take on the {team2} at {time}!"
+            description="Description for programs before the event. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: Upcoming: Watch the {league} match up where the {team1} take on the {team2} from {starttime} to {endtime}!"
+            placeholder="Upcoming: Watch the {league} match up where the {team1} take on the {team2} from {starttime} to {endtime}!"
             minRows={2}
             value={upcomingDescriptionTemplate}
             onChange={(e) => {
@@ -687,8 +731,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="ended_title_template"
             name="ended_title_template"
             label="Ended Title Template"
-            description="Title for programs after the event has ended. Use {time} (12-hour) or {time24} (24-hour). Example: {team1} vs {team2} started at {time}."
-            placeholder="{team1} vs {team2} started at {time}."
+            description="Title for programs after the event has ended. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: {team1} vs {team2} started at {starttime}."
+            placeholder="{team1} vs {team2} started at {starttime}."
             value={endedTitleTemplate}
             onChange={(e) => {
               const value = e.target.value;
@@ -704,8 +748,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="ended_description_template"
             name="ended_description_template"
             label="Ended Description Template"
-            description="Description for programs after the event. Use {time} (12-hour) or {time24} (24-hour). Example: The {league} match between {team1} and {team2} started at {time}."
-            placeholder="The {league} match between {team1} and {team2} started at {time}."
+            description="Description for programs after the event. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: The {league} match between {team1} and {team2} ran from {starttime} to {endtime}."
+            placeholder="The {league} match between {team1} and {team2} ran from {starttime} to {endtime}."
             minRows={2}
             value={endedDescriptionTemplate}
             onChange={(e) => {
@@ -932,6 +976,42 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                     <Text size="sm" c="yellow">
                       Time pattern did not match the sample title
                     </Text>
+                  )}
+
+                {/* Show calculated time placeholders when time is extracted */}
+                {patternValidation.timeMatch &&
+                  Object.keys(patternValidation.calculatedPlaceholders || {})
+                    .length > 0 && (
+                    <Box mt="xs">
+                      <Text size="sm" fw={500} mb={4}>
+                        Available Time Placeholders:
+                      </Text>
+                      <Group spacing="xs" style={{ flexWrap: 'wrap' }}>
+                        {Object.entries(
+                          patternValidation.calculatedPlaceholders
+                        ).map(([key, value]) => (
+                          <Box
+                            key={key}
+                            px="xs"
+                            py={2}
+                            style={{
+                              backgroundColor: 'var(--mantine-color-green-6)',
+                              borderRadius: 'var(--mantine-radius-sm)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                            }}
+                          >
+                            <Text size="xs" c="dark.9">
+                              {'{' + key + '}'}:
+                            </Text>
+                            <Text size="xs" fw={600} c="dark.9">
+                              {value}
+                            </Text>
+                          </Box>
+                        ))}
+                      </Group>
+                    </Box>
                   )}
 
                 {patternValidation.dateMatch && (

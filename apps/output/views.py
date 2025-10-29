@@ -571,13 +571,13 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
             minute = temp_date_output.minute
             logger.debug(f"Converted display time from {source_tz} to {output_tz}: {hour_24}:{minute:02d}")
 
-        # Format 24-hour time string - only include minutes if non-zero
+        # Format 24-hour start time string - only include minutes if non-zero
         if minute > 0:
-            all_groups['time24'] = f"{hour_24}:{minute:02d}"
+            all_groups['starttime24'] = f"{hour_24}:{minute:02d}"
         else:
-            all_groups['time24'] = f"{hour_24:02d}:00"
+            all_groups['starttime24'] = f"{hour_24:02d}:00"
 
-        # Convert 24-hour to 12-hour format for {time} placeholder
+        # Convert 24-hour to 12-hour format for {starttime} placeholder
         # Note: hour_24 is ALWAYS in 24-hour format at this point (converted earlier if needed)
         ampm = 'AM' if hour_24 < 12 else 'PM'
         hour_12 = hour_24
@@ -586,11 +586,40 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
         elif hour_24 > 12:
             hour_12 = hour_24 - 12
 
-        # Format 12-hour time string - only include minutes if non-zero
+        # Format 12-hour start time string - only include minutes if non-zero
         if minute > 0:
-            all_groups['time'] = f"{hour_12}:{minute:02d} {ampm}"
+            all_groups['starttime'] = f"{hour_12}:{minute:02d} {ampm}"
         else:
-            all_groups['time'] = f"{hour_12} {ampm}"
+            all_groups['starttime'] = f"{hour_12} {ampm}"
+
+        # Calculate end time based on program duration
+        # Create a datetime for calculations
+        temp_start = datetime.now(source_tz).replace(hour=hour_24, minute=minute, second=0, microsecond=0)
+        temp_end = temp_start + timedelta(minutes=program_duration)
+
+        # Extract end time components (already in correct timezone if output_tz was applied above)
+        end_hour_24 = temp_end.hour
+        end_minute = temp_end.minute
+
+        # Format 24-hour end time string - only include minutes if non-zero
+        if end_minute > 0:
+            all_groups['endtime24'] = f"{end_hour_24}:{end_minute:02d}"
+        else:
+            all_groups['endtime24'] = f"{end_hour_24:02d}:00"
+
+        # Convert 24-hour to 12-hour format for {endtime} placeholder
+        end_ampm = 'AM' if end_hour_24 < 12 else 'PM'
+        end_hour_12 = end_hour_24
+        if end_hour_24 == 0:
+            end_hour_12 = 12
+        elif end_hour_24 > 12:
+            end_hour_12 = end_hour_24 - 12
+
+        # Format 12-hour end time string - only include minutes if non-zero
+        if end_minute > 0:
+            all_groups['endtime'] = f"{end_hour_12}:{end_minute:02d} {end_ampm}"
+        else:
+            all_groups['endtime'] = f"{end_hour_12} {end_ampm}"
 
     # Generate programs
     programs = []
