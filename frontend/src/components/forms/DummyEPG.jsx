@@ -7,6 +7,7 @@ import {
   Group,
   Modal,
   NumberInput,
+  Paper,
   Select,
   Stack,
   Text,
@@ -16,6 +17,7 @@ import {
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import API from '../../api';
+import useEPGsStore from '../../store/epgs';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
@@ -25,6 +27,16 @@ dayjs.extend(utc);
 dayjs.extend(timezone);
 
 const DummyEPGForm = ({ epg, isOpen, onClose }) => {
+  // Get all EPGs from the store
+  const epgs = useEPGsStore((state) => state.epgs);
+
+  // Filter for dummy EPG sources only
+  const dummyEpgs = useMemo(() => {
+    return Object.values(epgs)
+      .filter((e) => e.source_type === 'dummy')
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [epgs]);
+
   // Separate state for each field to prevent focus loss
   const [titlePattern, setTitlePattern] = useState('');
   const [timePattern, setTimePattern] = useState('');
@@ -531,6 +543,66 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     fetchTimezones();
   }, []);
 
+  // Function to import settings from an existing dummy EPG
+  const handleImportFromTemplate = (templateId) => {
+    const template = dummyEpgs.find((e) => e.id === parseInt(templateId));
+    if (!template) return;
+
+    const custom = template.custom_properties || {};
+
+    // Update form values
+    form.setValues({
+      name: `${template.name} (Copy)`,
+      is_active: template.is_active ?? true,
+      source_type: 'dummy',
+      custom_properties: {
+        title_pattern: custom.title_pattern || '',
+        time_pattern: custom.time_pattern || '',
+        date_pattern: custom.date_pattern || '',
+        timezone:
+          custom.timezone || custom.timezone_offset?.toString() || 'US/Eastern',
+        output_timezone: custom.output_timezone || '',
+        program_duration: custom.program_duration || 180,
+        sample_title: custom.sample_title || '',
+        title_template: custom.title_template || '',
+        description_template: custom.description_template || '',
+        upcoming_title_template: custom.upcoming_title_template || '',
+        upcoming_description_template:
+          custom.upcoming_description_template || '',
+        ended_title_template: custom.ended_title_template || '',
+        ended_description_template: custom.ended_description_template || '',
+        channel_logo_url: custom.channel_logo_url || '',
+        program_poster_url: custom.program_poster_url || '',
+        name_source: custom.name_source || 'channel',
+        stream_index: custom.stream_index || 1,
+        category: custom.category || '',
+        include_date: custom.include_date ?? true,
+        include_live: custom.include_live ?? false,
+        include_new: custom.include_new ?? false,
+      },
+    });
+
+    // Update all individual state variables to match
+    setTitlePattern(custom.title_pattern || '');
+    setTimePattern(custom.time_pattern || '');
+    setDatePattern(custom.date_pattern || '');
+    setSampleTitle(custom.sample_title || '');
+    setTitleTemplate(custom.title_template || '');
+    setDescriptionTemplate(custom.description_template || '');
+    setUpcomingTitleTemplate(custom.upcoming_title_template || '');
+    setUpcomingDescriptionTemplate(custom.upcoming_description_template || '');
+    setEndedTitleTemplate(custom.ended_title_template || '');
+    setEndedDescriptionTemplate(custom.ended_description_template || '');
+    setChannelLogoUrl(custom.channel_logo_url || '');
+    setProgramPosterUrl(custom.program_poster_url || '');
+
+    notifications.show({
+      title: 'Template Imported',
+      message: `Settings imported from "${template.name}". Don't forget to change the name!`,
+      color: 'blue',
+    });
+  };
+
   const handleSubmit = async (values) => {
     try {
       if (epg?.id) {
@@ -567,6 +639,32 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     >
       <form onSubmit={form.onSubmit(handleSubmit)}>
         <Stack spacing="md">
+          {/* Import from Existing - Only show when creating new */}
+          {!epg && dummyEpgs.length > 0 && (
+            <Paper withBorder p="md" bg="dark.6">
+              <Stack spacing="xs">
+                <Group justify="space-between" align="center">
+                  <Text size="sm" fw={500}>
+                    Import from Existing
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    Use an existing dummy EPG as a template
+                  </Text>
+                </Group>
+                <Select
+                  placeholder="Select a template to copy settings from..."
+                  data={dummyEpgs.map((e) => ({
+                    value: e.id.toString(),
+                    label: e.name,
+                  }))}
+                  onChange={handleImportFromTemplate}
+                  clearable
+                  searchable
+                />
+              </Stack>
+            </Paper>
+          )}
+
           {/* Basic Settings */}
           <TextInput
             label="Name"
