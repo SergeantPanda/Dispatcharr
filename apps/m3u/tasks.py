@@ -450,7 +450,7 @@ def parse_extinf_line(line: str) -> dict:
     if len(parts) != 2:
         return None
     attributes_part, display_name = parts[0], parts[1].strip()
-    attrs = dict(re.findall(r'([^\s]+)=["\']([^"\']+)["\']', attributes_part))
+    attrs = dict(re.findall(r'([^\s]+)="([^"]+)"', attributes_part) + re.findall(r"([^\s]+)='([^']+)'", attributes_part))
     # Use tvg-name attribute if available; otherwise, use the display name.
     name = get_case_insensitive_attr(attrs, "tvg-name", display_name)
     return {"attributes": attrs, "display_name": display_name, "name": name}
