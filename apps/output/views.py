@@ -634,6 +634,22 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
             minute = temp_date_output.minute
             logger.debug(f"Converted display time from {source_tz} to {output_tz}: {hour_24}:{minute:02d}")
 
+            # Add date placeholders based on the OUTPUT timezone
+            # This ensures {date}, {month}, {day}, {year} reflect the converted timezone
+            all_groups['date'] = temp_date_output.strftime('%Y-%m-%d')
+            all_groups['month'] = str(temp_date_output.month)
+            all_groups['day'] = str(temp_date_output.day)
+            all_groups['year'] = str(temp_date_output.year)
+            logger.debug(f"Converted date placeholders to {output_tz}: {all_groups['date']}")
+        else:
+            # No output timezone conversion - use source timezone for date
+            # Create temp date to get proper date in source timezone
+            temp_date_source = datetime.now(source_tz).replace(hour=hour_24, minute=minute, second=0, microsecond=0)
+            all_groups['date'] = temp_date_source.strftime('%Y-%m-%d')
+            all_groups['month'] = str(temp_date_source.month)
+            all_groups['day'] = str(temp_date_source.day)
+            all_groups['year'] = str(temp_date_source.year)
+
         # Format 24-hour start time string - only include minutes if non-zero
         if minute > 0:
             all_groups['starttime24'] = f"{hour_24}:{minute:02d}"

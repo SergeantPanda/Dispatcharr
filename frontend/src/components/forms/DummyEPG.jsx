@@ -226,10 +226,27 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
         const sourceTimezone = form.values.custom_properties?.timezone || 'UTC';
         const outputTimezone = form.values.custom_properties?.output_timezone;
 
-        if (outputTimezone && outputTimezone !== sourceTimezone) {
-          // Create a date in the source timezone
-          const sourceDate = dayjs()
+        // Determine the base date to use
+        let baseDate = dayjs().tz(sourceTimezone);
+
+        // If date was extracted from pattern, use that instead of today
+        if (result.dateGroups.month && result.dateGroups.day) {
+          const extractedMonth = parseInt(result.dateGroups.month);
+          const extractedDay = parseInt(result.dateGroups.day);
+          const extractedYear = result.dateGroups.year
+            ? parseInt(result.dateGroups.year)
+            : dayjs().year(); // Default to current year if not provided
+
+          baseDate = dayjs()
             .tz(sourceTimezone)
+            .year(extractedYear)
+            .month(extractedMonth - 1) // dayjs months are 0-indexed
+            .date(extractedDay);
+        }
+
+        if (outputTimezone && outputTimezone !== sourceTimezone) {
+          // Create a date in the source timezone with extracted or current date
+          const sourceDate = baseDate
             .set('hour', hour24)
             .set('minute', minute)
             .set('second', 0);
@@ -240,6 +257,13 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           // Update hour and minute to the converted values
           hour24 = outputDate.hour();
           const convertedMinute = outputDate.minute();
+
+          // Add date placeholders based on the OUTPUT timezone
+          // This ensures {date}, {month}, {day}, {year} reflect the converted timezone
+          allGroups.date = outputDate.format('YYYY-MM-DD');
+          allGroups.month = outputDate.month() + 1; // dayjs months are 0-indexed
+          allGroups.day = outputDate.date();
+          allGroups.year = outputDate.year();
 
           // Format 24-hour start time string with converted time
           if (convertedMinute > 0) {
@@ -269,6 +293,17 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           allGroups.starttime24_long = `${hour24.toString().padStart(2, '0')}:${convertedMinute.toString().padStart(2, '0')}`;
         } else {
           // No timezone conversion - use original logic
+          // Add date placeholders based on the source timezone
+          const sourceDate = baseDate
+            .set('hour', hour24)
+            .set('minute', minute)
+            .set('second', 0);
+
+          allGroups.date = sourceDate.format('YYYY-MM-DD');
+          allGroups.month = sourceDate.month() + 1; // dayjs months are 0-indexed
+          allGroups.day = sourceDate.date();
+          allGroups.year = sourceDate.year();
+
           // Format 24-hour start time string
           if (minute > 0) {
             allGroups.starttime24 = `${hour24.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
@@ -341,6 +376,10 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           endtime: allGroups.endtime,
           endtime24: allGroups.endtime24,
           endtime_long: allGroups.endtime_long,
+          date: allGroups.date,
+          month: allGroups.month,
+          day: allGroups.day,
+          year: allGroups.year,
         };
       } catch (e) {
         // If parsing fails, leave starttime/endtime as placeholders
@@ -781,7 +820,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="title_template"
             name="title_template"
             label="Title Template"
-            description="Format the EPG title using extracted groups. Use {starttime} (12-hour: '10 PM'), {starttime24} (24-hour: '22:00'), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: {league} - {team1} vs {team2} ({starttime}-{endtime})"
+            description="Format the EPG title using extracted groups. Use {starttime} (12-hour: '10 PM'), {starttime24} (24-hour: '22:00'), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: {league} - {team1} vs {team2} ({starttime}-{endtime})"
             placeholder="{league} - {team1} vs {team2}"
             value={titleTemplate}
             onChange={(e) => {
@@ -795,7 +834,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="description_template"
             name="description_template"
             label="Description Template"
-            description="Format the EPG description using extracted groups. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: Watch {team1} take on {team2} from {starttime} to {endtime}!"
+            description="Format the EPG description using extracted groups. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: Watch {team1} take on {team2} on {date} from {starttime} to {endtime}!"
             placeholder="Watch {team1} take on {team2} in this exciting {league} matchup from {starttime} to {endtime}!"
             minRows={2}
             value={descriptionTemplate}
@@ -825,7 +864,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="upcoming_title_template"
             name="upcoming_title_template"
             label="Upcoming Title Template"
-            description="Title for programs before the event starts. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: {team1} vs {team2} starting at {starttime}."
+            description="Title for programs before the event starts. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: {team1} vs {team2} starting at {starttime}."
             placeholder="{team1} vs {team2} starting at {starttime}."
             value={upcomingTitleTemplate}
             onChange={(e) => {
@@ -842,7 +881,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="upcoming_description_template"
             name="upcoming_description_template"
             label="Upcoming Description Template"
-            description="Description for programs before the event. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: Upcoming: Watch the {league} match up where the {team1} take on the {team2} from {starttime} to {endtime}!"
+            description="Description for programs before the event. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: Upcoming: Watch the {league} match up where the {team1} take on the {team2} on {date} from {starttime} to {endtime}!"
             placeholder="Upcoming: Watch the {league} match up where the {team1} take on the {team2} from {starttime} to {endtime}!"
             minRows={2}
             value={upcomingDescriptionTemplate}
@@ -860,7 +899,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="ended_title_template"
             name="ended_title_template"
             label="Ended Title Template"
-            description="Title for programs after the event has ended. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: {team1} vs {team2} started at {starttime}."
+            description="Title for programs after the event has ended. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: {team1} vs {team2} started at {starttime}."
             placeholder="{team1} vs {team2} started at {starttime}."
             value={endedTitleTemplate}
             onChange={(e) => {
@@ -877,7 +916,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             id="ended_description_template"
             name="ended_description_template"
             label="Ended Description Template"
-            description="Description for programs after the event. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), or {endtime24} (24-hour end). Example: The {league} match between {team1} and {team2} ran from {starttime} to {endtime}."
+            description="Description for programs after the event. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: The {league} match between {team1} and {team2} on {date} ran from {starttime} to {endtime}."
             placeholder="The {league} match between {team1} and {team2} ran from {starttime} to {endtime}."
             minRows={2}
             value={endedDescriptionTemplate}
@@ -1154,42 +1193,6 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                     </Text>
                   )}
 
-                {/* Show calculated time placeholders when time is extracted */}
-                {patternValidation.timeMatch &&
-                  Object.keys(patternValidation.calculatedPlaceholders || {})
-                    .length > 0 && (
-                    <Box mt="xs">
-                      <Text size="sm" fw={500} mb={4}>
-                        Available Time Placeholders:
-                      </Text>
-                      <Group spacing="xs" style={{ flexWrap: 'wrap' }}>
-                        {Object.entries(
-                          patternValidation.calculatedPlaceholders
-                        ).map(([key, value]) => (
-                          <Box
-                            key={key}
-                            px="xs"
-                            py={2}
-                            style={{
-                              backgroundColor: 'var(--mantine-color-green-6)',
-                              borderRadius: 'var(--mantine-radius-sm)',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                            }}
-                          >
-                            <Text size="xs" c="dark.9">
-                              {'{' + key + '}'}:
-                            </Text>
-                            <Text size="xs" fw={600} c="dark.9">
-                              {value}
-                            </Text>
-                          </Box>
-                        ))}
-                      </Group>
-                    </Box>
-                  )}
-
                 {patternValidation.dateMatch && (
                   <Box mt="xs">
                     <Text size="sm" fw={500} mb={4}>
@@ -1229,6 +1232,42 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                     <Text size="sm" c="yellow">
                       Date pattern did not match the sample title
                     </Text>
+                  )}
+
+                {/* Show calculated time placeholders when time is extracted */}
+                {patternValidation.timeMatch &&
+                  Object.keys(patternValidation.calculatedPlaceholders || {})
+                    .length > 0 && (
+                    <Box mt="xs">
+                      <Text size="sm" fw={500} mb={4}>
+                        Available Time Placeholders:
+                      </Text>
+                      <Group spacing="xs" style={{ flexWrap: 'wrap' }}>
+                        {Object.entries(
+                          patternValidation.calculatedPlaceholders
+                        ).map(([key, value]) => (
+                          <Box
+                            key={key}
+                            px="xs"
+                            py={2}
+                            style={{
+                              backgroundColor: 'var(--mantine-color-green-6)',
+                              borderRadius: 'var(--mantine-radius-sm)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                            }}
+                          >
+                            <Text size="xs" c="dark.9">
+                              {'{' + key + '}'}:
+                            </Text>
+                            <Text size="xs" fw={600} c="dark.9">
+                              {value}
+                            </Text>
+                          </Box>
+                        ))}
+                      </Group>
+                    </Box>
                   )}
 
                 {/* Output Preview */}
