@@ -2645,12 +2645,17 @@ def get_host_and_port(request):
     if port:
         return host, port
 
-    # 4. Dev fallback: guess port
+    # 4. Try SERVER_PORT from META
+    port = request.META.get("SERVER_PORT")
+    if port:
+        return host, port
+
+    # 5. Dev fallback: guess port
     if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
        guess = "5656"
        return host, guess
 
-    # 5. Fallback to scheme default
+    # 6. Fallback to scheme default
     port = "443" if request.is_secure() else "9191"
     return host, port
 
