@@ -187,6 +187,54 @@ def generate_m3u(request, profile_name=None, user=None):
     return response
 
 
+def generate_fallback_programs(channel_id, channel_name, now, num_days, program_length_hours, fallback_title, fallback_description):
+    """
+    Generate dummy programs using custom fallback templates when patterns don't match.
+
+    Args:
+        channel_id: Channel ID for the programs
+        channel_name: Channel name to use as fallback in templates
+        now: Current datetime (in UTC)
+        num_days: Number of days to generate programs for
+        program_length_hours: Length of each program in hours
+        fallback_title: Custom fallback title template (empty string if not provided)
+        fallback_description: Custom fallback description template (empty string if not provided)
+
+    Returns:
+        List of program dictionaries
+    """
+    programs = []
+
+    # Use custom fallback title or channel name as default
+    title = fallback_title if fallback_title else channel_name
+
+    # Use custom fallback description or a simple default message
+    if fallback_description:
+        description = fallback_description
+    else:
+        description = f"EPG information is currently unavailable for {channel_name}"
+
+    # Create programs for each day
+    for day in range(num_days):
+        day_start = now + timedelta(days=day)
+
+        # Create programs with specified length throughout the day
+        for hour_offset in range(0, 24, program_length_hours):
+            # Calculate program start and end times
+            start_time = day_start + timedelta(hours=hour_offset)
+            end_time = start_time + timedelta(hours=program_length_hours)
+
+            programs.append({
+                "channel_id": channel_id,
+                "start_time": start_time,
+                "end_time": end_time,
+                "title": title,
+                "description": description,
+            })
+
+    return programs
+
+
 def generate_dummy_programs(channel_id, channel_name, num_days=1, program_length_hours=4, epg_source=None):
     """
     Generate dummy EPG programs for channels.
@@ -216,11 +264,26 @@ def generate_dummy_programs(channel_id, channel_name, num_days=1, program_length
             epg_source.custom_properties
         )
         # If custom generation succeeded, return those programs
-        # If it returned empty (pattern didn't match), fall through to default
+        # If it returned empty (pattern didn't match), check for custom fallback templates
         if custom_programs:
             return custom_programs
         else:
-            logger.info(f"Custom pattern didn't match for '{channel_name}', using default dummy EPG")
+            logger.info(f"Custom pattern didn't match for '{channel_name}', checking for custom fallback templates")
+
+            # Check if custom fallback templates are provided
+            custom_props = epg_source.custom_properties
+            fallback_title = custom_props.get('fallback_title_template', '').strip()
+            fallback_description = custom_props.get('fallback_description_template', '').strip()
+
+            # If custom fallback templates exist, use them instead of default
+            if fallback_title or fallback_description:
+                logger.info(f"Using custom fallback templates for '{channel_name}'")
+                return generate_fallback_programs(
+                    channel_id, channel_name, now, num_days,
+                    program_length_hours, fallback_title, fallback_description
+                )
+            else:
+                logger.info(f"No custom fallback templates found, using default dummy EPG")
 
     # Default humorous program descriptions based on time of day
     time_descriptions = {

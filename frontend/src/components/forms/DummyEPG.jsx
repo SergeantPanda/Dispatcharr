@@ -49,6 +49,9 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     useState('');
   const [endedTitleTemplate, setEndedTitleTemplate] = useState('');
   const [endedDescriptionTemplate, setEndedDescriptionTemplate] = useState('');
+  const [fallbackTitleTemplate, setFallbackTitleTemplate] = useState('');
+  const [fallbackDescriptionTemplate, setFallbackDescriptionTemplate] =
+    useState('');
   const [channelLogoUrl, setChannelLogoUrl] = useState('');
   const [programPosterUrl, setProgramPosterUrl] = useState('');
   const [timezoneOptions, setTimezoneOptions] = useState([]);
@@ -73,6 +76,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
         upcoming_description_template: '',
         ended_title_template: '',
         ended_description_template: '',
+        fallback_title_template: '',
+        fallback_description_template: '',
         channel_logo_url: '',
         program_poster_url: '',
         name_source: 'channel',
@@ -463,6 +468,9 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             custom.upcoming_description_template || '',
           ended_title_template: custom.ended_title_template || '',
           ended_description_template: custom.ended_description_template || '',
+          fallback_title_template: custom.fallback_title_template || '',
+          fallback_description_template:
+            custom.fallback_description_template || '',
           channel_logo_url: custom.channel_logo_url || '',
           program_poster_url: custom.program_poster_url || '',
           name_source: custom.name_source || 'channel',
@@ -487,6 +495,10 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       );
       setEndedTitleTemplate(custom.ended_title_template || '');
       setEndedDescriptionTemplate(custom.ended_description_template || '');
+      setFallbackTitleTemplate(custom.fallback_title_template || '');
+      setFallbackDescriptionTemplate(
+        custom.fallback_description_template || ''
+      );
       setChannelLogoUrl(custom.channel_logo_url || '');
       setProgramPosterUrl(custom.program_poster_url || '');
     } else {
@@ -501,6 +513,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       setUpcomingDescriptionTemplate('');
       setEndedTitleTemplate('');
       setEndedDescriptionTemplate('');
+      setFallbackTitleTemplate('');
+      setFallbackDescriptionTemplate('');
       setChannelLogoUrl('');
       setProgramPosterUrl('');
     }
@@ -571,6 +585,9 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           custom.upcoming_description_template || '',
         ended_title_template: custom.ended_title_template || '',
         ended_description_template: custom.ended_description_template || '',
+        fallback_title_template: custom.fallback_title_template || '',
+        fallback_description_template:
+          custom.fallback_description_template || '',
         channel_logo_url: custom.channel_logo_url || '',
         program_poster_url: custom.program_poster_url || '',
         name_source: custom.name_source || 'channel',
@@ -593,6 +610,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     setUpcomingDescriptionTemplate(custom.upcoming_description_template || '');
     setEndedTitleTemplate(custom.ended_title_template || '');
     setEndedDescriptionTemplate(custom.ended_description_template || '');
+    setFallbackTitleTemplate(custom.fallback_title_template || '');
+    setFallbackDescriptionTemplate(custom.fallback_description_template || '');
     setChannelLogoUrl(custom.channel_logo_url || '');
     setProgramPosterUrl(custom.program_poster_url || '');
 
@@ -867,6 +886,53 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
               setEndedDescriptionTemplate(value);
               form.setFieldValue(
                 'custom_properties.ended_description_template',
+                value
+              );
+            }}
+          />
+
+          {/* Fallback Templates */}
+          <Divider
+            label="Fallback Templates (Optional)"
+            labelPosition="center"
+          />
+
+          <Text size="sm" c="dimmed">
+            When patterns don't match the channel/stream name, use these custom
+            fallback templates instead of the default placeholder messages.
+            Leave empty to use the built-in humorous fallback descriptions.
+          </Text>
+
+          <TextInput
+            id="fallback_title_template"
+            name="fallback_title_template"
+            label="Fallback Title Template"
+            description="Custom title when patterns don't match. If empty, uses the channel/stream name."
+            placeholder="No EPG data available"
+            value={fallbackTitleTemplate}
+            onChange={(e) => {
+              const value = e.target.value;
+              setFallbackTitleTemplate(value);
+              form.setFieldValue(
+                'custom_properties.fallback_title_template',
+                value
+              );
+            }}
+          />
+
+          <Textarea
+            id="fallback_description_template"
+            name="fallback_description_template"
+            label="Fallback Description Template"
+            description="Custom description when patterns don't match. If empty, uses built-in placeholder messages."
+            placeholder="EPG information is currently unavailable for this channel."
+            minRows={2}
+            value={fallbackDescriptionTemplate}
+            onChange={(e) => {
+              const value = e.target.value;
+              setFallbackDescriptionTemplate(value);
+              form.setFieldValue(
+                'custom_properties.fallback_description_template',
                 value
               );
             }}
