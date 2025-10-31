@@ -231,17 +231,81 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
 
         // If date was extracted from pattern, use that instead of today
         if (result.dateGroups.month && result.dateGroups.day) {
-          const extractedMonth = parseInt(result.dateGroups.month);
+          const monthValue = result.dateGroups.month;
+          let extractedMonth;
+
+          // Parse month - can be numeric (1-12) or text (Jan, January, Oct, October, etc.)
+          if (/^\d+$/.test(monthValue)) {
+            // Numeric month
+            extractedMonth = parseInt(monthValue);
+          } else {
+            // Text month - convert to number (1-12)
+            const monthLower = monthValue.toLowerCase();
+            const monthNames = [
+              'january',
+              'february',
+              'march',
+              'april',
+              'may',
+              'june',
+              'july',
+              'august',
+              'september',
+              'october',
+              'november',
+              'december',
+            ];
+            const monthAbbr = [
+              'jan',
+              'feb',
+              'mar',
+              'apr',
+              'may',
+              'jun',
+              'jul',
+              'aug',
+              'sep',
+              'oct',
+              'nov',
+              'dec',
+            ];
+
+            // Try full month names first
+            let monthIndex = monthNames.findIndex((m) => m === monthLower);
+            if (monthIndex === -1) {
+              // Try abbreviated month names
+              monthIndex = monthAbbr.findIndex((m) => m === monthLower);
+            }
+
+            if (monthIndex !== -1) {
+              extractedMonth = monthIndex + 1; // Convert 0-indexed to 1-12
+            } else {
+              // If we can't parse it, default to current month
+              extractedMonth = dayjs().month() + 1;
+            }
+          }
+
           const extractedDay = parseInt(result.dateGroups.day);
           const extractedYear = result.dateGroups.year
             ? parseInt(result.dateGroups.year)
             : dayjs().year(); // Default to current year if not provided
 
-          baseDate = dayjs()
-            .tz(sourceTimezone)
-            .year(extractedYear)
-            .month(extractedMonth - 1) // dayjs months are 0-indexed
-            .date(extractedDay);
+          // Validate that we have valid numeric values
+          if (
+            !isNaN(extractedMonth) &&
+            !isNaN(extractedDay) &&
+            !isNaN(extractedYear) &&
+            extractedMonth >= 1 &&
+            extractedMonth <= 12 &&
+            extractedDay >= 1 &&
+            extractedDay <= 31
+          ) {
+            baseDate = dayjs()
+              .tz(sourceTimezone)
+              .year(extractedYear)
+              .month(extractedMonth - 1) // dayjs months are 0-indexed
+              .date(extractedDay);
+          }
         }
 
         if (outputTimezone && outputTimezone !== sourceTimezone) {
