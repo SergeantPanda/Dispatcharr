@@ -623,10 +623,17 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
         hour_24 = time_info['hour']
         minute = time_info['minute']
 
+        # Determine the base date to use for placeholders
+        # If date was extracted, use it; otherwise use current date
+        if date_info:
+            base_date = datetime(date_info['year'], date_info['month'], date_info['day'])
+        else:
+            base_date = datetime.now()
+
         # If output_timezone is specified, convert the display time to that timezone
         if output_tz:
-            # Create a datetime in the source timezone
-            temp_date = datetime.now(source_tz).replace(hour=hour_24, minute=minute, second=0, microsecond=0)
+            # Create a datetime in the source timezone using the base date
+            temp_date = source_tz.localize(base_date.replace(hour=hour_24, minute=minute, second=0, microsecond=0))
             # Convert to output timezone
             temp_date_output = temp_date.astimezone(output_tz)
             # Extract converted hour and minute for display
@@ -643,8 +650,8 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
             logger.debug(f"Converted date placeholders to {output_tz}: {all_groups['date']}")
         else:
             # No output timezone conversion - use source timezone for date
-            # Create temp date to get proper date in source timezone
-            temp_date_source = datetime.now(source_tz).replace(hour=hour_24, minute=minute, second=0, microsecond=0)
+            # Create temp date to get proper date in source timezone using the base date
+            temp_date_source = source_tz.localize(base_date.replace(hour=hour_24, minute=minute, second=0, microsecond=0))
             all_groups['date'] = temp_date_source.strftime('%Y-%m-%d')
             all_groups['month'] = str(temp_date_source.month)
             all_groups['day'] = str(temp_date_source.day)
