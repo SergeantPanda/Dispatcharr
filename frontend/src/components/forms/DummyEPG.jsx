@@ -300,16 +300,16 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             extractedDay >= 1 &&
             extractedDay <= 31
           ) {
-            baseDate = dayjs()
-              .tz(sourceTimezone)
-              .year(extractedYear)
-              .month(extractedMonth - 1) // dayjs months are 0-indexed
-              .date(extractedDay);
+            // Create a specific date string and parse it in the source timezone
+            // This ensures DST is calculated correctly for the target date
+            const dateString = `${extractedYear}-${extractedMonth.toString().padStart(2, '0')}-${extractedDay.toString().padStart(2, '0')}`;
+            baseDate = dayjs.tz(dateString, sourceTimezone);
           }
         }
 
         if (outputTimezone && outputTimezone !== sourceTimezone) {
           // Create a date in the source timezone with extracted or current date
+          // Set the time on the date, which will use the DST rules for that specific date
           const sourceDate = baseDate
             .set('hour', hour24)
             .set('minute', minute)
