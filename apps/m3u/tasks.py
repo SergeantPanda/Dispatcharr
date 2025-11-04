@@ -450,7 +450,7 @@ def parse_extinf_line(line: str) -> dict:
     if len(parts) != 2:
         return None
     attributes_part, display_name = parts[0], parts[1].strip()
-    attrs = dict(re.findall(r'([^\s]+)=["\']([^"\']+)["\']', attributes_part))
+    attrs = dict(re.findall(r'([^\s]+)="([^"]+)"', attributes_part) + re.findall(r"([^\s]+)='([^']+)'", attributes_part))
     # Use tvg-name attribute if available; otherwise, use the display name.
     name = get_case_insensitive_attr(attrs, "tvg-name", display_name)
     return {"attributes": attrs, "display_name": display_name, "name": name}
@@ -894,6 +894,12 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     for stream_info in batch:
         try:
             name, url = stream_info["name"], stream_info["url"]
+
+            # Validate URL length - maximum of 4096 characters
+            if url and len(url) > 4096:
+                logger.warning(f"Skipping stream '{name}': URL too long ({len(url)} characters, max 4096)")
+                continue
+
             tvg_id, tvg_logo = get_case_insensitive_attr(
                 stream_info["attributes"], "tvg-id", ""
             ), get_case_insensitive_attr(stream_info["attributes"], "tvg-logo", "")

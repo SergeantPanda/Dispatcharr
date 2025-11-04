@@ -187,6 +187,54 @@ def generate_m3u(request, profile_name=None, user=None):
     return response
 
 
+def generate_fallback_programs(channel_id, channel_name, now, num_days, program_length_hours, fallback_title, fallback_description):
+    """
+    Generate dummy programs using custom fallback templates when patterns don't match.
+
+    Args:
+        channel_id: Channel ID for the programs
+        channel_name: Channel name to use as fallback in templates
+        now: Current datetime (in UTC)
+        num_days: Number of days to generate programs for
+        program_length_hours: Length of each program in hours
+        fallback_title: Custom fallback title template (empty string if not provided)
+        fallback_description: Custom fallback description template (empty string if not provided)
+
+    Returns:
+        List of program dictionaries
+    """
+    programs = []
+
+    # Use custom fallback title or channel name as default
+    title = fallback_title if fallback_title else channel_name
+
+    # Use custom fallback description or a simple default message
+    if fallback_description:
+        description = fallback_description
+    else:
+        description = f"EPG information is currently unavailable for {channel_name}"
+
+    # Create programs for each day
+    for day in range(num_days):
+        day_start = now + timedelta(days=day)
+
+        # Create programs with specified length throughout the day
+        for hour_offset in range(0, 24, program_length_hours):
+            # Calculate program start and end times
+            start_time = day_start + timedelta(hours=hour_offset)
+            end_time = start_time + timedelta(hours=program_length_hours)
+
+            programs.append({
+                "channel_id": channel_id,
+                "start_time": start_time,
+                "end_time": end_time,
+                "title": title,
+                "description": description,
+            })
+
+    return programs
+
+
 def generate_dummy_programs(channel_id, channel_name, num_days=1, program_length_hours=4, epg_source=None):
     """
     Generate dummy EPG programs for channels.
@@ -216,11 +264,26 @@ def generate_dummy_programs(channel_id, channel_name, num_days=1, program_length
             epg_source.custom_properties
         )
         # If custom generation succeeded, return those programs
-        # If it returned empty (pattern didn't match), fall through to default
+        # If it returned empty (pattern didn't match), check for custom fallback templates
         if custom_programs:
             return custom_programs
         else:
-            logger.info(f"Custom pattern didn't match for '{channel_name}', using default dummy EPG")
+            logger.info(f"Custom pattern didn't match for '{channel_name}', checking for custom fallback templates")
+
+            # Check if custom fallback templates are provided
+            custom_props = epg_source.custom_properties
+            fallback_title = custom_props.get('fallback_title_template', '').strip()
+            fallback_description = custom_props.get('fallback_description_template', '').strip()
+
+            # If custom fallback templates exist, use them instead of default
+            if fallback_title or fallback_description:
+                logger.info(f"Using custom fallback templates for '{channel_name}'")
+                return generate_fallback_programs(
+                    channel_id, channel_name, now, num_days,
+                    program_length_hours, fallback_title, fallback_description
+                )
+            else:
+                logger.info(f"No custom fallback templates found, using default dummy EPG")
 
     # Default humorous program descriptions based on time of day
     time_descriptions = {
@@ -346,12 +409,17 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
     ended_title_template = custom_properties.get('ended_title_template', '')
     ended_description_template = custom_properties.get('ended_description_template', '')
 
+    # Image URL templates
+    channel_logo_url_template = custom_properties.get('channel_logo_url', '')
+    program_poster_url_template = custom_properties.get('program_poster_url', '')
+
     # EPG metadata options
     category_string = custom_properties.get('category', '')
     # Split comma-separated categories and strip whitespace, filter out empty strings
     categories = [cat.strip() for cat in category_string.split(',') if cat.strip()] if category_string else []
     include_date = custom_properties.get('include_date', True)
     include_live = custom_properties.get('include_live', False)
+    include_new = custom_properties.get('include_new', False)
 
     # Parse timezone name
     try:
@@ -428,13 +496,25 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
     logger.debug(f"Title pattern matched. Groups: {groups}")
 
     # Helper function to format template with matched groups
-    def format_template(template, groups):
-        """Replace {groupname} placeholders with matched group values"""
+    def format_template(template, groups, url_encode=False):
+        """Replace {groupname} placeholders with matched group values
+
+        Args:
+            template: Template string with {groupname} placeholders
+            groups: Dict of group names to values
+            url_encode: If True, URL encode the group values for safe use in URLs
+        """
         if not template:
             return ''
         result = template
         for key, value in groups.items():
-            result = result.replace(f'{{{key}}}', str(value) if value else '')
+            if url_encode and value:
+                # URL encode the value to handle spaces and special characters
+                from urllib.parse import quote
+                encoded_value = quote(str(value), safe='')
+                result = result.replace(f'{{{key}}}', encoded_value)
+            else:
+                result = result.replace(f'{{{key}}}', str(value) if value else '')
         return result
 
     # Extract time from title if time pattern exists
@@ -516,15 +596,44 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
     # Merge title groups, time groups, and date groups for template formatting
     all_groups = {**groups, **time_groups, **date_groups}
 
+    # Add normalized versions of all groups for cleaner URLs
+    # These remove all non-alphanumeric characters and convert to lowercase
+    for key, value in list(all_groups.items()):
+        if value:
+            # Remove all non-alphanumeric characters (except spaces temporarily)
+            # then replace spaces with nothing, and convert to lowercase
+            normalized = regex.sub(r'[^a-zA-Z0-9\s]', '', str(value))
+            normalized = regex.sub(r'\s+', '', normalized).lower()
+            all_groups[f'{key}_normalize'] = normalized
+
+    # Format channel logo URL if template provided (with URL encoding)
+    channel_logo_url = None
+    if channel_logo_url_template:
+        channel_logo_url = format_template(channel_logo_url_template, all_groups, url_encode=True)
+        logger.debug(f"Formatted channel logo URL: {channel_logo_url}")
+
+    # Format program poster URL if template provided (with URL encoding)
+    program_poster_url = None
+    if program_poster_url_template:
+        program_poster_url = format_template(program_poster_url_template, all_groups, url_encode=True)
+        logger.debug(f"Formatted program poster URL: {program_poster_url}")
+
     # Add formatted time strings for better display (handles minutes intelligently)
     if time_info:
         hour_24 = time_info['hour']
         minute = time_info['minute']
 
+        # Determine the base date to use for placeholders
+        # If date was extracted, use it; otherwise use current date
+        if date_info:
+            base_date = datetime(date_info['year'], date_info['month'], date_info['day'])
+        else:
+            base_date = datetime.now()
+
         # If output_timezone is specified, convert the display time to that timezone
         if output_tz:
-            # Create a datetime in the source timezone
-            temp_date = datetime.now(source_tz).replace(hour=hour_24, minute=minute, second=0, microsecond=0)
+            # Create a datetime in the source timezone using the base date
+            temp_date = source_tz.localize(base_date.replace(hour=hour_24, minute=minute, second=0, microsecond=0))
             # Convert to output timezone
             temp_date_output = temp_date.astimezone(output_tz)
             # Extract converted hour and minute for display
@@ -532,13 +641,29 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
             minute = temp_date_output.minute
             logger.debug(f"Converted display time from {source_tz} to {output_tz}: {hour_24}:{minute:02d}")
 
-        # Format 24-hour time string - only include minutes if non-zero
-        if minute > 0:
-            all_groups['time24'] = f"{hour_24}:{minute:02d}"
+            # Add date placeholders based on the OUTPUT timezone
+            # This ensures {date}, {month}, {day}, {year} reflect the converted timezone
+            all_groups['date'] = temp_date_output.strftime('%Y-%m-%d')
+            all_groups['month'] = str(temp_date_output.month)
+            all_groups['day'] = str(temp_date_output.day)
+            all_groups['year'] = str(temp_date_output.year)
+            logger.debug(f"Converted date placeholders to {output_tz}: {all_groups['date']}")
         else:
-            all_groups['time24'] = f"{hour_24:02d}:00"
+            # No output timezone conversion - use source timezone for date
+            # Create temp date to get proper date in source timezone using the base date
+            temp_date_source = source_tz.localize(base_date.replace(hour=hour_24, minute=minute, second=0, microsecond=0))
+            all_groups['date'] = temp_date_source.strftime('%Y-%m-%d')
+            all_groups['month'] = str(temp_date_source.month)
+            all_groups['day'] = str(temp_date_source.day)
+            all_groups['year'] = str(temp_date_source.year)
 
-        # Convert 24-hour to 12-hour format for {time} placeholder
+        # Format 24-hour start time string - only include minutes if non-zero
+        if minute > 0:
+            all_groups['starttime24'] = f"{hour_24}:{minute:02d}"
+        else:
+            all_groups['starttime24'] = f"{hour_24:02d}:00"
+
+        # Convert 24-hour to 12-hour format for {starttime} placeholder
         # Note: hour_24 is ALWAYS in 24-hour format at this point (converted earlier if needed)
         ampm = 'AM' if hour_24 < 12 else 'PM'
         hour_12 = hour_24
@@ -547,11 +672,46 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
         elif hour_24 > 12:
             hour_12 = hour_24 - 12
 
-        # Format 12-hour time string - only include minutes if non-zero
+        # Format 12-hour start time string - only include minutes if non-zero
         if minute > 0:
-            all_groups['time'] = f"{hour_12}:{minute:02d} {ampm}"
+            all_groups['starttime'] = f"{hour_12}:{minute:02d} {ampm}"
         else:
-            all_groups['time'] = f"{hour_12} {ampm}"
+            all_groups['starttime'] = f"{hour_12} {ampm}"
+
+        # Format long version that always includes minutes (e.g., "9:00 PM" instead of "9 PM")
+        all_groups['starttime_long'] = f"{hour_12}:{minute:02d} {ampm}"
+
+        # Calculate end time based on program duration
+        # Create a datetime for calculations
+        temp_start = datetime.now(source_tz).replace(hour=hour_24, minute=minute, second=0, microsecond=0)
+        temp_end = temp_start + timedelta(minutes=program_duration)
+
+        # Extract end time components (already in correct timezone if output_tz was applied above)
+        end_hour_24 = temp_end.hour
+        end_minute = temp_end.minute
+
+        # Format 24-hour end time string - only include minutes if non-zero
+        if end_minute > 0:
+            all_groups['endtime24'] = f"{end_hour_24}:{end_minute:02d}"
+        else:
+            all_groups['endtime24'] = f"{end_hour_24:02d}:00"
+
+        # Convert 24-hour to 12-hour format for {endtime} placeholder
+        end_ampm = 'AM' if end_hour_24 < 12 else 'PM'
+        end_hour_12 = end_hour_24
+        if end_hour_24 == 0:
+            end_hour_12 = 12
+        elif end_hour_24 > 12:
+            end_hour_12 = end_hour_24 - 12
+
+        # Format 12-hour end time string - only include minutes if non-zero
+        if end_minute > 0:
+            all_groups['endtime'] = f"{end_hour_12}:{end_minute:02d} {end_ampm}"
+        else:
+            all_groups['endtime'] = f"{end_hour_12} {end_ampm}"
+
+        # Format long version that always includes minutes (e.g., "9:00 PM" instead of "9 PM")
+        all_groups['endtime_long'] = f"{end_hour_12}:{end_minute:02d} {end_ampm}"
 
     # Generate programs
     programs = []
@@ -676,6 +836,10 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         date_str = local_time.strftime('%Y-%m-%d')
                         program_custom_properties['date'] = date_str
 
+                    # Add program poster URL if provided
+                    if program_poster_url:
+                        program_custom_properties['icon'] = program_poster_url
+
                     programs.append({
                         "channel_id": channel_id,
                         "start_time": program_start_utc,
@@ -683,6 +847,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "title": upcoming_title,
                         "description": upcoming_description,
                         "custom_properties": program_custom_properties,
+                        "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
                     })
 
                     current_time += timedelta(minutes=program_duration)
@@ -706,6 +871,14 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                 if include_live:
                     main_event_custom_properties['live'] = True
 
+                # Add new flag if requested
+                if include_new:
+                    main_event_custom_properties['new'] = True
+
+                # Add program poster URL if provided
+                if program_poster_url:
+                    main_event_custom_properties['icon'] = program_poster_url
+
                 programs.append({
                     "channel_id": channel_id,
                     "start_time": event_start_utc,
@@ -713,6 +886,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     "title": main_event_title,
                     "description": main_event_description,
                     "custom_properties": main_event_custom_properties,
+                    "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
                 })
 
                 event_happened = True
@@ -745,6 +919,10 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         date_str = local_time.strftime('%Y-%m-%d')
                         program_custom_properties['date'] = date_str
 
+                    # Add program poster URL if provided
+                    if program_poster_url:
+                        program_custom_properties['icon'] = program_poster_url
+
                     programs.append({
                         "channel_id": channel_id,
                         "start_time": program_start_utc,
@@ -752,6 +930,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "title": ended_title,
                         "description": ended_description,
                         "custom_properties": program_custom_properties,
+                        "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
                     })
 
                     current_time += timedelta(minutes=program_duration)
@@ -800,6 +979,10 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         date_str = local_time.strftime('%Y-%m-%d')
                         program_custom_properties['date'] = date_str
 
+                    # Add program poster URL if provided
+                    if program_poster_url:
+                        program_custom_properties['icon'] = program_poster_url
+
                     programs.append({
                         "channel_id": channel_id,
                         "start_time": program_start_utc,
@@ -807,6 +990,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "title": program_title,
                         "description": program_description,
                         "custom_properties": program_custom_properties,
+                        "channel_logo_url": channel_logo_url,
                     })
 
                     current_time += timedelta(minutes=program_duration)
@@ -854,6 +1038,14 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                 if include_live:
                     program_custom_properties['live'] = True
 
+                # Add new flag if requested
+                if include_new:
+                    program_custom_properties['new'] = True
+
+                # Add program poster URL if provided
+                if program_poster_url:
+                    program_custom_properties['icon'] = program_poster_url
+
                 programs.append({
                     "channel_id": channel_id,
                     "start_time": program_start_utc,
@@ -861,6 +1053,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     "title": title,
                     "description": description,
                     "custom_properties": program_custom_properties,
+                    "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
                 })
 
     logger.info(f"Generated {len(programs)} custom dummy programs for {channel_name}")
@@ -914,6 +1107,10 @@ def generate_dummy_epg(
         # Live tag
         if custom_data.get('live', False):
             xml_lines.append(f"    <live />")
+
+        # New tag
+        if custom_data.get('new', False):
+            xml_lines.append(f"    <new />")
 
         xml_lines.append(f"  </programme>")
 
@@ -1013,7 +1210,62 @@ def generate_epg(request, profile_name=None, user=None):
 
             # Add channel logo if available
             tvg_logo = ""
-            if channel.logo:
+
+            # Check if this is a custom dummy EPG with channel logo URL template
+            if channel.epg_data and channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
+                epg_source = channel.epg_data.epg_source
+                if epg_source.custom_properties:
+                    custom_props = epg_source.custom_properties
+                    channel_logo_url_template = custom_props.get('channel_logo_url', '')
+
+                    if channel_logo_url_template:
+                        # Determine which name to use for pattern matching (same logic as program generation)
+                        pattern_match_name = channel.name
+                        name_source = custom_props.get('name_source')
+
+                        if name_source == 'stream':
+                            stream_index = custom_props.get('stream_index', 1) - 1
+                            channel_streams = channel.streams.all().order_by('channelstream__order')
+
+                            if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
+                                stream = list(channel_streams)[stream_index]
+                                pattern_match_name = stream.name
+
+                        # Try to extract groups from the channel/stream name and build the logo URL
+                        title_pattern = custom_props.get('title_pattern', '')
+                        if title_pattern:
+                            try:
+                                # Convert PCRE/JavaScript named groups to Python format
+                                title_pattern = regex.sub(r'\(\?<(?![=!])([^>]+)>', r'(?P<\1>', title_pattern)
+                                title_regex = regex.compile(title_pattern)
+                                title_match = title_regex.search(pattern_match_name)
+
+                                if title_match:
+                                    groups = title_match.groupdict()
+
+                                    # Add normalized versions of all groups for cleaner URLs
+                                    for key, value in list(groups.items()):
+                                        if value:
+                                            # Remove all non-alphanumeric characters and convert to lowercase
+                                            normalized = regex.sub(r'[^a-zA-Z0-9\s]', '', str(value))
+                                            normalized = regex.sub(r'\s+', '', normalized).lower()
+                                            groups[f'{key}_normalize'] = normalized
+
+                                    # Format the logo URL template with the matched groups (with URL encoding)
+                                    from urllib.parse import quote
+                                    for key, value in groups.items():
+                                        if value:
+                                            encoded_value = quote(str(value), safe='')
+                                            channel_logo_url_template = channel_logo_url_template.replace(f'{{{key}}}', encoded_value)
+                                        else:
+                                            channel_logo_url_template = channel_logo_url_template.replace(f'{{{key}}}', '')
+                                    tvg_logo = channel_logo_url_template
+                                    logger.debug(f"Built channel logo URL from template: {tvg_logo}")
+                            except Exception as e:
+                                logger.warning(f"Failed to build channel logo URL for {channel.name}: {e}")
+
+            # If no custom dummy logo, use regular logo logic
+            if not tvg_logo and channel.logo:
                 if use_cached_logos:
                     # Use cached logo as before
                     tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
@@ -1114,6 +1366,14 @@ def generate_epg(request, profile_name=None, user=None):
                     if custom_data.get('live', False):
                         yield f"    <live />\n"
 
+                    # New tag
+                    if custom_data.get('new', False):
+                        yield f"    <new />\n"
+
+                    # Icon/poster URL
+                    if 'icon' in custom_data:
+                        yield f"    <icon src=\"{html.escape(custom_data['icon'])}\" />\n"
+
                     yield f"  </programme>\n"
 
             else:
@@ -1154,6 +1414,14 @@ def generate_epg(request, profile_name=None, user=None):
                             # Live tag
                             if custom_data.get('live', False):
                                 yield f"    <live />\n"
+
+                            # New tag
+                            if custom_data.get('new', False):
+                                yield f"    <new />\n"
+
+                            # Icon/poster URL
+                            if 'icon' in custom_data:
+                                yield f"    <icon src=\"{html.escape(custom_data['icon'])}\" />\n"
 
                             yield f"  </programme>\n"
 
@@ -1586,6 +1854,7 @@ def xc_xmltv(request):
 
 
 def xc_get_live_categories(user):
+    from django.db.models import Min
     response = []
 
     if user.user_level == 0:
@@ -1596,7 +1865,7 @@ def xc_get_live_categories(user):
             # No profile filtering - user sees all channel groups
             channel_groups = ChannelGroup.objects.filter(
                 channels__isnull=False, channels__user_level__lte=user.user_level
-            ).distinct().order_by(Lower("name"))
+            ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -1604,11 +1873,11 @@ def xc_get_live_categories(user):
                 "channels__user_level": 0,
                 "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all()
             }
-            channel_groups = ChannelGroup.objects.filter(**filters).distinct().order_by(Lower("name"))
+            channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
     else:
         channel_groups = ChannelGroup.objects.filter(
             channels__isnull=False, channels__user_level__lte=user.user_level
-        ).distinct().order_by(Lower("name"))
+        ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
 
     for group in channel_groups:
         response.append(
@@ -2383,12 +2652,17 @@ def get_host_and_port(request):
     if port:
         return host, port
 
-    # 4. Dev fallback: guess port
+    # 4. Try SERVER_PORT from META
+    port = request.META.get("SERVER_PORT")
+    if port:
+        return host, port
+
+    # 5. Dev fallback: guess port
     if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
        guess = "5656"
        return host, guess
 
-    # 5. Fallback to scheme default
+    # 6. Fallback to scheme default
     port = "443" if request.is_secure() else "9191"
     return host, port
 
