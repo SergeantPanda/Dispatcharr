@@ -2132,9 +2132,15 @@ export default class API {
 
       // If successful, requery channels to update UI
       if (response.success) {
+        // Build message based on whether EPG sources need refreshing
+        let message = `Updated ${response.channels_updated} channel${response.channels_updated !== 1 ? 's' : ''}`;
+        if (response.programs_refreshed > 0) {
+          message += `, refreshing ${response.programs_refreshed} EPG source${response.programs_refreshed !== 1 ? 's' : ''}`;
+        }
+
         notifications.show({
           title: 'EPG Association',
-          message: `Updated ${response.channels_updated} channels, refreshing ${response.programs_refreshed} EPG sources.`,
+          message: message,
           color: 'blue',
         });
 

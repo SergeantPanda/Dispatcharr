@@ -181,8 +181,6 @@ const EPGsTable = () => {
     );
   };
 
-  console.log(epgs);
-
   const columns = useMemo(
     //column definitions...
     () => [

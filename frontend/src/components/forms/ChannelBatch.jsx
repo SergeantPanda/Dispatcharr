@@ -55,6 +55,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
   const epgs = useEPGsStore((s) => s.epgs);
+  const tvgs = useEPGsStore((s) => s.tvgs);
   const fetchEPGs = useEPGsStore((s) => s.fetchEPGs);
 
   const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
@@ -267,17 +268,28 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         } else {
           // Assign the selected dummy EPG
           const selectedEpg = epgs[selectedDummyEpgId];
-          if (
-            selectedEpg &&
-            selectedEpg.epg_data_ids &&
-            selectedEpg.epg_data_ids.length > 0
-          ) {
-            const epgDataId = selectedEpg.epg_data_ids[0];
-            const associations = channelIds.map((id) => ({
-              channel_id: id,
-              epg_data_id: epgDataId,
-            }));
-            await API.batchSetEPG(associations);
+          if (selectedEpg && selectedEpg.epg_data_count > 0) {
+            // Convert to number for comparison since Select returns string
+            const epgSourceId = parseInt(selectedDummyEpgId, 10);
+
+            // Check if we already have EPG data loaded in the store
+            let epgData = tvgs.find((data) => data.epg_source === epgSourceId);
+
+            // If not in store, fetch it
+            if (!epgData) {
+              const epgDataList = await API.getEPGData();
+              epgData = epgDataList.find(
+                (data) => data.epg_source === epgSourceId
+              );
+            }
+
+            if (epgData) {
+              const associations = channelIds.map((id) => ({
+                channel_id: id,
+                epg_data_id: epgData.id,
+              }));
+              await API.batchSetEPG(associations);
+            }
           }
         }
       }

@@ -97,18 +97,29 @@ const useEPGsStore = create((set) => ({
               ? 'success' // Mark as success when progress is 100%
               : state.epgs[data.source]?.status || 'idle';
 
-      // Create a new epgs object with the updated source status
-      const newEpgs = {
-        ...state.epgs,
-        [data.source]: {
-          ...state.epgs[data.source],
-          status: sourceStatus,
-          last_message:
-            data.status === 'error'
-              ? data.error || 'Unknown error'
-              : state.epgs[data.source]?.last_message,
-        },
-      };
+      // Only update epgs object if status or last_message actually changed
+      // This prevents unnecessary re-renders on every progress update
+      const currentEpg = state.epgs[data.source];
+      const newLastMessage =
+        data.status === 'error'
+          ? data.error || 'Unknown error'
+          : currentEpg?.last_message;
+
+      let newEpgs = state.epgs;
+      if (
+        currentEpg &&
+        (currentEpg.status !== sourceStatus ||
+          currentEpg.last_message !== newLastMessage)
+      ) {
+        newEpgs = {
+          ...state.epgs,
+          [data.source]: {
+            ...currentEpg,
+            status: sourceStatus,
+            last_message: newLastMessage,
+          },
+        };
+      }
 
       return {
         refreshProgress: newRefreshProgress,

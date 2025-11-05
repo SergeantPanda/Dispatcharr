@@ -987,19 +987,27 @@ class ChannelViewSet(viewsets.ModelViewSet):
             channel.epg_data = epg_data
             channel.save(update_fields=["epg_data"])
 
-            # Explicitly trigger program refresh for this EPG
-            from apps.epg.tasks import parse_programs_for_tvg_id
+            # Only trigger program refresh for non-dummy EPG sources
+            status_message = None
+            if epg_data.epg_source.source_type != 'dummy':
+                # Explicitly trigger program refresh for this EPG
+                from apps.epg.tasks import parse_programs_for_tvg_id
 
-            task_result = parse_programs_for_tvg_id.delay(epg_data.id)
+                task_result = parse_programs_for_tvg_id.delay(epg_data.id)
 
-            # Prepare response with task status info
-            status_message = "EPG refresh queued"
-            if task_result.result == "Task already running":
-                status_message = "EPG refresh already in progress"
+                # Prepare response with task status info
+                status_message = "EPG refresh queued"
+                if task_result.result == "Task already running":
+                    status_message = "EPG refresh already in progress"
+
+            # Build response message
+            message = f"EPG data set to {epg_data.tvg_id} for channel {channel.name}"
+            if status_message:
+                message += f". {status_message}"
 
             return Response(
                 {
-                    "message": f"EPG data set to {epg_data.tvg_id} for channel {channel.name}. {status_message}.",
+                    "message": message,
                     "channel": self.get_serializer(channel).data,
                     "task_status": status_message,
                 }
@@ -1062,12 +1070,19 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     f"Error setting EPG data for channel {channel_id}: {str(e)}"
                 )
 
-        # Trigger program refresh for unique EPG data IDs
+        # Trigger program refresh for unique EPG data IDs (skip dummy EPGs)
         from apps.epg.tasks import parse_programs_for_tvg_id
+        from apps.epg.models import EPGData
 
         for epg_id in unique_epg_ids:
-            parse_programs_for_tvg_id.delay(epg_id)
-            programs_refreshed += 1
+            try:
+                epg_data = EPGData.objects.select_related('epg_source').get(id=epg_id)
+                # Only refresh non-dummy EPG sources
+                if epg_data.epg_source.source_type != 'dummy':
+                    parse_programs_for_tvg_id.delay(epg_id)
+                    programs_refreshed += 1
+            except EPGData.DoesNotExist:
+                logger.error(f"EPGData with ID {epg_id} not found")
 
         return Response(
             {
