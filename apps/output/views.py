@@ -2638,16 +2638,25 @@ def get_host_and_port(request):
     if xfh:
         if ":" in xfh:
             host, port = xfh.split(":", 1)
-            # Omit standard ports from URLs
-            return host, None if port == standard_port else port
+            # Omit standard ports from URLs, or omit if port doesn't match standard for scheme
+            # (e.g., HTTPS but port is 9191 = behind external reverse proxy)
+            if port == standard_port:
+                return host, None
+            # If port doesn't match standard and X-Forwarded-Proto is set, likely behind external RP
+            if request.META.get("HTTP_X_FORWARDED_PROTO"):
+                host = xfh.split(":")[0]  # Strip port, will check for proper port below
+            else:
+                return host, port
         else:
             host = xfh
-            # Check for X-Forwarded-Port header
-            port = request.META.get("HTTP_X_FORWARDED_PORT")
-            if port:
-                # Omit standard ports from URLs
-                return host, None if port == standard_port else port
-            # No port found, assume standard port for the scheme
+
+        # Check for X-Forwarded-Port header (if we didn't already find a valid port)
+        port = request.META.get("HTTP_X_FORWARDED_PORT")
+        if port:
+            # Omit standard ports from URLs
+            return host, None if port == standard_port else port
+        # If X-Forwarded-Proto is set but no valid port, assume standard
+        if request.META.get("HTTP_X_FORWARDED_PROTO"):
             return host, None
 
     # 2. Try Host header
@@ -2659,28 +2668,22 @@ def get_host_and_port(request):
     else:
         host = raw_host
 
-    # 3. Try X-Forwarded-Port (external reverse proxy might set this)
-    port = request.META.get("HTTP_X_FORWARDED_PORT")
-    if port:
-        # Omit standard ports from URLs
-        return host, None if port == standard_port else port
+    # 3. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
+    # If so, assume standard port for the scheme (don't trust SERVER_PORT in this case)
+    if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
+        return host, None
 
-    # 4. Try SERVER_PORT from META
+    # 4. Try SERVER_PORT from META (only if NOT behind reverse proxy)
     port = request.META.get("SERVER_PORT")
     if port:
         # Omit standard ports from URLs
         return host, None if port == standard_port else port
 
-    # 5. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
-    # If so, assume standard port for the scheme
-    if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
-        return host, None
-
-    # 6. Dev fallback: guess port 5656
+    # 5. Dev fallback: guess port 5656
     if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
         return host, "5656"
 
-    # 7. Final fallback: assume standard port for scheme (omit from URL)
+    # 6. Final fallback: assume standard port for scheme (omit from URL)
     return host, None
 
 def build_absolute_uri_with_port(request, path):
