@@ -626,25 +626,6 @@ const LogosTable = () => {
         }}
       >
         <Stack gap="md" style={{ maxWidth: '1200px', width: '100%' }}>
-          <Flex style={{ alignItems: 'center', paddingBottom: 10 }} gap={15}>
-            <Text
-              style={{
-                fontFamily: 'Inter, sans-serif',
-                fontWeight: 500,
-                fontSize: '20px',
-                lineHeight: 1,
-                letterSpacing: '-0.3px',
-                color: 'gray.6',
-                marginBottom: 0,
-              }}
-            >
-              Logos
-            </Text>
-            <Text size="sm" c="dimmed">
-              ({data.length} logo{data.length !== 1 ? 's' : ''})
-            </Text>
-          </Flex>
-
           <Paper
             style={{
               backgroundColor: '#27272A',

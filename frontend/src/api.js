@@ -1788,6 +1788,77 @@ export default class API {
     }
   }
 
+  // VOD Logo Methods
+  static async getVODLogos(params = {}) {
+    try {
+      // Transform usage filter to match backend expectations
+      const apiParams = { ...params };
+      if (apiParams.usage === 'used') {
+        apiParams.used = 'true';
+        delete apiParams.usage;
+      } else if (apiParams.usage === 'unused') {
+        apiParams.used = 'false';
+        delete apiParams.usage;
+      } else if (apiParams.usage === 'movies') {
+        apiParams.used = 'movies';
+        delete apiParams.usage;
+      } else if (apiParams.usage === 'series') {
+        apiParams.used = 'series';
+        delete apiParams.usage;
+      }
+
+      const queryParams = new URLSearchParams(apiParams);
+      const response = await request(
+        `${host}/api/vod/vodlogos/?${queryParams.toString()}`
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve VOD logos', e);
+      throw e;
+    }
+  }
+
+  static async deleteVODLogo(id) {
+    try {
+      await request(`${host}/api/vod/vodlogos/${id}/`, {
+        method: 'DELETE',
+      });
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete VOD logo', e);
+      throw e;
+    }
+  }
+
+  static async deleteVODLogos(ids) {
+    try {
+      await request(`${host}/api/vod/vodlogos/bulk-delete/`, {
+        method: 'DELETE',
+        body: { logo_ids: ids },
+      });
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete VOD logos', e);
+      throw e;
+    }
+  }
+
+  static async cleanupUnusedVODLogos() {
+    try {
+      const response = await request(`${host}/api/vod/vodlogos/cleanup/`, {
+        method: 'POST',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to cleanup unused VOD logos', e);
+      throw e;
+    }
+  }
+
   static async getChannelProfiles() {
     try {
       const response = await request(`${host}/api/channels/profiles/`);

@@ -2115,7 +2115,7 @@ def xc_get_vod_streams(request, user, category_id=None):
                 None if not movie.logo
                 else build_absolute_uri_with_port(
                     request,
-                    reverse("api:channels:logo-cache", args=[movie.logo.id])
+                    reverse("api:vod:vodlogo-cache", args=[movie.logo.id])
                 )
             ),
             #'stream_icon': movie.logo.url if movie.logo else '',
@@ -2185,7 +2185,7 @@ def xc_get_series(request, user, category_id=None):
                 None if not series.logo
                 else build_absolute_uri_with_port(
                     request,
-                    reverse("api:channels:logo-cache", args=[series.logo.id])
+                    reverse("api:vod:vodlogo-cache", args=[series.logo.id])
                 )
             ),
             "plot": series.description or "",
@@ -2378,7 +2378,7 @@ def xc_get_series_info(request, user, series_id):
                 None if not series.logo
                 else build_absolute_uri_with_port(
                     request,
-                    reverse("api:channels:logo-cache", args=[series.logo.id])
+                    reverse("api:vod:vodlogo-cache", args=[series.logo.id])
                 )
             ),
             "plot": series_data['description'],
@@ -2506,14 +2506,14 @@ def xc_get_vod_info(request, user, vod_id):
                 None if not movie.logo
                 else build_absolute_uri_with_port(
                     request,
-                    reverse("api:channels:logo-cache", args=[movie.logo.id])
+                    reverse("api:vod:vodlogo-cache", args=[movie.logo.id])
                 )
             ),
             "movie_image": (
                 None if not movie.logo
                 else build_absolute_uri_with_port(
                     request,
-                    reverse("api:channels:logo-cache", args=[movie.logo.id])
+                    reverse("api:vod:vodlogo-cache", args=[movie.logo.id])
                 )
             ),
             'description': movie_data.get('description', ''),
