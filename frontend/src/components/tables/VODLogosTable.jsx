@@ -412,6 +412,11 @@ export default function VODLogosTable() {
     tableRef.current = table;
   }, [table]);
 
+  // Helper to get single logo when confirming single-delete
+  const logoToDelete =
+    deleteTarget && deleteTarget.length === 1
+      ? logos.find((l) => l.id === deleteTarget[0])
+      : null;
   return (
     <Box
       style={{
@@ -562,17 +567,92 @@ export default function VODLogosTable() {
           setConfirmDeleteOpen(false);
           setDeleteTarget(null);
         }}
-        onConfirm={handleConfirmDelete}
-        title="Confirm Deletion"
-        message={`Are you sure you want to delete ${deleteTarget?.length || 0} VOD logo${deleteTarget?.length !== 1 ? 's' : ''}?`}
+        onConfirm={(deleteFiles) => {
+          // pass deleteFiles option through
+          handleConfirmDelete(deleteFiles);
+        }}
+        title={
+          deleteTarget && deleteTarget.length > 1
+            ? 'Delete Multiple Logos'
+            : 'Delete Logo'
+        }
+        message={
+          deleteTarget && deleteTarget.length > 1 ? (
+            <div>
+              Are you sure you want to delete {deleteTarget.length} selected
+              logos?
+              <Text size="sm" c="dimmed" mt="xs">
+                Any movies or series using these logos will have their logo
+                removed.
+              </Text>
+              <Text size="sm" c="dimmed" mt="xs">
+                This action cannot be undone.
+              </Text>
+            </div>
+          ) : logoToDelete ? (
+            <div>
+              Are you sure you want to delete the logo "{logoToDelete.name}"?
+              {logoToDelete.movie_count + logoToDelete.series_count > 0 && (
+                <Text size="sm" c="orange" mt="xs">
+                  This logo is currently used by{' '}
+                  {logoToDelete.movie_count + logoToDelete.series_count} item
+                  {logoToDelete.movie_count + logoToDelete.series_count !== 1
+                    ? 's'
+                    : ''}
+                  . They will have their logo removed.
+                </Text>
+              )}
+              <Text size="sm" c="dimmed" mt="xs">
+                This action cannot be undone.
+              </Text>
+            </div>
+          ) : (
+            'Are you sure you want to delete this logo?'
+          )
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        size="md"
+        showDeleteFileOption={
+          deleteTarget && deleteTarget.length > 1
+            ? Array.from(deleteTarget).some((id) => {
+                const logo = logos.find((l) => l.id === id);
+                return logo && logo.url && logo.url.startsWith('/data/logos');
+              })
+            : logoToDelete &&
+              logoToDelete.url &&
+              logoToDelete.url.startsWith('/data/logos')
+        }
+        deleteFileLabel={
+          deleteTarget && deleteTarget.length > 1
+            ? 'Also delete local logo files from disk'
+            : 'Also delete logo file from disk'
+        }
       />
 
       <ConfirmationDialog
         opened={confirmCleanupOpen}
         onClose={() => setConfirmCleanupOpen(false)}
         onConfirm={handleConfirmCleanup}
-        title="Confirm Cleanup"
-        message={`Are you sure you want to cleanup ${unusedLogosCount} unused logo${unusedLogosCount !== 1 ? 's' : ''}? This action cannot be undone.`}
+        title="Cleanup Unused Logos"
+        message={
+          <div>
+            Are you sure you want to cleanup {unusedLogosCount} unused logo
+            {unusedLogosCount !== 1 ? 's' : ''}?
+            <Text size="sm" c="dimmed" mt="xs">
+              This will permanently delete all logos that are not currently used
+              by any series or movies.
+            </Text>
+            <Text size="sm" c="dimmed" mt="xs">
+              This action cannot be undone.
+            </Text>
+          </div>
+        }
+        confirmLabel="Cleanup"
+        cancelLabel="Cancel"
+        size="md"
+        showDeleteFileOption={true}
+        deleteFileLabel="Also delete local logo files from disk"
       />
     </Box>
   );
