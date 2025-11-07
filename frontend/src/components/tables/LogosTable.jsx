@@ -226,7 +226,6 @@ const LogosTable = () => {
       setIsCleaningUp(true);
       try {
         const result = await API.cleanupUnusedLogos(deleteFiles);
-        await fetchAllLogos(); // Refresh all logos to maintain full view
 
         let message = `Successfully deleted ${result.deleted_count} unused logos`;
         if (result.local_files_deleted > 0) {
@@ -238,6 +237,9 @@ const LogosTable = () => {
           message: message,
           color: 'green',
         });
+
+        // Force refresh all logos after cleanup to maintain full view
+        await fetchAllLogos(true);
       } catch (error) {
         notifications.show({
           title: 'Cleanup Failed',

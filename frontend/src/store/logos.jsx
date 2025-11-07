@@ -95,11 +95,14 @@ const useLogosStore = create((set, get) => ({
     }
   },
 
-  fetchAllLogos: async () => {
+  fetchAllLogos: async (force = false) => {
     const { isLoading, hasLoadedAll, logos } = get();
 
     // Prevent unnecessary reloading if we already have all logos
-    if (isLoading || (hasLoadedAll && Object.keys(logos).length > 0)) {
+    if (
+      !force &&
+      (isLoading || (hasLoadedAll && Object.keys(logos).length > 0))
+    ) {
       return Object.values(logos);
     }
 

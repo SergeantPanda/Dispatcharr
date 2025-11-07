@@ -101,12 +101,14 @@ const useVODLogosStore = create((set) => ({
   cleanupUnusedVODLogos: async () => {
     try {
       const result = await api.cleanupUnusedVODLogos();
+
       // Refresh the logos after cleanup
       const state = useVODLogosStore.getState();
       await state.fetchVODLogos({
         page: state.currentPage,
         page_size: state.pageSize,
       });
+
       return result;
     } catch (error) {
       console.error('Failed to cleanup unused VOD logos:', error);
