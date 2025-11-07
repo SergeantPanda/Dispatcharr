@@ -76,6 +76,7 @@ export default function VODLogosTable() {
   const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
   const [paginationString, setPaginationString] = useState('');
   const [isCleaningUp, setIsCleaningUp] = useState(false);
+  const tableRef = React.useRef(null);
 
   // Calculate unused logos count
   const unusedLogosCount = useMemo(() => {
@@ -129,6 +130,14 @@ export default function VODLogosTable() {
     setSelectedRows(new Set(newSelection));
   }, []);
 
+  const clearSelections = useCallback(() => {
+    setSelectedRows(new Set());
+    // Clear table's internal selection state if table is initialized
+    if (tableRef.current?.setSelectedTableIds) {
+      tableRef.current.setSelectedTableIds([]);
+    }
+  }, []);
+
   const handleConfirmDelete = async () => {
     try {
       if (deleteTarget.length === 1) {
@@ -146,15 +155,17 @@ export default function VODLogosTable() {
           color: 'green',
         });
       }
-      setSelectedRows(new Set());
-      setConfirmDeleteOpen(false);
-      setDeleteTarget(null);
     } catch (error) {
       notifications.show({
         title: 'Error',
         message: error.message || 'Failed to delete VOD logos',
         color: 'red',
       });
+    } finally {
+      // Always clear selections and close dialog, even on error
+      clearSelections();
+      setConfirmDeleteOpen(false);
+      setDeleteTarget(null);
     }
   };
 
@@ -171,7 +182,6 @@ export default function VODLogosTable() {
         message: `Cleaned up ${result.deleted_count} unused VOD logos`,
         color: 'green',
       });
-      setConfirmCleanupOpen(false);
     } catch (error) {
       notifications.show({
         title: 'Error',
@@ -180,13 +190,15 @@ export default function VODLogosTable() {
       });
     } finally {
       setIsCleaningUp(false);
+      setConfirmCleanupOpen(false);
+      clearSelections(); // Clear selections after cleanup
     }
   };
 
   // Clear selections only when filters change (not on every data fetch)
   useEffect(() => {
-    setSelectedRows(new Set());
-  }, [nameFilter, usageFilter]);
+    clearSelections();
+  }, [nameFilter, usageFilter, clearSelections]);
 
   useEffect(() => {
     const startItem = (currentPage - 1) * pageSize + 1;
@@ -394,6 +406,11 @@ export default function VODLogosTable() {
       usage: renderHeaderCell,
     },
   });
+
+  // Store table reference for clearing selections
+  React.useEffect(() => {
+    tableRef.current = table;
+  }, [table]);
 
   return (
     <Box

@@ -115,6 +115,7 @@ const LogosTable = () => {
     pageSize: pageSize,
   });
   const [paginationString, setPaginationString] = useState('');
+  const tableRef = React.useRef(null);
 
   // Debounce the name filter
   useEffect(() => {
@@ -162,6 +163,14 @@ const LogosTable = () => {
   /**
    * Functions
    */
+  const clearSelections = useCallback(() => {
+    setSelectedRows(new Set());
+    // Clear table's internal selection state if table is initialized
+    if (tableRef.current?.setSelectedTableIds) {
+      tableRef.current.setSelectedTableIds([]);
+    }
+  }, []);
+
   const executeDeleteLogo = useCallback(
     async (id, deleteFile = false) => {
       setIsLoading(true);
@@ -185,10 +194,10 @@ const LogosTable = () => {
         setDeleteTarget(null);
         setLogoToDelete(null);
         setIsBulkDelete(false);
-        setSelectedRows(new Set()); // Clear selections
+        clearSelections(); // Clear selections
       }
     },
-    [fetchAllLogos]
+    [fetchAllLogos, clearSelections]
   );
 
   const executeBulkDelete = useCallback(
@@ -215,10 +224,10 @@ const LogosTable = () => {
         setIsLoading(false);
         setConfirmDeleteOpen(false);
         setIsBulkDelete(false);
-        setSelectedRows(new Set()); // Clear selections
+        clearSelections(); // Clear selections
       }
     },
-    [selectedRows, fetchAllLogos]
+    [selectedRows, fetchAllLogos, clearSelections]
   );
 
   const executeCleanupUnused = useCallback(
@@ -249,10 +258,10 @@ const LogosTable = () => {
       } finally {
         setIsCleaningUp(false);
         setConfirmCleanupOpen(false);
-        setSelectedRows(new Set()); // Clear selections after cleanup
+        clearSelections(); // Clear selections after cleanup
       }
     },
-    [fetchAllLogos]
+    [fetchAllLogos, clearSelections]
   );
 
   const editLogo = useCallback(async (logo = null) => {
@@ -289,10 +298,10 @@ const LogosTable = () => {
       if (checked) {
         setSelectedRows(new Set(data.map((logo) => logo.id)));
       } else {
-        setSelectedRows(new Set());
+        clearSelections();
       }
     },
-    [data]
+    [data, clearSelections]
   );
 
   const deleteBulkLogos = useCallback(() => {
@@ -310,8 +319,8 @@ const LogosTable = () => {
 
   // Clear selections when logos data changes (e.g., after filtering)
   useEffect(() => {
-    setSelectedRows(new Set());
-  }, [data.length]);
+    clearSelections();
+  }, [data.length, clearSelections]);
 
   // Update pagination when pageSize changes
   useEffect(() => {
@@ -615,6 +624,11 @@ const LogosTable = () => {
       channel_count: renderHeaderCell,
     },
   });
+
+  // Store table reference for clearing selections
+  React.useEffect(() => {
+    tableRef.current = table;
+  }, [table]);
 
   return (
     <>
