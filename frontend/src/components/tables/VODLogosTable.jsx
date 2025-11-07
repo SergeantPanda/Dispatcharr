@@ -125,6 +125,10 @@ export default function VODLogosTable() {
     setConfirmDeleteOpen(true);
   }, [selectedRows]);
 
+  const onRowSelectionChange = useCallback((newSelection) => {
+    setSelectedRows(new Set(newSelection));
+  }, []);
+
   const handleConfirmDelete = async () => {
     try {
       if (deleteTarget.length === 1) {
@@ -179,9 +183,10 @@ export default function VODLogosTable() {
     }
   };
 
+  // Clear selections only when filters change (not on every data fetch)
   useEffect(() => {
     setSelectedRows(new Set());
-  }, [logos.length]);
+  }, [nameFilter, usageFilter]);
 
   useEffect(() => {
     const startItem = (currentPage - 1) * pageSize + 1;
@@ -197,7 +202,7 @@ export default function VODLogosTable() {
     () => [
       {
         id: 'select',
-        header: ({ table }) => (
+        header: () => (
           <Checkbox
             checked={
               selectedRows.size > 0 && selectedRows.size === logos.length
@@ -380,6 +385,7 @@ export default function VODLogosTable() {
     renderTopToolbar: false,
     manualSorting: false,
     manualFiltering: false,
+    onRowSelectionChange: onRowSelectionChange,
     headerCellRenderFns: {
       actions: renderHeaderCell,
       cache_url: renderHeaderCell,
