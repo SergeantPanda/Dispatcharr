@@ -221,10 +221,11 @@ class StreamManager:
 
                 # Check stream type before connecting
                 stream_type = detect_stream_type(self.url)
-                if self.transcode == False and stream_type == StreamType.HLS:
-                    logger.info(f"Detected HLS stream: {self.url} for channel {self.channel_id}")
-                    logger.info(f"HLS streams will be handled with FFmpeg for now - future version will support HLS natively for channel {self.channel_id}")
-                    # Enable transcoding for HLS streams
+                if self.transcode == False and stream_type in (StreamType.HLS, StreamType.RTSP):
+                    stream_type_name = "HLS" if stream_type == StreamType.HLS else "RTSP/RTP"
+                    logger.info(f"Detected {stream_type_name} stream: {self.url} for channel {self.channel_id}")
+                    logger.info(f"{stream_type_name} streams require FFmpeg for channel {self.channel_id}")
+                    # Enable transcoding for HLS and RTSP/RTP streams
                     self.transcode = True
                     # We'll override the stream profile selection with ffmpeg in the transcoding section
                     self.force_ffmpeg = True
