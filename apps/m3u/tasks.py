@@ -434,25 +434,51 @@ def get_case_insensitive_attr(attributes, key, default=""):
 def parse_extinf_line(line: str) -> dict:
     """
     Parse an EXTINF line from an M3U file.
-    This function removes the "#EXTINF:" prefix, then splits the remaining
-    string on the first comma that is not enclosed in quotes.
+    This function removes the "#EXTINF:" prefix, then extracts all key="value" attributes,
+    and treats everything after the last attribute as the display name.
 
     Returns a dictionary with:
       - 'attributes': a dict of attribute key/value pairs (e.g. tvg-id, tvg-logo, group-title)
-      - 'display_name': the text after the comma (the fallback display name)
+      - 'display_name': the text after the attributes (the fallback display name)
       - 'name': the value from tvg-name (if present) or the display name otherwise.
     """
     if not line.startswith("#EXTINF:"):
         return None
     content = line[len("#EXTINF:") :].strip()
-    # Split on the first comma that is not inside quotes.
-    parts = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', content, maxsplit=1)
-    if len(parts) != 2:
-        return None
-    attributes_part, display_name = parts[0], parts[1].strip()
-    attrs = dict(re.findall(r'([^\s]+)="([^"]+)"', attributes_part) + re.findall(r"([^\s]+)='([^']+)'", attributes_part))
-    # Use tvg-name attribute if available; otherwise, use the display name.
-    name = get_case_insensitive_attr(attrs, "tvg-name", display_name)
+
+    # Single pass: extract all attributes AND track the last attribute position
+    # This regex matches both key="value" and key='value' patterns
+    attrs = {}
+    last_attr_end = 0
+
+    # Use a single regex that handles both quote types
+    for match in re.finditer(r'([^\s]+)=(["\'])([^\2]*?)\2', content):
+        key = match.group(1)
+        value = match.group(3)
+        attrs[key] = value
+        last_attr_end = match.end()
+
+    # Everything after the last attribute (skipping leading comma and whitespace) is the display name
+    if last_attr_end > 0:
+        remaining = content[last_attr_end:].strip()
+        # Remove leading comma if present
+        if remaining.startswith(','):
+            remaining = remaining[1:].strip()
+        display_name = remaining
+    else:
+        # No attributes found, try the old comma-split method as fallback
+        parts = content.split(',', 1)
+        if len(parts) == 2:
+            display_name = parts[1].strip()
+        else:
+            display_name = content.strip()
+
+    # Use tvg-name attribute if available; otherwise try tvc-guide-title, then fall back to display name.
+    name = get_case_insensitive_attr(attrs, "tvg-name", None)
+    if not name:
+        name = get_case_insensitive_attr(attrs, "tvc-guide-title", None)
+    if not name:
+        name = display_name
     return {"attributes": attrs, "display_name": display_name, "name": name}
 
 
