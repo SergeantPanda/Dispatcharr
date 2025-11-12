@@ -4,7 +4,7 @@ import time
 import random
 import re
 import pathlib
-from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirect
+from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirect, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
 from apps.proxy.config import TSConfig as Config
@@ -292,6 +292,15 @@ def stream_ts(request, channel_id):
                     logger.info(
                         f"[{client_id}] Redirecting to validated URL: {final_url} ({message})"
                     )
+
+                    # For non-HTTP protocols (RTSP/RTP/UDP), we need to manually create the redirect
+                    # because Django's HttpResponseRedirect blocks them for security
+                    if final_url.startswith(('rtsp://', 'rtp://', 'udp://')):
+                        logger.info(f"[{client_id}] Using manual redirect for non-HTTP protocol")
+                        response = HttpResponse(status=301)
+                        response['Location'] = final_url
+                        return response
+
                     return HttpResponseRedirect(final_url)
                 else:
                     logger.error(
