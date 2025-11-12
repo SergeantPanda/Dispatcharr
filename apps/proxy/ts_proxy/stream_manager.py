@@ -228,11 +228,11 @@ class StreamManager:
 
                 # Check stream type before connecting
                 stream_type = detect_stream_type(self.url)
-                if self.transcode == False and stream_type in (StreamType.HLS, StreamType.RTSP):
-                    stream_type_name = "HLS" if stream_type == StreamType.HLS else "RTSP/RTP"
+                if self.transcode == False and stream_type in (StreamType.HLS, StreamType.RTSP, StreamType.UDP):
+                    stream_type_name = "HLS" if stream_type == StreamType.HLS else ("RTSP/RTP" if stream_type == StreamType.RTSP else "UDP")
                     logger.info(f"Detected {stream_type_name} stream: {self.url} for channel {self.channel_id}")
                     logger.info(f"{stream_type_name} streams require FFmpeg for channel {self.channel_id}")
-                    # Enable transcoding for HLS and RTSP/RTP streams
+                    # Enable transcoding for HLS, RTSP/RTP, and UDP streams
                     self.transcode = True
                     # We'll override the stream profile selection with ffmpeg in the transcoding section
                     self.force_ffmpeg = True
@@ -421,7 +421,7 @@ class StreamManager:
                 from core.models import StreamProfile
                 try:
                     stream_profile = StreamProfile.objects.get(name='ffmpeg', locked=True)
-                    logger.info("Using FFmpeg stream profile for HLS content")
+                    logger.info("Using FFmpeg stream profile for unsupported proxy content (HLS/RTSP/UDP)")
                 except StreamProfile.DoesNotExist:
                     # Fall back to channel's profile if FFmpeg not found
                     stream_profile = channel.get_stream_profile()
@@ -949,10 +949,10 @@ class StreamManager:
                         logger.debug(f"Updated m3u profile for channel {self.channel_id} to use profile from stream {stream_id}")
                     else:
                         logger.warning(f"Failed to update stream profile for channel {self.channel_id}")
-                    
+
             except Exception as e:
                 logger.error(f"Error updating stream profile for channel {self.channel_id}: {e}")
-                
+
             finally:
                 # Always close database connection after profile update
                 try:

@@ -29,6 +29,7 @@ from core.models import CoreSettings, UserAgent
 from asgiref.sync import async_to_sync
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
+from .utils import normalize_stream_url
 
 logger = logging.getLogger(__name__)
 
@@ -219,10 +220,10 @@ def fetch_m3u_lines(account, use_cache=False):
                         # Has HTTP URLs, might be a simple M3U without headers
                         is_valid_m3u = True
                         logger.info("Content validated as M3U: contains HTTP URLs")
-                    elif any(line.strip().startswith('rtsp') for line in content_lines):
-                        # Has HTTP URLs, might be a simple M3U without headers
+                    elif any(line.strip().startswith(('rtsp', 'rtp', 'udp')) for line in content_lines):
+                        # Has RTSP/RTP/UDP URLs, might be a simple M3U without headers
                         is_valid_m3u = True
-                        logger.info("Content validated as M3U: contains RTSP URLs")
+                        logger.info("Content validated as M3U: contains RTSP/RTP/UDP URLs")
 
                     if not is_valid_m3u:
                         # Log what we actually received for debugging
@@ -1403,10 +1404,12 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                     )
                     problematic_lines.append((line_index + 1, line[:200]))
 
-            elif extinf_data and (line.startswith("http") or line.startswith("rtsp")):
+            elif extinf_data and (line.startswith("http") or line.startswith("rtsp") or line.startswith("rtp") or line.startswith("udp")):
                 url_count += 1
+                # Normalize UDP URLs only (e.g., remove VLC-specific @ prefix)
+                normalized_url = normalize_stream_url(line) if line.startswith("udp") else line
                 # Associate URL with the last EXTINF line
-                extinf_data[-1]["url"] = line
+                extinf_data[-1]["url"] = normalized_url
                 valid_stream_count += 1
 
                 # Periodically log progress for large files
