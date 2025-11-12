@@ -34,6 +34,7 @@ class EventType:
 class StreamType:
     HLS = "hls"
     RTSP = "rtsp"
+    UDP = "udp"
     TS = "ts"
     UNKNOWN = "unknown"
 
