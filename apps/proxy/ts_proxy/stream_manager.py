@@ -227,9 +227,9 @@ class StreamManager:
                         # Continue with normal flow
 
                 # Check stream type before connecting
-                stream_type = detect_stream_type(self.url)
-                if self.transcode == False and stream_type in (StreamType.HLS, StreamType.RTSP, StreamType.UDP):
-                    stream_type_name = "HLS" if stream_type == StreamType.HLS else ("RTSP/RTP" if stream_type == StreamType.RTSP else "UDP")
+                self.stream_type = detect_stream_type(self.url)
+                if self.transcode == False and self.stream_type in (StreamType.HLS, StreamType.RTSP, StreamType.UDP):
+                    stream_type_name = "HLS" if self.stream_type == StreamType.HLS else ("RTSP/RTP" if self.stream_type == StreamType.RTSP else "UDP")
                     logger.info(f"Detected {stream_type_name} stream: {self.url} for channel {self.channel_id}")
                     logger.info(f"{stream_type_name} streams require FFmpeg for channel {self.channel_id}")
                     # Enable transcoding for HLS, RTSP/RTP, and UDP streams
@@ -431,6 +431,13 @@ class StreamManager:
 
             # Build and start transcode command
             self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
+
+            # For UDP streams, remove any user_agent parameters from the command
+            if hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP:
+                # Filter out any arguments that contain the user_agent value or related headers
+                self.transcode_cmd = [arg for arg in self.transcode_cmd if self.user_agent not in arg and 'user-agent' not in arg.lower() and 'user_agent' not in arg.lower()]
+                logger.debug(f"Removed user_agent parameters from UDP stream command for channel: {self.channel_id}")
+
             logger.debug(f"Starting transcode process: {self.transcode_cmd} for channel: {self.channel_id}")
 
             # Modified to capture stderr instead of discarding it
