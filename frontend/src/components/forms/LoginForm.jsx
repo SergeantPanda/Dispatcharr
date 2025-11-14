@@ -12,6 +12,9 @@ import {
   Image,
   Group,
   Divider,
+  Modal,
+  Anchor,
+  Code,
 } from '@mantine/core';
 import logo from '../../assets/logo.png';
 
@@ -23,6 +26,7 @@ const LoginForm = () => {
 
   const navigate = useNavigate(); // Hook to navigate to other routes
   const [formData, setFormData] = useState({ username: '', password: '' });
+  const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -98,9 +102,61 @@ const LoginForm = () => {
             <Button type="submit" mt="sm" fullWidth>
               Login
             </Button>
+
+            <Group justify="flex-end">
+              <Anchor
+                size="sm"
+                component="button"
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setForgotPasswordOpened(true);
+                }}
+              >
+                Forgot password?
+              </Anchor>
+            </Group>
           </Stack>
         </form>
       </Paper>
+
+      <Modal
+        opened={forgotPasswordOpened}
+        onClose={() => setForgotPasswordOpened(false)}
+        title="Reset Your Password"
+        centered
+      >
+        <Stack spacing="md">
+          <Text>
+            To reset your password, your administrator needs to run a Django
+            management command:
+          </Text>
+          <div>
+            <Text weight={500} size="sm" mb={8}>
+              If running with Docker:
+            </Text>
+            <Code block>
+              docker exec &lt;container_name&gt; python manage.py changepassword
+              &lt;username&gt;
+            </Code>
+          </div>
+          <div>
+            <Text weight={500} size="sm" mb={8}>
+              If running locally:
+            </Text>
+            <Code block>python manage.py changepassword &lt;username&gt;</Code>
+          </div>
+          <Text size="sm" color="dimmed">
+            The command will prompt for a new password. Replace
+            <code>&lt;container_name&gt;</code> with your Docker container name
+            and <code>&lt;username&gt;</code> with the account username.
+          </Text>
+          <Text size="sm" color="dimmed" italic>
+            Please contact your system administrator to perform a password
+            reset.
+          </Text>
+        </Stack>
+      </Modal>
     </Center>
   );
 };
