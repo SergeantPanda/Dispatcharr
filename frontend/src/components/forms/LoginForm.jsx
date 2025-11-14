@@ -32,6 +32,7 @@ const LoginForm = () => {
   const [savePassword, setSavePassword] = useState(false);
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
   const [version, setVersion] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
 
   // Simple base64 encoding/decoding for localStorage
   // Note: This is obfuscation, not encryption. Use browser's password manager for real security.
@@ -100,6 +101,7 @@ const LoginForm = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setIsLoading(true);
 
     try {
       await login(formData);
@@ -130,6 +132,7 @@ const LoginForm = () => {
     } catch (e) {
       console.log(`Failed to login: ${e}`);
       await logout();
+      setIsLoading(false);
     }
   };
 
@@ -239,8 +242,14 @@ const LoginForm = () => {
               )}
             </div>
 
-            <Button type="submit" fullWidth>
-              Login
+            <Button
+              type="submit"
+              fullWidth
+              loading={isLoading}
+              disabled={isLoading}
+              loaderProps={{ type: 'dots' }}
+            >
+              {isLoading ? 'Logging you in...' : 'Login'}
             </Button>
           </Stack>
         </form>
