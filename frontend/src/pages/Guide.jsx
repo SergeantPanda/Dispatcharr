@@ -275,6 +275,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const guideRef = useRef(null);
   const timelineRef = useRef(null); // New ref for timeline scrolling
   const listRef = useRef(null);
+  const tvGuideRef = useRef(null); // Ref for the main tv-guide wrapper
   const isSyncingScroll = useRef(false);
   const guideScrollLeftRef = useRef(0);
   const {
@@ -506,6 +507,10 @@ export default function TVChannelGuide({ startDate, endDate }) {
     if (!node) return undefined;
 
     const handleScroll = () => {
+      if (isSyncingScroll.current) {
+        return;
+      }
+
       const { scrollLeft } = node;
       if (scrollLeft === guideScrollLeftRef.current) {
         return;
@@ -513,10 +518,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       guideScrollLeftRef.current = scrollLeft;
       setGuideScrollLeft(scrollLeft);
-
-      if (isSyncingScroll.current) {
-        return;
-      }
 
       if (
         timelineRef.current &&
@@ -531,12 +532,13 @@ export default function TVChannelGuide({ startDate, endDate }) {
     };
 
     node.addEventListener('scroll', handleScroll, { passive: true });
+
     return () => {
       node.removeEventListener('scroll', handleScroll);
     };
   }, []);
 
-  // Update “now” every second
+  // Update "now" every second
   useEffect(() => {
     const interval = setInterval(() => {
       setNow(dayjs());
@@ -544,12 +546,66 @@ export default function TVChannelGuide({ startDate, endDate }) {
     return () => clearInterval(interval);
   }, []);
 
-  // Pixel offset for the “now” vertical line
+  // Pixel offset for the "now" vertical line
   const nowPosition = useMemo(() => {
     if (now.isBefore(start) || now.isAfter(end)) return -1;
     const minutesSinceStart = now.diff(start, 'minute');
     return (minutesSinceStart / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
   }, [now, start, end]);
+
+  useEffect(() => {
+    const tvGuide = tvGuideRef.current;
+
+    if (!tvGuide) return undefined;
+
+    const handleContainerWheel = (event) => {
+      const guide = guideRef.current;
+      const timeline = timelineRef.current;
+
+      if (!guide) {
+        return;
+      }
+
+      if (event.deltaX !== 0 || (event.shiftKey && event.deltaY !== 0)) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const delta = event.deltaX !== 0 ? event.deltaX : event.deltaY;
+        const newScrollLeft = guide.scrollLeft + delta;
+
+        // Set both guide and timeline scroll positions
+        if (typeof guide.scrollTo === 'function') {
+          guide.scrollTo({ left: newScrollLeft, behavior: 'auto' });
+        } else {
+          guide.scrollLeft = newScrollLeft;
+        }
+
+        // Also sync timeline immediately
+        if (timeline) {
+          if (typeof timeline.scrollTo === 'function') {
+            timeline.scrollTo({ left: newScrollLeft, behavior: 'auto' });
+          } else {
+            timeline.scrollLeft = newScrollLeft;
+          }
+        }
+
+        // Update the ref to keep state in sync
+        guideScrollLeftRef.current = newScrollLeft;
+        setGuideScrollLeft(newScrollLeft);
+      }
+    };
+
+    tvGuide.addEventListener('wheel', handleContainerWheel, {
+      passive: false,
+      capture: true,
+    });
+
+    return () => {
+      tvGuide.removeEventListener('wheel', handleContainerWheel, {
+        capture: true,
+      });
+    };
+  }, []);
 
   const syncScrollLeft = useCallback((nextLeft, behavior = 'auto') => {
     const guideNode = guideRef.current;
@@ -780,17 +836,17 @@ export default function TVChannelGuide({ startDate, endDate }) {
   }, [now, nowPosition, start, syncScrollLeft]);
 
   const handleTimelineScroll = useCallback(() => {
-    if (!timelineRef.current) {
+    if (!timelineRef.current || isSyncingScroll.current) {
       return;
     }
 
     const nextLeft = timelineRef.current.scrollLeft;
-    guideScrollLeftRef.current = nextLeft;
-    setGuideScrollLeft(nextLeft);
-
-    if (isSyncingScroll.current) {
+    if (nextLeft === guideScrollLeftRef.current) {
       return;
     }
+
+    guideScrollLeftRef.current = nextLeft;
+    setGuideScrollLeft(nextLeft);
 
     isSyncingScroll.current = true;
     if (guideRef.current) {
@@ -1178,6 +1234,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
   return (
     <Box
+      ref={tvGuideRef}
       className="tv-guide"
       style={{
         overflow: 'hidden',
