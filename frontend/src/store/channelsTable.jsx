@@ -10,7 +10,8 @@ const useChannelsTableStore = create((set, get) => ({
   sorting: [{ id: 'channel_number', desc: false }],
   pagination: {
     pageIndex: 0,
-    pageSize: 50,
+    pageSize:
+      JSON.parse(localStorage.getItem('channel-table-prefs'))?.pageSize || 50,
   },
   selectedChannelIds: [],
   allQueryIds: [],

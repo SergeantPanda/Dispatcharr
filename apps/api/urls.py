@@ -1,11 +1,10 @@
-from django.urls import path, include
+from django.urls import path, include, re_path
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 from rest_framework.permissions import AllowAny
 
 app_name = 'api'
 
-# Configure Swagger Schema
 schema_view = get_schema_view(
     openapi.Info(
         title="Dispatcharr API",
@@ -26,6 +25,8 @@ urlpatterns = [
     path('hdhr/', include(('apps.hdhr.api_urls', 'hdhr'), namespace='hdhr')),
     path('m3u/', include(('apps.m3u.api_urls', 'm3u'), namespace='m3u')),
     path('core/', include(('core.api_urls', 'core'), namespace='core')),
+    path('plugins/', include(('apps.plugins.api_urls', 'plugins'), namespace='plugins')),
+    path('vod/', include(('apps.vod.api_urls', 'vod'), namespace='vod')),
     # path('output/', include(('apps.output.api_urls', 'output'), namespace='output')),
     #path('player/', include(('apps.player.api_urls', 'player'), namespace='player')),
     #path('settings/', include(('apps.settings.api_urls', 'settings'), namespace='settings')),
@@ -34,7 +35,7 @@ urlpatterns = [
 
 
     # Swagger Documentation api_urls
-    path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
+    re_path(r'^swagger/?$', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
     path('swagger.json', schema_view.without_ui(cache_timeout=0), name='schema-json'),
 ]

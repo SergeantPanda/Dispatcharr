@@ -1,292 +1,271 @@
-import React, { useEffect } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import API from '../api';
 import useSettingsStore from '../store/settings';
 import useUserAgentsStore from '../store/userAgents';
 import useStreamProfilesStore from '../store/streamProfiles';
 import {
   Accordion,
+  Alert,
   Box,
   Button,
   Center,
   Flex,
   Group,
+  FileInput,
   MultiSelect,
   Select,
+  Stack,
   Switch,
   Text,
+  TextInput,
+  NumberInput,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
+import { notifications } from '@mantine/notifications';
 import UserAgentsTable from '../components/tables/UserAgentsTable';
 import StreamProfilesTable from '../components/tables/StreamProfilesTable';
 import useLocalStorage from '../hooks/useLocalStorage';
+import useAuthStore from '../store/auth';
+import {
+  USER_LEVELS,
+  NETWORK_ACCESS_OPTIONS,
+  PROXY_SETTINGS_OPTIONS,
+  REGION_CHOICES,
+} from '../constants';
+import ConfirmationDialog from '../components/ConfirmationDialog';
+import useWarningsStore from '../store/warnings';
+
+const TIMEZONE_FALLBACKS = [
+  'UTC',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'America/Phoenix',
+  'America/Anchorage',
+  'Pacific/Honolulu',
+  'Europe/London',
+  'Europe/Paris',
+  'Europe/Berlin',
+  'Europe/Madrid',
+  'Europe/Warsaw',
+  'Europe/Moscow',
+  'Asia/Dubai',
+  'Asia/Kolkata',
+  'Asia/Shanghai',
+  'Asia/Tokyo',
+  'Asia/Seoul',
+  'Australia/Sydney',
+];
+
+const getSupportedTimeZones = () => {
+  try {
+    if (typeof Intl.supportedValuesOf === 'function') {
+      return Intl.supportedValuesOf('timeZone');
+    }
+  } catch (error) {
+    console.warn('Unable to enumerate supported time zones:', error);
+  }
+  return TIMEZONE_FALLBACKS;
+};
+
+const getTimeZoneOffsetMinutes = (date, timeZone) => {
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    const parts = dtf.formatToParts(date).reduce((acc, part) => {
+      if (part.type !== 'literal') acc[part.type] = part.value;
+      return acc;
+    }, {});
+    const asUTC = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+      Number(parts.second)
+    );
+    return (asUTC - date.getTime()) / 60000;
+  } catch (error) {
+    console.warn(`Failed to compute offset for ${timeZone}:`, error);
+    return 0;
+  }
+};
+
+const formatOffset = (minutes) => {
+  const rounded = Math.round(minutes);
+  const sign = rounded < 0 ? '-' : '+';
+  const absolute = Math.abs(rounded);
+  const hours = String(Math.floor(absolute / 60)).padStart(2, '0');
+  const mins = String(absolute % 60).padStart(2, '0');
+  return `UTC${sign}${hours}:${mins}`;
+};
+
+const buildTimeZoneOptions = (preferredZone) => {
+  const zones = getSupportedTimeZones();
+  const referenceYear = new Date().getUTCFullYear();
+  const janDate = new Date(Date.UTC(referenceYear, 0, 1, 12, 0, 0));
+  const julDate = new Date(Date.UTC(referenceYear, 6, 1, 12, 0, 0));
+
+  const options = zones
+    .map((zone) => {
+      const janOffset = getTimeZoneOffsetMinutes(janDate, zone);
+      const julOffset = getTimeZoneOffsetMinutes(julDate, zone);
+      const currentOffset = getTimeZoneOffsetMinutes(new Date(), zone);
+      const minOffset = Math.min(janOffset, julOffset);
+      const maxOffset = Math.max(janOffset, julOffset);
+      const usesDst = minOffset !== maxOffset;
+      const labelParts = [`now ${formatOffset(currentOffset)}`];
+      if (usesDst) {
+        labelParts.push(
+          `DST range ${formatOffset(minOffset)} to ${formatOffset(maxOffset)}`
+        );
+      }
+      return {
+        value: zone,
+        label: `${zone} (${labelParts.join(' | ')})`,
+        numericOffset: minOffset,
+      };
+    })
+    .sort((a, b) => {
+      if (a.numericOffset !== b.numericOffset) {
+        return a.numericOffset - b.numericOffset;
+      }
+      return a.value.localeCompare(b.value);
+    });
+  if (
+    preferredZone &&
+    !options.some((option) => option.value === preferredZone)
+  ) {
+    const currentOffset = getTimeZoneOffsetMinutes(new Date(), preferredZone);
+    options.push({
+      value: preferredZone,
+      label: `${preferredZone} (now ${formatOffset(currentOffset)})`,
+      numericOffset: currentOffset,
+    });
+    options.sort((a, b) => {
+      if (a.numericOffset !== b.numericOffset) {
+        return a.numericOffset - b.numericOffset;
+      }
+      return a.value.localeCompare(b.value);
+    });
+  }
+  return options;
+};
+
+const getDefaultTimeZone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch (error) {
+    return 'UTC';
+  }
+};
 
 const SettingsPage = () => {
   const settings = useSettingsStore((s) => s.settings);
   const userAgents = useUserAgentsStore((s) => s.userAgents);
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
+  const authUser = useAuthStore((s) => s.user);
+  const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+  const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+
+  const [accordianValue, setAccordianValue] = useState(null);
+  const [networkAccessSaved, setNetworkAccessSaved] = useState(false);
+  const [networkAccessError, setNetworkAccessError] = useState(null);
+  const [networkAccessConfirmOpen, setNetworkAccessConfirmOpen] =
+    useState(false);
+  const [netNetworkAccessConfirmCIDRs, setNetNetworkAccessConfirmCIDRs] =
+    useState([]);
+
+  const [proxySettingsSaved, setProxySettingsSaved] = useState(false);
+  const [generalSettingsSaved, setGeneralSettingsSaved] = useState(false);
+  const [rehashingStreams, setRehashingStreams] = useState(false);
+  const [rehashSuccess, setRehashSuccess] = useState(false);
+  const [rehashConfirmOpen, setRehashConfirmOpen] = useState(false);
+
+  // Add a new state to track the dialog type
+  const [rehashDialogType, setRehashDialogType] = useState(null); // 'save' or 'rehash'
+
+  // Store pending changed settings when showing the dialog
+  const [pendingChangedSettings, setPendingChangedSettings] = useState(null);
+  const [comskipFile, setComskipFile] = useState(null);
+  const [comskipUploadLoading, setComskipUploadLoading] = useState(false);
+  const [comskipConfig, setComskipConfig] = useState({
+    path: '',
+    exists: false,
+  });
 
   // UI / local storage settings
   const [tableSize, setTableSize] = useLocalStorage('table-size', 'default');
+  const [timeFormat, setTimeFormat] = useLocalStorage('time-format', '12h');
+  const [dateFormat, setDateFormat] = useLocalStorage('date-format', 'mdy');
+  const [timeZone, setTimeZone] = useLocalStorage(
+    'time-zone',
+    getDefaultTimeZone()
+  );
+  const timeZoneOptions = useMemo(
+    () => buildTimeZoneOptions(timeZone),
+    [timeZone]
+  );
+  const timeZoneSyncedRef = useRef(false);
 
-  const regionChoices = [
-    { value: 'ad', label: 'AD' },
-    { value: 'ae', label: 'AE' },
-    { value: 'af', label: 'AF' },
-    { value: 'ag', label: 'AG' },
-    { value: 'ai', label: 'AI' },
-    { value: 'al', label: 'AL' },
-    { value: 'am', label: 'AM' },
-    { value: 'ao', label: 'AO' },
-    { value: 'aq', label: 'AQ' },
-    { value: 'ar', label: 'AR' },
-    { value: 'as', label: 'AS' },
-    { value: 'at', label: 'AT' },
-    { value: 'au', label: 'AU' },
-    { value: 'aw', label: 'AW' },
-    { value: 'ax', label: 'AX' },
-    { value: 'az', label: 'AZ' },
-    { value: 'ba', label: 'BA' },
-    { value: 'bb', label: 'BB' },
-    { value: 'bd', label: 'BD' },
-    { value: 'be', label: 'BE' },
-    { value: 'bf', label: 'BF' },
-    { value: 'bg', label: 'BG' },
-    { value: 'bh', label: 'BH' },
-    { value: 'bi', label: 'BI' },
-    { value: 'bj', label: 'BJ' },
-    { value: 'bl', label: 'BL' },
-    { value: 'bm', label: 'BM' },
-    { value: 'bn', label: 'BN' },
-    { value: 'bo', label: 'BO' },
-    { value: 'bq', label: 'BQ' },
-    { value: 'br', label: 'BR' },
-    { value: 'bs', label: 'BS' },
-    { value: 'bt', label: 'BT' },
-    { value: 'bv', label: 'BV' },
-    { value: 'bw', label: 'BW' },
-    { value: 'by', label: 'BY' },
-    { value: 'bz', label: 'BZ' },
-    { value: 'ca', label: 'CA' },
-    { value: 'cc', label: 'CC' },
-    { value: 'cd', label: 'CD' },
-    { value: 'cf', label: 'CF' },
-    { value: 'cg', label: 'CG' },
-    { value: 'ch', label: 'CH' },
-    { value: 'ci', label: 'CI' },
-    { value: 'ck', label: 'CK' },
-    { value: 'cl', label: 'CL' },
-    { value: 'cm', label: 'CM' },
-    { value: 'cn', label: 'CN' },
-    { value: 'co', label: 'CO' },
-    { value: 'cr', label: 'CR' },
-    { value: 'cu', label: 'CU' },
-    { value: 'cv', label: 'CV' },
-    { value: 'cw', label: 'CW' },
-    { value: 'cx', label: 'CX' },
-    { value: 'cy', label: 'CY' },
-    { value: 'cz', label: 'CZ' },
-    { value: 'de', label: 'DE' },
-    { value: 'dj', label: 'DJ' },
-    { value: 'dk', label: 'DK' },
-    { value: 'dm', label: 'DM' },
-    { value: 'do', label: 'DO' },
-    { value: 'dz', label: 'DZ' },
-    { value: 'ec', label: 'EC' },
-    { value: 'ee', label: 'EE' },
-    { value: 'eg', label: 'EG' },
-    { value: 'eh', label: 'EH' },
-    { value: 'er', label: 'ER' },
-    { value: 'es', label: 'ES' },
-    { value: 'et', label: 'ET' },
-    { value: 'fi', label: 'FI' },
-    { value: 'fj', label: 'FJ' },
-    { value: 'fk', label: 'FK' },
-    { value: 'fm', label: 'FM' },
-    { value: 'fo', label: 'FO' },
-    { value: 'fr', label: 'FR' },
-    { value: 'ga', label: 'GA' },
-    { value: 'gb', label: 'GB' },
-    { value: 'gd', label: 'GD' },
-    { value: 'ge', label: 'GE' },
-    { value: 'gf', label: 'GF' },
-    { value: 'gg', label: 'GG' },
-    { value: 'gh', label: 'GH' },
-    { value: 'gi', label: 'GI' },
-    { value: 'gl', label: 'GL' },
-    { value: 'gm', label: 'GM' },
-    { value: 'gn', label: 'GN' },
-    { value: 'gp', label: 'GP' },
-    { value: 'gq', label: 'GQ' },
-    { value: 'gr', label: 'GR' },
-    { value: 'gs', label: 'GS' },
-    { value: 'gt', label: 'GT' },
-    { value: 'gu', label: 'GU' },
-    { value: 'gw', label: 'GW' },
-    { value: 'gy', label: 'GY' },
-    { value: 'hk', label: 'HK' },
-    { value: 'hm', label: 'HM' },
-    { value: 'hn', label: 'HN' },
-    { value: 'hr', label: 'HR' },
-    { value: 'ht', label: 'HT' },
-    { value: 'hu', label: 'HU' },
-    { value: 'id', label: 'ID' },
-    { value: 'ie', label: 'IE' },
-    { value: 'il', label: 'IL' },
-    { value: 'im', label: 'IM' },
-    { value: 'in', label: 'IN' },
-    { value: 'io', label: 'IO' },
-    { value: 'iq', label: 'IQ' },
-    { value: 'ir', label: 'IR' },
-    { value: 'is', label: 'IS' },
-    { value: 'it', label: 'IT' },
-    { value: 'je', label: 'JE' },
-    { value: 'jm', label: 'JM' },
-    { value: 'jo', label: 'JO' },
-    { value: 'jp', label: 'JP' },
-    { value: 'ke', label: 'KE' },
-    { value: 'kg', label: 'KG' },
-    { value: 'kh', label: 'KH' },
-    { value: 'ki', label: 'KI' },
-    { value: 'km', label: 'KM' },
-    { value: 'kn', label: 'KN' },
-    { value: 'kp', label: 'KP' },
-    { value: 'kr', label: 'KR' },
-    { value: 'kw', label: 'KW' },
-    { value: 'ky', label: 'KY' },
-    { value: 'kz', label: 'KZ' },
-    { value: 'la', label: 'LA' },
-    { value: 'lb', label: 'LB' },
-    { value: 'lc', label: 'LC' },
-    { value: 'li', label: 'LI' },
-    { value: 'lk', label: 'LK' },
-    { value: 'lr', label: 'LR' },
-    { value: 'ls', label: 'LS' },
-    { value: 'lt', label: 'LT' },
-    { value: 'lu', label: 'LU' },
-    { value: 'lv', label: 'LV' },
-    { value: 'ly', label: 'LY' },
-    { value: 'ma', label: 'MA' },
-    { value: 'mc', label: 'MC' },
-    { value: 'md', label: 'MD' },
-    { value: 'me', label: 'ME' },
-    { value: 'mf', label: 'MF' },
-    { value: 'mg', label: 'MG' },
-    { value: 'mh', label: 'MH' },
-    { value: 'ml', label: 'ML' },
-    { value: 'mm', label: 'MM' },
-    { value: 'mn', label: 'MN' },
-    { value: 'mo', label: 'MO' },
-    { value: 'mp', label: 'MP' },
-    { value: 'mq', label: 'MQ' },
-    { value: 'mr', label: 'MR' },
-    { value: 'ms', label: 'MS' },
-    { value: 'mt', label: 'MT' },
-    { value: 'mu', label: 'MU' },
-    { value: 'mv', label: 'MV' },
-    { value: 'mw', label: 'MW' },
-    { value: 'mx', label: 'MX' },
-    { value: 'my', label: 'MY' },
-    { value: 'mz', label: 'MZ' },
-    { value: 'na', label: 'NA' },
-    { value: 'nc', label: 'NC' },
-    { value: 'ne', label: 'NE' },
-    { value: 'nf', label: 'NF' },
-    { value: 'ng', label: 'NG' },
-    { value: 'ni', label: 'NI' },
-    { value: 'nl', label: 'NL' },
-    { value: 'no', label: 'NO' },
-    { value: 'np', label: 'NP' },
-    { value: 'nr', label: 'NR' },
-    { value: 'nu', label: 'NU' },
-    { value: 'nz', label: 'NZ' },
-    { value: 'om', label: 'OM' },
-    { value: 'pa', label: 'PA' },
-    { value: 'pe', label: 'PE' },
-    { value: 'pf', label: 'PF' },
-    { value: 'pg', label: 'PG' },
-    { value: 'ph', label: 'PH' },
-    { value: 'pk', label: 'PK' },
-    { value: 'pl', label: 'PL' },
-    { value: 'pm', label: 'PM' },
-    { value: 'pn', label: 'PN' },
-    { value: 'pr', label: 'PR' },
-    { value: 'ps', label: 'PS' },
-    { value: 'pt', label: 'PT' },
-    { value: 'pw', label: 'PW' },
-    { value: 'py', label: 'PY' },
-    { value: 'qa', label: 'QA' },
-    { value: 're', label: 'RE' },
-    { value: 'ro', label: 'RO' },
-    { value: 'rs', label: 'RS' },
-    { value: 'ru', label: 'RU' },
-    { value: 'rw', label: 'RW' },
-    { value: 'sa', label: 'SA' },
-    { value: 'sb', label: 'SB' },
-    { value: 'sc', label: 'SC' },
-    { value: 'sd', label: 'SD' },
-    { value: 'se', label: 'SE' },
-    { value: 'sg', label: 'SG' },
-    { value: 'sh', label: 'SH' },
-    { value: 'si', label: 'SI' },
-    { value: 'sj', label: 'SJ' },
-    { value: 'sk', label: 'SK' },
-    { value: 'sl', label: 'SL' },
-    { value: 'sm', label: 'SM' },
-    { value: 'sn', label: 'SN' },
-    { value: 'so', label: 'SO' },
-    { value: 'sr', label: 'SR' },
-    { value: 'ss', label: 'SS' },
-    { value: 'st', label: 'ST' },
-    { value: 'sv', label: 'SV' },
-    { value: 'sx', label: 'SX' },
-    { value: 'sy', label: 'SY' },
-    { value: 'sz', label: 'SZ' },
-    { value: 'tc', label: 'TC' },
-    { value: 'td', label: 'TD' },
-    { value: 'tf', label: 'TF' },
-    { value: 'tg', label: 'TG' },
-    { value: 'th', label: 'TH' },
-    { value: 'tj', label: 'TJ' },
-    { value: 'tk', label: 'TK' },
-    { value: 'tl', label: 'TL' },
-    { value: 'tm', label: 'TM' },
-    { value: 'tn', label: 'TN' },
-    { value: 'to', label: 'TO' },
-    { value: 'tr', label: 'TR' },
-    { value: 'tt', label: 'TT' },
-    { value: 'tv', label: 'TV' },
-    { value: 'tw', label: 'TW' },
-    { value: 'tz', label: 'TZ' },
-    { value: 'ua', label: 'UA' },
-    { value: 'ug', label: 'UG' },
-    { value: 'um', label: 'UM' },
-    { value: 'us', label: 'US' },
-    { value: 'uy', label: 'UY' },
-    { value: 'uz', label: 'UZ' },
-    { value: 'va', label: 'VA' },
-    { value: 'vc', label: 'VC' },
-    { value: 've', label: 'VE' },
-    { value: 'vg', label: 'VG' },
-    { value: 'vi', label: 'VI' },
-    { value: 'vn', label: 'VN' },
-    { value: 'vu', label: 'VU' },
-    { value: 'wf', label: 'WF' },
-    { value: 'ws', label: 'WS' },
-    { value: 'ye', label: 'YE' },
-    { value: 'yt', label: 'YT' },
-    { value: 'za', label: 'ZA' },
-    { value: 'zm', label: 'ZM' },
-    { value: 'zw', label: 'ZW' },
-  ];
+  const persistTimeZoneSetting = useCallback(
+    async (tzValue) => {
+      try {
+        const existing = settings['system-time-zone'];
+        if (existing && existing.id) {
+          await API.updateSetting({ ...existing, value: tzValue });
+        } else {
+          await API.createSetting({
+            key: 'system-time-zone',
+            name: 'System Time Zone',
+            value: tzValue,
+          });
+        }
+      } catch (error) {
+        console.error('Failed to persist time zone setting', error);
+        notifications.show({
+          title: 'Failed to update time zone',
+          message: 'Could not save the selected time zone. Please try again.',
+          color: 'red',
+        });
+      }
+    },
+    [settings]
+  );
+
+  const regionChoices = REGION_CHOICES;
 
   const form = useForm({
-    mode: 'uncontrolled',
+    mode: 'controlled',
     initialValues: {
       'default-user-agent': '',
       'default-stream-profile': '',
       'preferred-region': '',
       'auto-import-mapped-files': true,
       'm3u-hash-key': [],
+      'dvr-tv-template': '',
+      'dvr-movie-template': '',
+      'dvr-tv-fallback-template': '',
+      'dvr-movie-fallback-template': '',
+      'dvr-comskip-enabled': false,
+      'dvr-comskip-custom-path': '',
+      'dvr-pre-offset-minutes': 0,
+      'dvr-post-offset-minutes': 0,
     },
 
     validate: {
@@ -296,9 +275,41 @@ const SettingsPage = () => {
     },
   });
 
+  const networkAccessForm = useForm({
+    mode: 'controlled',
+    initialValues: Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
+      acc[key] = '0.0.0.0/0,::0/0';
+      return acc;
+    }, {}),
+    validate: Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
+      acc[key] = (value) => {
+        const cidrs = value.split(',');
+        const ipv4CidrRegex = /^([0-9]{1,3}\.){3}[0-9]{1,3}\/\d+$/;
+        const ipv6CidrRegex = /(?:(?:(?:[A-F0-9]{1,4}:){6}|(?=(?:[A-F0-9]{0,4}:){0,6}(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![:.\w]))(([0-9A-F]{1,4}:){0,5}|:)((:[0-9A-F]{1,4}){1,5}:|:)|::(?:[A-F0-9]{1,4}:){5})(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}|(?=(?:[A-F0-9]{0,4}:){0,7}[A-F0-9]{0,4}(?![:.\w]))(([0-9A-F]{1,4}:){1,7}|:)((:[0-9A-F]{1,4}){1,7}|:)|(?:[A-F0-9]{1,4}:){7}:|:(:[A-F0-9]{1,4}){7})(?![:.\w])\/(?:12[0-8]|1[01][0-9]|[1-9]?[0-9])/;
+        for (const cidr of cidrs) {
+          if (cidr.match(ipv4CidrRegex) || cidr.match(ipv6CidrRegex)) {
+            continue;
+          }
+
+          return 'Invalid CIDR range';
+        }
+
+        return null;
+      };
+      return acc;
+    }, {}),
+  });
+
+  const proxySettingsForm = useForm({
+    mode: 'controlled',
+    initialValues: Object.keys(PROXY_SETTINGS_OPTIONS).reduce((acc, key) => {
+      acc[key] = '';
+      return acc;
+    }, {}),
+  });
+
   useEffect(() => {
     if (settings) {
-      console.log(settings);
       const formValues = Object.entries(settings).reduce(
         (acc, [key, value]) => {
           // Modify each value based on its own properties
@@ -314,7 +325,13 @@ const SettingsPage = () => {
           let val = null;
           switch (key) {
             case 'm3u-hash-key':
-              val = value.value.split(',');
+              // Split comma-separated string, filter out empty strings
+              val = value.value ? value.value.split(',').filter((v) => v) : [];
+              break;
+            case 'dvr-pre-offset-minutes':
+            case 'dvr-post-offset-minutes':
+              val = Number.parseInt(value.value || '0', 10);
+              if (Number.isNaN(val)) val = 0;
               break;
             default:
               val = value.value;
@@ -326,35 +343,356 @@ const SettingsPage = () => {
         },
         {}
       );
-      console.log(formValues);
+
       form.setValues(formValues);
+      if (formValues['dvr-comskip-custom-path']) {
+        setComskipConfig((prev) => ({
+          path: formValues['dvr-comskip-custom-path'],
+          exists: prev.exists,
+        }));
+      }
+
+      const networkAccessSettings = JSON.parse(
+        settings['network-access'].value || '{}'
+      );
+      networkAccessForm.setValues(
+        Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
+          acc[key] = networkAccessSettings[key] || '0.0.0.0/0,::0/0';
+          return acc;
+        }, {})
+      );
+
+      if (settings['proxy-settings']?.value) {
+        try {
+          const proxySettings = JSON.parse(settings['proxy-settings'].value);
+          proxySettingsForm.setValues(proxySettings);
+        } catch (error) {
+          console.error('Error parsing proxy settings:', error);
+        }
+      }
+
+      const tzSetting = settings['system-time-zone'];
+      if (tzSetting?.value) {
+        timeZoneSyncedRef.current = true;
+        setTimeZone((prev) =>
+          prev === tzSetting.value ? prev : tzSetting.value
+        );
+      } else if (!timeZoneSyncedRef.current && timeZone) {
+        timeZoneSyncedRef.current = true;
+        persistTimeZoneSetting(timeZone);
+      }
     }
-  }, [settings]);
+  }, [settings, timeZone, setTimeZone, persistTimeZoneSetting]);
+
+  useEffect(() => {
+    const loadComskipConfig = async () => {
+      try {
+        const response = await API.getComskipConfig();
+        if (response) {
+          setComskipConfig({
+            path: response.path || '',
+            exists: Boolean(response.exists),
+          });
+          if (response.path) {
+            form.setFieldValue('dvr-comskip-custom-path', response.path);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load comskip config', error);
+      }
+    };
+    loadComskipConfig();
+  }, []);
+
+  // Clear success states when switching accordion panels
+  useEffect(() => {
+    setGeneralSettingsSaved(false);
+    setProxySettingsSaved(false);
+    setNetworkAccessSaved(false);
+    setRehashSuccess(false);
+  }, [accordianValue]);
 
   const onSubmit = async () => {
+    setGeneralSettingsSaved(false);
+
     const values = form.getValues();
     const changedSettings = {};
+    let m3uHashKeyChanged = false;
+
     for (const settingKey in values) {
-      // If the user changed the setting’s value from what’s in the DB:
-      if (String(values[settingKey]) !== String(settings[settingKey].value)) {
-        changedSettings[settingKey] = `${values[settingKey]}`;
+      // Only compare against existing value if the setting exists
+      const existing = settings[settingKey];
+
+      // Convert array values (like m3u-hash-key) to comma-separated strings
+      let stringValue;
+      if (Array.isArray(values[settingKey])) {
+        stringValue = values[settingKey].join(',');
+      } else {
+        stringValue = `${values[settingKey]}`;
+      }
+
+      // Skip empty values to avoid validation errors
+      if (!stringValue) {
+        continue;
+      }
+
+      if (!existing) {
+        // Create new setting on save
+        changedSettings[settingKey] = stringValue;
+      } else if (stringValue !== String(existing.value)) {
+        // If the user changed the setting's value from what's in the DB:
+        changedSettings[settingKey] = stringValue;
+
+        // Check if M3U hash key was changed
+        if (settingKey === 'm3u-hash-key') {
+          m3uHashKeyChanged = true;
+        }
       }
     }
 
-    // Update each changed setting in the backend
-    for (const updatedKey in changedSettings) {
-      await API.updateSetting({
-        ...settings[updatedKey],
-        value: changedSettings[updatedKey],
+    // If M3U hash key changed, show warning (unless suppressed)
+    if (m3uHashKeyChanged && !isWarningSuppressed('rehash-streams')) {
+      // Store the changed settings before showing dialog
+      setPendingChangedSettings(changedSettings);
+      setRehashDialogType('save'); // Set dialog type to save
+      setRehashConfirmOpen(true);
+      return;
+    }
+
+    // Update each changed setting in the backend (create if missing)
+    try {
+      for (const updatedKey in changedSettings) {
+        const existing = settings[updatedKey];
+        if (existing && existing.id) {
+          const result = await API.updateSetting({
+            ...existing,
+            value: changedSettings[updatedKey],
+          });
+          // API functions return undefined on error
+          if (!result) {
+            throw new Error('Failed to update setting');
+          }
+        } else {
+          const result = await API.createSetting({
+            key: updatedKey,
+            name: updatedKey.replace(/-/g, ' '),
+            value: changedSettings[updatedKey],
+          });
+          // API functions return undefined on error
+          if (!result) {
+            throw new Error('Failed to create setting');
+          }
+        }
+      }
+
+      setGeneralSettingsSaved(true);
+    } catch (error) {
+      // Error notifications are already shown by API functions
+      // Just don't show the success message
+      console.error('Error saving settings:', error);
+    }
+  };
+
+  const onNetworkAccessSubmit = async () => {
+    setNetworkAccessSaved(false);
+    setNetworkAccessError(null);
+    const check = await API.checkSetting({
+      ...settings['network-access'],
+      value: JSON.stringify(networkAccessForm.getValues()),
+    });
+
+    if (check.error && check.message) {
+      setNetworkAccessError(`${check.message}: ${check.data}`);
+      return;
+    }
+
+    // For now, only warn if we're blocking the UI
+    const blockedAccess = check.UI;
+    if (blockedAccess.length == 0) {
+      return saveNetworkAccess();
+    }
+
+    setNetNetworkAccessConfirmCIDRs(blockedAccess);
+    setNetworkAccessConfirmOpen(true);
+  };
+
+  const onProxySettingsSubmit = async () => {
+    setProxySettingsSaved(false);
+
+    try {
+      const result = await API.updateSetting({
+        ...settings['proxy-settings'],
+        value: JSON.stringify(proxySettingsForm.getValues()),
       });
+      // API functions return undefined on error
+      if (result) {
+        setProxySettingsSaved(true);
+      }
+    } catch (error) {
+      // Error notifications are already shown by API functions
+      console.error('Error saving proxy settings:', error);
+    }
+  };
+
+  const onComskipUpload = async () => {
+    if (!comskipFile) {
+      return;
+    }
+
+    setComskipUploadLoading(true);
+    try {
+      const response = await API.uploadComskipIni(comskipFile);
+      if (response?.path) {
+        notifications.show({
+          title: 'comskip.ini uploaded',
+          message: response.path,
+          autoClose: 3000,
+          color: 'green',
+        });
+        form.setFieldValue('dvr-comskip-custom-path', response.path);
+        useSettingsStore.getState().updateSetting({
+          ...(settings['dvr-comskip-custom-path'] || {
+            key: 'dvr-comskip-custom-path',
+            name: 'DVR Comskip Custom Path',
+          }),
+          value: response.path,
+        });
+        setComskipConfig({ path: response.path, exists: true });
+      }
+    } catch (error) {
+      console.error('Failed to upload comskip.ini', error);
+    } finally {
+      setComskipUploadLoading(false);
+      setComskipFile(null);
+    }
+  };
+
+  const resetProxySettingsToDefaults = () => {
+    const defaultValues = {
+      buffering_timeout: 15,
+      buffering_speed: 1.0,
+      redis_chunk_ttl: 60,
+      channel_shutdown_delay: 0,
+      channel_init_grace_period: 5,
+    };
+
+    proxySettingsForm.setValues(defaultValues);
+  };
+
+  const saveNetworkAccess = async () => {
+    setNetworkAccessSaved(false);
+    try {
+      await API.updateSetting({
+        ...settings['network-access'],
+        value: JSON.stringify(networkAccessForm.getValues()),
+      });
+      setNetworkAccessSaved(true);
+      setNetworkAccessConfirmOpen(false);
+    } catch (e) {
+      const errors = {};
+      for (const key in e.body.value) {
+        errors[key] = `Invalid CIDR(s): ${e.body.value[key]}`;
+      }
+      networkAccessForm.setErrors(errors);
     }
   };
 
   const onUISettingsChange = (name, value) => {
     switch (name) {
       case 'table-size':
-        setTableSize(value);
+        if (value) setTableSize(value);
         break;
+      case 'time-format':
+        if (value) setTimeFormat(value);
+        break;
+      case 'date-format':
+        if (value) setDateFormat(value);
+        break;
+      case 'time-zone':
+        if (value) {
+          setTimeZone(value);
+          persistTimeZoneSetting(value);
+        }
+        break;
+    }
+  };
+
+  const executeSettingsSaveAndRehash = async () => {
+    setRehashConfirmOpen(false);
+    setGeneralSettingsSaved(false);
+
+    // Use the stored pending values that were captured before the dialog was shown
+    const changedSettings = pendingChangedSettings || {};
+
+    // Update each changed setting in the backend (create if missing)
+    try {
+      for (const updatedKey in changedSettings) {
+        const existing = settings[updatedKey];
+        if (existing && existing.id) {
+          const result = await API.updateSetting({
+            ...existing,
+            value: changedSettings[updatedKey],
+          });
+          // API functions return undefined on error
+          if (!result) {
+            throw new Error('Failed to update setting');
+          }
+        } else {
+          const result = await API.createSetting({
+            key: updatedKey,
+            name: updatedKey.replace(/-/g, ' '),
+            value: changedSettings[updatedKey],
+          });
+          // API functions return undefined on error
+          if (!result) {
+            throw new Error('Failed to create setting');
+          }
+        }
+      }
+
+      // Clear the pending values
+      setPendingChangedSettings(null);
+      setGeneralSettingsSaved(true);
+    } catch (error) {
+      // Error notifications are already shown by API functions
+      // Just don't show the success message
+      console.error('Error saving settings:', error);
+      setPendingChangedSettings(null);
+    }
+  };
+
+  const executeRehashStreamsOnly = async () => {
+    setRehashingStreams(true);
+    setRehashSuccess(false);
+    setRehashConfirmOpen(false);
+
+    try {
+      await API.rehashStreams();
+      setRehashSuccess(true);
+      setTimeout(() => setRehashSuccess(false), 5000);
+    } catch (error) {
+      console.error('Error rehashing streams:', error);
+    } finally {
+      setRehashingStreams(false);
+    }
+  };
+
+  const onRehashStreams = async () => {
+    // Skip warning if it's been suppressed
+    if (isWarningSuppressed('rehash-streams')) {
+      return executeRehashStreamsOnly();
+    }
+
+    setRehashDialogType('rehash'); // Set dialog type to rehash
+    setRehashConfirmOpen(true);
+  };
+
+  // Create a function to handle the confirmation based on dialog type
+  const handleRehashConfirm = () => {
+    if (rehashDialogType === 'save') {
+      executeSettingsSaveAndRehash();
+    } else {
+      executeRehashStreamsOnly();
     }
   };
 
@@ -365,7 +703,12 @@ const SettingsPage = () => {
       }}
     >
       <Box style={{ width: '100%', maxWidth: 800 }}>
-        <Accordion variant="separated" defaultValue="ui-settings">
+        <Accordion
+          variant="separated"
+          defaultValue="ui-settings"
+          onChange={setAccordianValue}
+          style={{ minWidth: 400 }}
+        >
           <Accordion.Item value="ui-settings">
             <Accordion.Control>UI Settings</Accordion.Control>
             <Accordion.Panel>
@@ -388,117 +731,602 @@ const SettingsPage = () => {
                   },
                 ]}
               />
+              <Select
+                label="Time format"
+                value={timeFormat}
+                onChange={(val) => onUISettingsChange('time-format', val)}
+                data={[
+                  {
+                    value: '12h',
+                    label: '12 hour time',
+                  },
+                  {
+                    value: '24h',
+                    label: '24 hour time',
+                  },
+                ]}
+              />
+              <Select
+                label="Date format"
+                value={dateFormat}
+                onChange={(val) => onUISettingsChange('date-format', val)}
+                data={[
+                  {
+                    value: 'mdy',
+                    label: 'MM/DD/YYYY',
+                  },
+                  {
+                    value: 'dmy',
+                    label: 'DD/MM/YYYY',
+                  },
+                ]}
+              />
+              <Select
+                label="Time zone"
+                searchable
+                nothingFoundMessage="No matches"
+                value={timeZone}
+                onChange={(val) => onUISettingsChange('time-zone', val)}
+                data={timeZoneOptions}
+              />
             </Accordion.Panel>
           </Accordion.Item>
 
-          <Accordion.Item value="stream-settings">
-            <Accordion.Control>Stream Settings</Accordion.Control>
-            <Accordion.Panel>
-              <form onSubmit={form.onSubmit(onSubmit)}>
-                <Select
-                  searchable
-                  {...form.getInputProps('default-user-agent')}
-                  key={form.key('default-user-agent')}
-                  id={settings['default-user-agent']?.id || 'default-user-agent'}
-                  name={settings['default-user-agent']?.key || 'default-user-agent'}
-                  label={settings['default-user-agent']?.name || 'Default User Agent'}
-                  data={userAgents.map((option) => ({
-                    value: `${option.id}`,
-                    label: option.name,
-                  }))}
-                />
+          {authUser.user_level == USER_LEVELS.ADMIN && (
+            <>
+              <Accordion.Item value="dvr-settings">
+                <Accordion.Control>DVR</Accordion.Control>
+                <Accordion.Panel>
+                  <form onSubmit={form.onSubmit(onSubmit)}>
+                    <Stack gap="sm">
+                      {generalSettingsSaved && (
+                        <Alert
+                          variant="light"
+                          color="green"
+                          title="Saved Successfully"
+                        />
+                      )}
+                      <Switch
+                        label="Enable Comskip (remove commercials after recording)"
+                        {...form.getInputProps('dvr-comskip-enabled', {
+                          type: 'checkbox',
+                        })}
+                        key={form.key('dvr-comskip-enabled')}
+                        id={
+                          settings['dvr-comskip-enabled']?.id ||
+                          'dvr-comskip-enabled'
+                        }
+                        name={
+                          settings['dvr-comskip-enabled']?.key ||
+                          'dvr-comskip-enabled'
+                        }
+                      />
+                      <TextInput
+                        label="Custom comskip.ini path"
+                        description="Leave blank to use the built-in defaults."
+                        placeholder="/app/docker/comskip.ini"
+                        {...form.getInputProps('dvr-comskip-custom-path')}
+                        key={form.key('dvr-comskip-custom-path')}
+                        id={
+                          settings['dvr-comskip-custom-path']?.id ||
+                          'dvr-comskip-custom-path'
+                        }
+                        name={
+                          settings['dvr-comskip-custom-path']?.key ||
+                          'dvr-comskip-custom-path'
+                        }
+                      />
+                      <Group align="flex-end" gap="sm">
+                        <FileInput
+                          placeholder="Select comskip.ini"
+                          accept=".ini"
+                          value={comskipFile}
+                          onChange={setComskipFile}
+                          clearable
+                          disabled={comskipUploadLoading}
+                          style={{ flex: 1 }}
+                        />
+                        <Button
+                          variant="light"
+                          onClick={onComskipUpload}
+                          disabled={!comskipFile || comskipUploadLoading}
+                        >
+                          {comskipUploadLoading
+                            ? 'Uploading...'
+                            : 'Upload comskip.ini'}
+                        </Button>
+                      </Group>
+                      <Text size="xs" c="dimmed">
+                        {comskipConfig.exists && comskipConfig.path
+                          ? `Using ${comskipConfig.path}`
+                          : 'No custom comskip.ini uploaded.'}
+                      </Text>
+                      <NumberInput
+                        label="Start early (minutes)"
+                        description="Begin recording this many minutes before the scheduled start."
+                        min={0}
+                        step={1}
+                        {...form.getInputProps('dvr-pre-offset-minutes')}
+                        key={form.key('dvr-pre-offset-minutes')}
+                        id={
+                          settings['dvr-pre-offset-minutes']?.id ||
+                          'dvr-pre-offset-minutes'
+                        }
+                        name={
+                          settings['dvr-pre-offset-minutes']?.key ||
+                          'dvr-pre-offset-minutes'
+                        }
+                      />
+                      <NumberInput
+                        label="End late (minutes)"
+                        description="Continue recording this many minutes after the scheduled end."
+                        min={0}
+                        step={1}
+                        {...form.getInputProps('dvr-post-offset-minutes')}
+                        key={form.key('dvr-post-offset-minutes')}
+                        id={
+                          settings['dvr-post-offset-minutes']?.id ||
+                          'dvr-post-offset-minutes'
+                        }
+                        name={
+                          settings['dvr-post-offset-minutes']?.key ||
+                          'dvr-post-offset-minutes'
+                        }
+                      />
+                      <TextInput
+                        label="TV Path Template"
+                        description="Supports {show}, {season}, {episode}, {sub_title}, {channel}, {year}, {start}, {end}. Use format specifiers like {season:02d}. Relative paths are under your library dir."
+                        placeholder="TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv"
+                        {...form.getInputProps('dvr-tv-template')}
+                        key={form.key('dvr-tv-template')}
+                        id={
+                          settings['dvr-tv-template']?.id || 'dvr-tv-template'
+                        }
+                        name={
+                          settings['dvr-tv-template']?.key || 'dvr-tv-template'
+                        }
+                      />
+                      <TextInput
+                        label="TV Fallback Template"
+                        description="Template used when an episode has no season/episode. Supports {show}, {start}, {end}, {channel}, {year}."
+                        placeholder="TV_Shows/{show}/{start}.mkv"
+                        {...form.getInputProps('dvr-tv-fallback-template')}
+                        key={form.key('dvr-tv-fallback-template')}
+                        id={
+                          settings['dvr-tv-fallback-template']?.id ||
+                          'dvr-tv-fallback-template'
+                        }
+                        name={
+                          settings['dvr-tv-fallback-template']?.key ||
+                          'dvr-tv-fallback-template'
+                        }
+                      />
+                      <TextInput
+                        label="Movie Path Template"
+                        description="Supports {title}, {year}, {channel}, {start}, {end}. Relative paths are under your library dir."
+                        placeholder="Movies/{title} ({year}).mkv"
+                        {...form.getInputProps('dvr-movie-template')}
+                        key={form.key('dvr-movie-template')}
+                        id={
+                          settings['dvr-movie-template']?.id ||
+                          'dvr-movie-template'
+                        }
+                        name={
+                          settings['dvr-movie-template']?.key ||
+                          'dvr-movie-template'
+                        }
+                      />
+                      <TextInput
+                        label="Movie Fallback Template"
+                        description="Template used when movie metadata is incomplete. Supports {start}, {end}, {channel}."
+                        placeholder="Movies/{start}.mkv"
+                        {...form.getInputProps('dvr-movie-fallback-template')}
+                        key={form.key('dvr-movie-fallback-template')}
+                        id={
+                          settings['dvr-movie-fallback-template']?.id ||
+                          'dvr-movie-fallback-template'
+                        }
+                        name={
+                          settings['dvr-movie-fallback-template']?.key ||
+                          'dvr-movie-fallback-template'
+                        }
+                      />
+                      <Flex
+                        mih={50}
+                        gap="xs"
+                        justify="flex-end"
+                        align="flex-end"
+                      >
+                        <Button type="submit" variant="default">
+                          Save
+                        </Button>
+                      </Flex>
+                    </Stack>
+                  </form>
+                </Accordion.Panel>
+              </Accordion.Item>
+              <Accordion.Item value="stream-settings">
+                <Accordion.Control>Stream Settings</Accordion.Control>
+                <Accordion.Panel>
+                  <form onSubmit={form.onSubmit(onSubmit)}>
+                    {generalSettingsSaved && (
+                      <Alert
+                        variant="light"
+                        color="green"
+                        title="Saved Successfully"
+                      />
+                    )}
+                    <Select
+                      searchable
+                      {...form.getInputProps('default-user-agent')}
+                      key={form.key('default-user-agent')}
+                      id={
+                        settings['default-user-agent']?.id ||
+                        'default-user-agent'
+                      }
+                      name={
+                        settings['default-user-agent']?.key ||
+                        'default-user-agent'
+                      }
+                      label={
+                        settings['default-user-agent']?.name ||
+                        'Default User Agent'
+                      }
+                      data={userAgents.map((option) => ({
+                        value: `${option.id}`,
+                        label: option.name,
+                      }))}
+                    />
+                    <Select
+                      searchable
+                      {...form.getInputProps('default-stream-profile')}
+                      key={form.key('default-stream-profile')}
+                      id={
+                        settings['default-stream-profile']?.id ||
+                        'default-stream-profile'
+                      }
+                      name={
+                        settings['default-stream-profile']?.key ||
+                        'default-stream-profile'
+                      }
+                      label={
+                        settings['default-stream-profile']?.name ||
+                        'Default Stream Profile'
+                      }
+                      data={streamProfiles.map((option) => ({
+                        value: `${option.id}`,
+                        label: option.name,
+                      }))}
+                    />
+                    <Select
+                      searchable
+                      {...form.getInputProps('preferred-region')}
+                      key={form.key('preferred-region')}
+                      id={
+                        settings['preferred-region']?.id || 'preferred-region'
+                      }
+                      name={
+                        settings['preferred-region']?.key || 'preferred-region'
+                      }
+                      label={
+                        settings['preferred-region']?.name || 'Preferred Region'
+                      }
+                      data={regionChoices.map((r) => ({
+                        label: r.label,
+                        value: `${r.value}`,
+                      }))}
+                    />
 
-                <Select
-                  searchable
-                  {...form.getInputProps('default-stream-profile')}
-                  key={form.key('default-stream-profile')}
-                  id={settings['default-stream-profile']?.id || 'default-stream-profile'}
-                  name={settings['default-stream-profile']?.key || 'default-stream-profile'}
-                  label={settings['default-stream-profile']?.name || 'Default Stream Profile'}
-                  data={streamProfiles.map((option) => ({
-                    value: `${option.id}`,
-                    label: option.name,
-                  }))}
-                />
-                <Select
-                  searchable
-                  {...form.getInputProps('preferred-region')}
-                  key={form.key('preferred-region')}
-                  id={settings['preferred-region']?.id || 'preferred-region'}
-                  name={settings['preferred-region']?.key || 'preferred-region'}
-                  label={settings['preferred-region']?.name || 'Preferred Region'}
-                  data={regionChoices.map((r) => ({
-                    label: r.label,
-                    value: `${r.value}`,
-                  }))}
-                />
+                    <Group justify="space-between" style={{ paddingTop: 5 }}>
+                      <Text size="sm" fw={500}>
+                        Auto-Import Mapped Files
+                      </Text>
+                      <Switch
+                        {...form.getInputProps('auto-import-mapped-files', {
+                          type: 'checkbox',
+                        })}
+                        key={form.key('auto-import-mapped-files')}
+                        id={
+                          settings['auto-import-mapped-files']?.id ||
+                          'auto-import-mapped-files'
+                        }
+                      />
+                    </Group>
 
-                <Group justify="space-between" style={{ paddingTop: 5 }}>
-                  <Text size="sm" fw={500}>
-                    Auto-Import Mapped Files
-                  </Text>
-                  <Switch
-                    {...form.getInputProps('auto-import-mapped-files', {
-                      type: 'checkbox',
-                    })}
-                    key={form.key('auto-import-mapped-files')}
-                    id={
-                      settings['auto-import-mapped-files']?.id ||
-                      'auto-import-mapped-files'
-                    }
-                  />
-                </Group>
+                    <MultiSelect
+                      id="m3u-hash-key"
+                      name="m3u-hash-key"
+                      label="M3U Hash Key"
+                      data={[
+                        {
+                          value: 'name',
+                          label: 'Name',
+                        },
+                        {
+                          value: 'url',
+                          label: 'URL',
+                        },
+                        {
+                          value: 'tvg_id',
+                          label: 'TVG-ID',
+                        },
+                        {
+                          value: 'm3u_id',
+                          label: 'M3U ID',
+                        },
+                      ]}
+                      {...form.getInputProps('m3u-hash-key')}
+                      key={form.key('m3u-hash-key')}
+                    />
 
-                <MultiSelect
-                  id="m3u-hash-key"
-                  name="m3u-hash-key"
-                  label="M3U Hash Key"
-                  data={[
-                    {
-                      value: 'name',
-                      label: 'Name',
-                    },
-                    {
-                      value: 'url',
-                      label: 'URL',
-                    },
-                    {
-                      value: 'tvg_id',
-                      label: 'TVG-ID',
-                    },
-                  ]}
-                  {...form.getInputProps('m3u-hash-key')}
-                  key={form.key('m3u-hash-key')}
-                />
+                    {rehashSuccess && (
+                      <Alert
+                        variant="light"
+                        color="green"
+                        title="Rehash task queued successfully"
+                      />
+                    )}
 
-                <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
-                  <Button
-                    type="submit"
-                    disabled={form.submitting}
-                    variant="default"
+                    <Flex
+                      mih={50}
+                      gap="xs"
+                      justify="space-between"
+                      align="flex-end"
+                    >
+                      <Button
+                        onClick={onRehashStreams}
+                        loading={rehashingStreams}
+                        variant="outline"
+                        color="blue"
+                      >
+                        Rehash Streams
+                      </Button>
+                      <Button
+                        type="submit"
+                        disabled={form.submitting}
+                        variant="default"
+                      >
+                        Save
+                      </Button>
+                    </Flex>
+                  </form>
+                </Accordion.Panel>
+              </Accordion.Item>
+
+              <Accordion.Item value="user-agents">
+                <Accordion.Control>User-Agents</Accordion.Control>
+                <Accordion.Panel>
+                  <UserAgentsTable />
+                </Accordion.Panel>
+              </Accordion.Item>
+
+              <Accordion.Item value="stream-profiles">
+                <Accordion.Control>Stream Profiles</Accordion.Control>
+                <Accordion.Panel>
+                  <StreamProfilesTable />
+                </Accordion.Panel>
+              </Accordion.Item>
+
+              <Accordion.Item value="network-access">
+                <Accordion.Control>
+                  <Box>Network Access</Box>
+                  {accordianValue == 'network-access' && (
+                    <Box>
+                      <Text size="sm">Comma-Delimited CIDR ranges</Text>
+                    </Box>
+                  )}
+                </Accordion.Control>
+                <Accordion.Panel>
+                  <form
+                    onSubmit={networkAccessForm.onSubmit(onNetworkAccessSubmit)}
                   >
-                    Save
-                  </Button>
-                </Flex>
-              </form>
-            </Accordion.Panel>
-          </Accordion.Item>
+                    <Stack gap="sm">
+                      {networkAccessSaved && (
+                        <Alert
+                          variant="light"
+                          color="green"
+                          title="Saved Successfully"
+                        ></Alert>
+                      )}
+                      {networkAccessError && (
+                        <Alert
+                          variant="light"
+                          color="red"
+                          title={networkAccessError}
+                        ></Alert>
+                      )}
+                      {Object.entries(NETWORK_ACCESS_OPTIONS).map(
+                        ([key, config]) => {
+                          return (
+                            <TextInput
+                              label={config.label}
+                              {...networkAccessForm.getInputProps(key)}
+                              key={networkAccessForm.key(key)}
+                              description={config.description}
+                            />
+                          );
+                        }
+                      )}
 
-          <Accordion.Item value="user-agents">
-            <Accordion.Control>User-Agents</Accordion.Control>
-            <Accordion.Panel>
-              <UserAgentsTable />
-            </Accordion.Panel>
-          </Accordion.Item>
+                      <Flex
+                        mih={50}
+                        gap="xs"
+                        justify="flex-end"
+                        align="flex-end"
+                      >
+                        <Button
+                          type="submit"
+                          disabled={networkAccessForm.submitting}
+                          variant="default"
+                        >
+                          Save
+                        </Button>
+                      </Flex>
+                    </Stack>
+                  </form>
+                </Accordion.Panel>
+              </Accordion.Item>
 
-          <Accordion.Item value="stream-profiles">
-            <Accordion.Control>Stream Profiles</Accordion.Control>
-            <Accordion.Panel>
-              <StreamProfilesTable />
-            </Accordion.Panel>
-          </Accordion.Item>
+              <Accordion.Item value="proxy-settings">
+                <Accordion.Control>
+                  <Box>Proxy Settings</Box>
+                </Accordion.Control>
+                <Accordion.Panel>
+                  <form
+                    onSubmit={proxySettingsForm.onSubmit(onProxySettingsSubmit)}
+                  >
+                    <Stack gap="sm">
+                      {proxySettingsSaved && (
+                        <Alert
+                          variant="light"
+                          color="green"
+                          title="Saved Successfully"
+                        ></Alert>
+                      )}
+                      {Object.entries(PROXY_SETTINGS_OPTIONS).map(
+                        ([key, config]) => {
+                          // Determine if this field should be a NumberInput
+                          const isNumericField = [
+                            'buffering_timeout',
+                            'redis_chunk_ttl',
+                            'channel_shutdown_delay',
+                            'channel_init_grace_period',
+                          ].includes(key);
+
+                          const isFloatField = key === 'buffering_speed';
+
+                          if (isNumericField) {
+                            return (
+                              <NumberInput
+                                key={key}
+                                label={config.label}
+                                {...proxySettingsForm.getInputProps(key)}
+                                description={config.description || null}
+                                min={0}
+                                max={
+                                  key === 'buffering_timeout'
+                                    ? 300
+                                    : key === 'redis_chunk_ttl'
+                                      ? 3600
+                                      : key === 'channel_shutdown_delay'
+                                        ? 300
+                                        : 60
+                                }
+                              />
+                            );
+                          } else if (isFloatField) {
+                            return (
+                              <NumberInput
+                                key={key}
+                                label={config.label}
+                                {...proxySettingsForm.getInputProps(key)}
+                                description={config.description || null}
+                                min={0.0}
+                                max={10.0}
+                                step={0.01}
+                                precision={1}
+                              />
+                            );
+                          } else {
+                            return (
+                              <TextInput
+                                key={key}
+                                label={config.label}
+                                {...proxySettingsForm.getInputProps(key)}
+                                description={config.description || null}
+                              />
+                            );
+                          }
+                        }
+                      )}
+
+                      <Flex
+                        mih={50}
+                        gap="xs"
+                        justify="space-between"
+                        align="flex-end"
+                      >
+                        <Button
+                          variant="subtle"
+                          color="gray"
+                          onClick={resetProxySettingsToDefaults}
+                        >
+                          Reset to Defaults
+                        </Button>
+                        <Button
+                          type="submit"
+                          disabled={networkAccessForm.submitting}
+                          variant="default"
+                        >
+                          Save
+                        </Button>
+                      </Flex>
+                    </Stack>
+                  </form>
+                </Accordion.Panel>
+              </Accordion.Item>
+            </>
+          )}
         </Accordion>
       </Box>
+
+      <ConfirmationDialog
+        opened={rehashConfirmOpen}
+        onClose={() => {
+          setRehashConfirmOpen(false);
+          setRehashDialogType(null);
+          // Clear pending values when dialog is cancelled
+          setPendingChangedSettings(null);
+        }}
+        onConfirm={handleRehashConfirm}
+        title={
+          rehashDialogType === 'save'
+            ? 'Save Settings and Rehash Streams'
+            : 'Confirm Stream Rehash'
+        }
+        message={
+          <div style={{ whiteSpace: 'pre-line' }}>
+            {`Are you sure you want to rehash all streams?
+
+This process may take a while depending on the number of streams.
+Do not shut down Dispatcharr until the rehashing is complete.
+M3U refreshes will be blocked until this process finishes.
+
+Please ensure you have time to let this complete before proceeding.`}
+          </div>
+        }
+        confirmLabel={
+          rehashDialogType === 'save' ? 'Save and Rehash' : 'Start Rehash'
+        }
+        cancelLabel="Cancel"
+        actionKey="rehash-streams"
+        onSuppressChange={suppressWarning}
+        size="md"
+      />
+
+      <ConfirmationDialog
+        opened={networkAccessConfirmOpen}
+        onClose={() => setNetworkAccessConfirmOpen(false)}
+        onConfirm={saveNetworkAccess}
+        title={`Confirm Network Access Blocks`}
+        message={
+          <>
+            <Text>
+              Your client is not included in the allowed networks for the web
+              UI. Are you sure you want to proceed?
+            </Text>
+
+            <ul>
+              {netNetworkAccessConfirmCIDRs.map((cidr) => (
+                <li>{cidr}</li>
+              ))}
+            </ul>
+          </>
+        }
+        confirmLabel="Save"
+        cancelLabel="Cancel"
+        size="md"
+      />
     </Center>
   );
 };

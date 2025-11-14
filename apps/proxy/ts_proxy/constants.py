@@ -18,6 +18,7 @@ class ChannelState:
     ERROR = "error"
     STOPPING = "stopping"
     STOPPED = "stopped"
+    BUFFERING = "buffering"
 
 # Event types
 class EventType:
@@ -32,6 +33,8 @@ class EventType:
 # Stream types
 class StreamType:
     HLS = "hls"
+    RTSP = "rtsp"
+    UDP = "udp"
     TS = "ts"
     UNKNOWN = "unknown"
 
@@ -62,6 +65,33 @@ class ChannelMetadataField:
     # Stream switching
     STREAM_SWITCH_TIME = "stream_switch_time"
     STREAM_SWITCH_REASON = "stream_switch_reason"
+
+    # FFmpeg performance metrics
+    FFMPEG_SPEED = "ffmpeg_speed"
+    FFMPEG_FPS = "ffmpeg_fps"
+    ACTUAL_FPS = "actual_fps"
+    FFMPEG_OUTPUT_BITRATE = "ffmpeg_output_bitrate"
+    FFMPEG_STATS_UPDATED = "ffmpeg_stats_updated"
+
+    # Video stream info
+    VIDEO_CODEC = "video_codec"
+    RESOLUTION = "resolution"
+    WIDTH = "width"
+    HEIGHT = "height"
+    SOURCE_FPS = "source_fps"
+    PIXEL_FORMAT = "pixel_format"
+    VIDEO_BITRATE = "video_bitrate"
+
+    # Audio stream info
+    AUDIO_CODEC = "audio_codec"
+    SAMPLE_RATE = "sample_rate"
+    AUDIO_CHANNELS = "audio_channels"
+    AUDIO_BITRATE = "audio_bitrate"
+
+    # Stream format info
+    STREAM_TYPE = "stream_type"
+    # Stream info timestamp
+    STREAM_INFO_UPDATED = "stream_info_updated"
 
     # Client metadata fields
     CONNECTED_AT = "connected_at"

@@ -4,6 +4,13 @@ from .models import M3UAccount, M3UFilter
 import re
 
 class M3UAccountForm(forms.ModelForm):
+    enable_vod = forms.BooleanField(
+        required=False,
+        initial=False,
+        label="Enable VOD Content",
+        help_text="Parse and import VOD (movies/series) content for XtreamCodes accounts"
+    )
+
     class Meta:
         model = M3UAccount
         fields = [
@@ -13,7 +20,33 @@ class M3UAccountForm(forms.ModelForm):
             'server_group',
             'max_streams',
             'is_active',
+            'enable_vod',
         ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Set initial value for enable_vod from custom_properties
+        if self.instance and self.instance.custom_properties:
+            custom_props = self.instance.custom_properties or {}
+            self.fields['enable_vod'].initial = custom_props.get('enable_vod', False)
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+
+        # Handle enable_vod field
+        enable_vod = self.cleaned_data.get('enable_vod', False)
+
+        # Parse existing custom_properties
+        custom_props = instance.custom_properties or {}
+
+        # Update VOD preference
+        custom_props['enable_vod'] = enable_vod
+        instance.custom_properties = custom_props
+
+        if commit:
+            instance.save()
+        return instance
 
     def clean_uploaded_file(self):
         uploaded_file = self.cleaned_data.get('uploaded_file')

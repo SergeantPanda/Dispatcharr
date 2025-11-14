@@ -8,6 +8,7 @@ class EPGSource(models.Model):
     SOURCE_TYPE_CHOICES = [
         ('xmltv', 'XMLTV URL'),
         ('schedules_direct', 'Schedules Direct API'),
+        ('dummy', 'Custom Dummy EPG'),
     ]
 
     STATUS_IDLE = 'idle'
@@ -28,7 +29,7 @@ class EPGSource(models.Model):
 
     name = models.CharField(max_length=255, unique=True)
     source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES)
-    url = models.URLField(blank=True, null=True)  # For XMLTV
+    url = models.URLField(max_length=1000, blank=True, null=True)  # For XMLTV
     api_key = models.CharField(max_length=255, blank=True, null=True)  # For Schedules Direct
     is_active = models.BooleanField(default=True)
     file_path = models.CharField(max_length=1024, blank=True, null=True)
@@ -37,6 +38,12 @@ class EPGSource(models.Model):
     refresh_interval = models.IntegerField(default=0)
     refresh_task = models.ForeignKey(
         PeriodicTask, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    custom_properties = models.JSONField(
+        default=dict,
+        blank=True,
+        null=True,
+        help_text="Custom properties for dummy EPG configuration (regex patterns, timezone, duration, etc.)"
     )
     status = models.CharField(
         max_length=20,
@@ -127,6 +134,7 @@ class EPGData(models.Model):
     # and a name (which might simply be the tvg_id if no real channel exists).
     tvg_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     name = models.CharField(max_length=255)
+    icon_url = models.URLField(max_length=500, null=True, blank=True)
     epg_source = models.ForeignKey(
         EPGSource,
         on_delete=models.CASCADE,
@@ -147,10 +155,10 @@ class ProgramData(models.Model):
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
     title = models.CharField(max_length=255)
-    sub_title = models.CharField(max_length=255, blank=True, null=True)
+    sub_title = models.TextField(blank=True, null=True)
     description = models.TextField(blank=True, null=True)
     tvg_id = models.CharField(max_length=255, null=True, blank=True)
-    custom_properties = models.TextField(null=True, blank=True)
+    custom_properties = models.JSONField(default=dict, blank=True, null=True)
 
     def __str__(self):
         return f"{self.title} ({self.start_time} - {self.end_time})"

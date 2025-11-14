@@ -3,17 +3,43 @@ import logging
 import time
 import os
 import threading
+import re
 from django.conf import settings
 from redis.exceptions import ConnectionError, TimeoutError
 from django.core.cache import cache
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.core.validators import URLValidator
+from django.core.exceptions import ValidationError
 import gc
 
 logger = logging.getLogger(__name__)
 
 # Import the command detector
 from .command_utils import is_management_command
+
+def natural_sort_key(text):
+    """
+    Convert a string into a list of string and number chunks for natural sorting.
+    "PPV 10" becomes ['PPV ', 10] so it sorts correctly with "PPV 2".
+
+    This function enables natural/alphanumeric sorting where numbers within strings
+    are treated as actual numbers rather than strings.
+
+    Args:
+        text (str): The text to convert for sorting
+
+    Returns:
+        list: A list of strings and integers for proper sorting
+
+    Example:
+        >>> sorted(['PPV 1', 'PPV 10', 'PPV 2'], key=natural_sort_key)
+        ['PPV 1', 'PPV 2', 'PPV 10']
+    """
+    def convert(chunk):
+        return int(chunk) if chunk.isdigit() else chunk.lower()
+
+    return [convert(c) for c in re.split('([0-9]+)', text)]
 
 class RedisClient:
     _client = None
@@ -330,3 +356,35 @@ def is_protected_path(file_path):
             return True
 
     return False
+
+def validate_flexible_url(value):
+    """
+    Custom URL validator that accepts URLs with hostnames that aren't FQDNs.
+    This allows URLs like "http://hostname/" which
+    Django's standard URLValidator rejects.
+    """
+    if not value:
+        return  # Allow empty values since the field is nullable
+
+    # Create a standard Django URL validator
+    url_validator = URLValidator()
+
+    try:
+        # First try the standard validation
+        url_validator(value)
+    except ValidationError as e:
+        # If standard validation fails, check if it's a non-FQDN hostname
+        import re
+
+        # More flexible pattern for non-FQDN hostnames with paths
+        # Matches: http://hostname, https://hostname/, http://hostname:port/path/to/file.xml, rtp://192.168.2.1,  rtsp://192.168.178.1, udp://239.0.0.1:1234
+        # Also matches FQDNs for rtsp/rtp/udp protocols: rtsp://FQDN/path?query=value
+        # Also supports authentication: rtsp://user:pass@hostname/path
+        non_fqdn_pattern = r'^(rts?p|https?|udp)://([a-zA-Z0-9_\-\.]+:[^\s@]+@)?([a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,61}[a-zA-Z0-9])?|[0-9.]+)?(\:[0-9]+)?(/[^\s]*)?$'
+        non_fqdn_match = re.match(non_fqdn_pattern, value)
+
+        if non_fqdn_match:
+            return  # Accept non-FQDN hostnames and rtsp/rtp/udp URLs with optional authentication
+
+        # If it doesn't match our flexible patterns, raise the original error
+        raise ValidationError("Enter a valid URL.")

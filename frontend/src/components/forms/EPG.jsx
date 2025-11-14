@@ -1,32 +1,22 @@
 // Modal.js
 import React, { useState, useEffect } from 'react';
 import API from '../../api';
-import useEPGsStore from '../../store/epgs';
 import {
-  LoadingOverlay,
   TextInput,
   Button,
   Checkbox,
   Modal,
-  Flex,
   NativeSelect,
   NumberInput,
-  Space,
-  Grid,
-  Group,
-  FileInput,
-  Title,
-  Text,
-  Divider,
   Stack,
+  Group,
+  Divider,
   Box,
+  Text,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
-import { IconUpload } from '@tabler/icons-react';
 
 const EPG = ({ epg = null, isOpen, onClose }) => {
-  const epgs = useEPGsStore((state) => state.epgs);
-  // Remove the file state and handler since we're not supporting file uploads
   const [sourceType, setSourceType] = useState('xmltv');
 
   const form = useForm({
@@ -50,13 +40,9 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
     const values = form.getValues();
 
     if (epg?.id) {
-      // Remove file from API call
       await API.updateEPG({ id: epg.id, ...values });
     } else {
-      // Remove file from API call
-      await API.addEPG({
-        ...values,
-      });
+      await API.addEPG(values);
     }
 
     form.reset();
@@ -74,11 +60,12 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
         refresh_interval: epg.refresh_interval,
       };
       form.setValues(values);
-      setSourceType(epg.source_type); // Update source type state
+      setSourceType(epg.source_type);
     } else {
       form.reset();
-      setSourceType('xmltv'); // Reset to xmltv
+      setSourceType('xmltv');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [epg]);
 
   // Function to handle source type changes
@@ -123,7 +110,9 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                   value: 'schedules_direct',
                 },
               ]}
-              onChange={(event) => handleSourceTypeChange(event.currentTarget.value)}
+              onChange={(event) =>
+                handleSourceTypeChange(event.currentTarget.value)
+              }
             />
 
             <NumberInput
@@ -155,19 +144,25 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
               description="API key for services that require authentication"
               {...form.getInputProps('api_key')}
               key={form.key('api_key')}
-              disabled={sourceType !== 'schedules_direct'} // Use the state variable
+              disabled={sourceType !== 'schedules_direct'}
             />
 
             {/* Put checkbox at the same level as Refresh Interval */}
             <Box style={{ marginTop: 0 }}>
-              <Text size="sm" fw={500} mb={3}>Status</Text>
-              <Text size="xs" c="dimmed" mb={12}>When enabled, this EPG source will auto update.</Text>
-              <Box style={{
-                display: 'flex',
-                alignItems: 'center',
-                height: '30px',  // Reduced height
-                marginTop: '-4px' // Slight negative margin to move it up
-              }}>
+              <Text size="sm" fw={500} mb={3}>
+                Status
+              </Text>
+              <Text size="xs" c="dimmed" mb={12}>
+                When enabled, this EPG source will auto update.
+              </Text>
+              <Box
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  height: '30px',
+                  marginTop: '-4px',
+                }}
+              >
                 <Checkbox
                   id="is_active"
                   name="is_active"
@@ -185,12 +180,10 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
           <Divider my="sm" />
 
           <Group justify="end" mt="xl">
-            <Button variant="outline" onClick={onClose}>Cancel</Button>
-            <Button
-              type="submit"
-              variant="filled"
-              disabled={form.submitting}
-            >
+            <Button variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="filled" disabled={form.submitting}>
               {epg?.id ? 'Update' : 'Create'} EPG Source
             </Button>
           </Group>

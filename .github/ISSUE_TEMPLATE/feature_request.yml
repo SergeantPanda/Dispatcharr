@@ -1,7 +1,7 @@
 name: Feature request
 description: I want to suggest a new feature for Dispatcharr
 title: "[Feature]: "
-labels: ["Feature Request"]
+labels: ["Triage"]
 type: "Feature"
 projects: []
 assignees: []

@@ -5,12 +5,14 @@ import {
   Button,
   Flex,
   Group,
+  Menu,
   NumberInput,
   Popover,
   Select,
   Text,
   TextInput,
   Tooltip,
+  UnstyledButton,
   useMantineTheme,
 } from '@mantine/core';
 import {
@@ -18,17 +20,29 @@ import {
   Binary,
   Check,
   CircleCheck,
+  Ellipsis,
+  EllipsisVertical,
   SquareMinus,
+  SquarePen,
   SquarePlus,
+  Settings,
 } from 'lucide-react';
 import API from '../../../api';
 import { notifications } from '@mantine/notifications';
 import useChannelsStore from '../../../store/channels';
+import useAuthStore from '../../../store/auth';
+import { USER_LEVELS } from '../../../constants';
+import AssignChannelNumbersForm from '../../forms/AssignChannelNumbers';
+import GroupManager from '../../forms/GroupManager';
+import ConfirmationDialog from '../../ConfirmationDialog';
+import useWarningsStore from '../../../store/warnings';
 
 const CreateProfilePopover = React.memo(() => {
   const [opened, setOpened] = useState(false);
   const [name, setName] = useState('');
   const theme = useMantineTheme();
+
+  const authUser = useAuthStore((s) => s.user);
 
   const setOpen = () => {
     setName('');
@@ -54,6 +68,7 @@ const CreateProfilePopover = React.memo(() => {
           variant="transparent"
           color={theme.tailwind.green[5]}
           onClick={setOpen}
+          disabled={authUser.user_level != USER_LEVELS.ADMIN}
         >
           <SquarePlus />
         </ActionIcon>
@@ -91,23 +106,55 @@ const ChannelTableHeader = ({
   const theme = useMantineTheme();
 
   const [channelNumAssignmentStart, setChannelNumAssignmentStart] = useState(1);
+  const [assignNumbersModalOpen, setAssignNumbersModalOpen] = useState(false);
+  const [groupManagerOpen, setGroupManagerOpen] = useState(false);
+  const [confirmDeleteProfileOpen, setConfirmDeleteProfileOpen] =
+    useState(false);
+  const [profileToDelete, setProfileToDelete] = useState(null);
 
   const profiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
   const setSelectedProfileId = useChannelsStore((s) => s.setSelectedProfileId);
+  const authUser = useAuthStore((s) => s.user);
+  const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+  const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+  const closeAssignChannelNumbersModal = () => {
+    setAssignNumbersModalOpen(false);
+  };
 
   const deleteProfile = async (id) => {
+    // Get profile details for the confirmation dialog
+    const profileObj = profiles[id];
+    setProfileToDelete(profileObj);
+
+    // Skip warning if it's been suppressed
+    if (isWarningSuppressed('delete-profile')) {
+      return executeDeleteProfile(id);
+    }
+
+    setConfirmDeleteProfileOpen(true);
+  };
+
+  const executeDeleteProfile = async (id) => {
     await API.deleteChannelProfile(id);
+    setConfirmDeleteProfileOpen(false);
   };
 
   const matchEpg = async () => {
     try {
       // Hit our new endpoint that triggers the fuzzy matching Celery task
-      await API.matchEpg();
-
-      notifications.show({
-        title: 'EPG matching task started!',
-      });
+      // If channels are selected, only match those; otherwise match all
+      if (selectedTableIds.length > 0) {
+        await API.matchEpg(selectedTableIds);
+        notifications.show({
+          title: `EPG matching task started for ${selectedTableIds.length} selected channel(s)!`,
+        });
+      } else {
+        await API.matchEpg();
+        notifications.show({
+          title: 'EPG matching task started for all channels without EPG!',
+        });
+      }
     } catch (err) {
       notifications.show(`Error: ${err.message}`);
     }
@@ -152,6 +199,7 @@ const ChannelTableHeader = ({
               e.stopPropagation();
               deleteProfile(option.value);
             }}
+            disabled={authUser.user_level != USER_LEVELS.ADMIN}
           >
             <SquareMinus />
           </ActionIcon>
@@ -189,79 +237,128 @@ const ChannelTableHeader = ({
       >
         <Flex gap={6}>
           <Button
+            leftSection={<SquarePen size={18} />}
+            variant="default"
+            size="xs"
+            onClick={() => editChannel()}
+            disabled={
+              selectedTableIds.length == 0 ||
+              authUser.user_level != USER_LEVELS.ADMIN
+            }
+          >
+            Edit
+          </Button>
+
+          <Button
             leftSection={<SquareMinus size={18} />}
             variant="default"
             size="xs"
             onClick={deleteChannels}
-            disabled={selectedTableIds.length == 0}
+            disabled={
+              selectedTableIds.length == 0 ||
+              authUser.user_level != USER_LEVELS.ADMIN
+            }
           >
-            Remove
+            Delete
           </Button>
-
-          <Tooltip label="Assign Channel #s">
-            <Popover withArrow shadow="md">
-              <Popover.Target>
-                <Button
-                  leftSection={<ArrowDown01 size={18} />}
-                  variant="default"
-                  size="xs"
-                  p={5}
-                  disabled={selectedTableIds.length == 0}
-                >
-                  Assign
-                </Button>
-              </Popover.Target>
-              <Popover.Dropdown>
-                <Group>
-                  <Text>Start #</Text>
-                  <NumberInput
-                    value={channelNumAssignmentStart}
-                    onChange={setChannelNumAssignmentStart}
-                    size="small"
-                    style={{ width: 50 }}
-                  />
-                  <ActionIcon
-                    size="xs"
-                    color={theme.tailwind.green[5]}
-                    variant="transparent"
-                    onClick={assignChannels}
-                  >
-                    <Check />
-                  </ActionIcon>
-                </Group>
-              </Popover.Dropdown>
-            </Popover>
-          </Tooltip>
-
-          <Tooltip label="Auto-Match EPG">
-            <Button
-              leftSection={<Binary size={18} />}
-              variant="default"
-              size="xs"
-              onClick={matchEpg}
-              p={5}
-            >
-              Auto-Match
-            </Button>
-          </Tooltip>
 
           <Button
             leftSection={<SquarePlus size={18} />}
             variant="light"
             size="xs"
-            onClick={() => editChannel()}
+            onClick={() => editChannel(null, { forceAdd: true })}
+            disabled={authUser.user_level != USER_LEVELS.ADMIN}
             p={5}
             color={theme.tailwind.green[5]}
             style={{
-              borderWidth: '1px',
-              borderColor: theme.tailwind.green[5],
-              color: 'white',
+              ...(authUser.user_level == USER_LEVELS.ADMIN && {
+                borderWidth: '1px',
+                borderColor: theme.tailwind.green[5],
+                color: 'white',
+              }),
             }}
           >
             Add
           </Button>
+
+          <Menu>
+            <Menu.Target>
+              <ActionIcon variant="default" size={30}>
+                <EllipsisVertical size={18} />
+              </ActionIcon>
+            </Menu.Target>
+
+            <Menu.Dropdown>
+              <Menu.Item
+                leftSection={<ArrowDown01 size={18} />}
+                disabled={
+                  selectedTableIds.length == 0 ||
+                  authUser.user_level != USER_LEVELS.ADMIN
+                }
+                onClick={() => setAssignNumbersModalOpen(true)}
+              >
+                <Text size="xs">Assign #s</Text>
+              </Menu.Item>
+
+              <Menu.Item
+                leftSection={<Binary size={18} />}
+                disabled={authUser.user_level != USER_LEVELS.ADMIN}
+                onClick={matchEpg}
+              >
+                <Text size="xs">
+                  {selectedTableIds.length > 0
+                    ? `Auto-Match (${selectedTableIds.length} selected)`
+                    : 'Auto-Match EPG'}
+                </Text>
+              </Menu.Item>
+
+              <Menu.Item
+                leftSection={<Settings size={18} />}
+                disabled={authUser.user_level != USER_LEVELS.ADMIN}
+                onClick={() => setGroupManagerOpen(true)}
+              >
+                <Text size="xs">Edit Groups</Text>
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
         </Flex>
       </Box>
+
+      <AssignChannelNumbersForm
+        channelIds={selectedTableIds}
+        isOpen={assignNumbersModalOpen}
+        onClose={closeAssignChannelNumbersModal}
+      />
+
+      <GroupManager
+        isOpen={groupManagerOpen}
+        onClose={() => setGroupManagerOpen(false)}
+      />
+
+      <ConfirmationDialog
+        opened={confirmDeleteProfileOpen}
+        onClose={() => setConfirmDeleteProfileOpen(false)}
+        onConfirm={() => executeDeleteProfile(profileToDelete?.id)}
+        title="Confirm Profile Deletion"
+        message={
+          profileToDelete ? (
+            <div style={{ whiteSpace: 'pre-line' }}>
+              {`Are you sure you want to delete the following profile?
+
+Name: ${profileToDelete.name}
+
+This action cannot be undone.`}
+            </div>
+          ) : (
+            'Are you sure you want to delete this profile? This action cannot be undone.'
+          )
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        actionKey="delete-profile"
+        onSuppressChange={suppressWarning}
+        size="md"
+      />
     </Group>
   );
 };

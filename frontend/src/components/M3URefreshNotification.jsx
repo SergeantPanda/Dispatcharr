@@ -2,21 +2,24 @@
 import React, { useEffect, useState } from 'react';
 import usePlaylistsStore from '../store/playlists';
 import { notifications } from '@mantine/notifications';
-import { IconCheck } from '@tabler/icons-react';
 import useStreamsStore from '../store/streams';
 import useChannelsStore from '../store/channels';
 import useEPGsStore from '../store/epgs';
+import useVODStore from '../store/useVODStore';
 import { Stack, Button, Group } from '@mantine/core';
 import API from '../api';
 import { useNavigate } from 'react-router-dom';
+import { CircleCheck } from 'lucide-react';
 
 export default function M3URefreshNotification() {
   const playlists = usePlaylistsStore((s) => s.playlists);
   const refreshProgress = usePlaylistsStore((s) => s.refreshProgress);
   const fetchStreams = useStreamsStore((s) => s.fetchStreams);
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
+  const fetchChannels = useChannelsStore((s) => s.fetchChannels);
   const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
   const fetchEPGData = useEPGsStore((s) => s.fetchEPGData);
+  const fetchCategories = useVODStore((s) => s.fetchCategories);
 
   const [notificationStatus, setNotificationStatus] = useState({});
   const navigate = useNavigate();
@@ -40,7 +43,7 @@ export default function M3URefreshNotification() {
     });
 
     // Special handling for pending setup status
-    if (data.status === "pending_setup") {
+    if (data.status === 'pending_setup') {
       fetchChannelGroups();
       fetchPlaylists();
 
@@ -48,7 +51,8 @@ export default function M3URefreshNotification() {
         title: `M3U Setup: ${playlist.name}`,
         message: (
           <Stack>
-            {data.message || "M3U groups loaded. Please select groups or refresh M3U to complete setup."}
+            {data.message ||
+              'M3U groups loaded. Configure group filters and auto channel sync settings.'}
             <Group grow>
               <Button
                 size="xs"
@@ -71,27 +75,27 @@ export default function M3URefreshNotification() {
                   navigate('/sources');
                 }}
               >
-                Edit Groups
+                Configure Groups
               </Button>
             </Group>
           </Stack>
         ),
         color: 'orange.5',
-        autoClose: 5000,  // Keep visible a bit longer
+        autoClose: 5000, // Keep visible a bit longer
       });
       return;
     }
 
     // Check for error status FIRST before doing anything else
-    if (data.status === "error") {
+    if (data.status === 'error') {
       // Only show the error notification if we have a complete task (progress=100)
       // or if it's explicitly flagged as an error
       if (data.progress === 100) {
         notifications.show({
           title: `M3U Processing: ${playlist.name}`,
-          message: `${data.action || 'Processing'} failed: ${data.error || "Unknown error"}`,
+          message: `${data.action || 'Processing'} failed: ${data.error || 'Unknown error'}`,
           color: 'red',
-          autoClose: 5000,  // Keep error visible a bit longer
+          autoClose: 5000, // Keep error visible a bit longer
         });
       }
       return; // Exit early for any error status
@@ -99,7 +103,7 @@ export default function M3URefreshNotification() {
 
     // Check if we already have an error stored for this account, and if so, don't show further notifications
     const currentStatus = notificationStatus[data.account];
-    if (currentStatus && currentStatus.status === "error") {
+    if (currentStatus && currentStatus.status === 'error') {
       // Don't show any other notifications once we've hit an error
       return;
     }
@@ -124,6 +128,10 @@ export default function M3URefreshNotification() {
       case 'processing_groups':
         message = 'Group parsing';
         break;
+
+      case 'vod_refresh':
+        message = 'VOD content refresh';
+        break;
     }
 
     if (taskProgress == 0) {
@@ -134,11 +142,17 @@ export default function M3URefreshNotification() {
       // Only trigger additional fetches on successful completion
       if (data.action == 'parsing') {
         fetchStreams();
+        API.requeryChannels();
+        fetchChannels();
       } else if (data.action == 'processing_groups') {
         fetchStreams();
         fetchChannelGroups();
         fetchEPGData();
         fetchPlaylists();
+      } else if (data.action == 'vod_refresh') {
+        // VOD refresh completed, trigger VOD categories refresh
+        fetchPlaylists(); // Refresh playlist data to show updated VOD info
+        fetchCategories(); // Refresh VOD categories to make them visible
       }
     }
 
@@ -147,18 +161,18 @@ export default function M3URefreshNotification() {
       message,
       loading: taskProgress == 0,
       autoClose: 2000,
-      icon: taskProgress == 100 ? <IconCheck /> : null,
+      icon: taskProgress == 100 ? <CircleCheck /> : null,
     });
   };
 
   useEffect(() => {
     // Reset notificationStatus when playlists change to prevent stale data
     if (playlists.length > 0 && Object.keys(notificationStatus).length > 0) {
-      const validIds = playlists.map(p => p.id);
+      const validIds = playlists.map((p) => p.id);
       const currentIds = Object.keys(notificationStatus).map(Number);
 
       // If we have notification statuses for playlists that no longer exist, reset the state
-      if (!currentIds.every(id => validIds.includes(id))) {
+      if (!currentIds.every((id) => validIds.includes(id))) {
         setNotificationStatus({});
       }
     }

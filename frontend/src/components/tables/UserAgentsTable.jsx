@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { MantineReactTable, useMantineReactTable } from 'mantine-react-table';
 import API from '../../api';
 import useUserAgentsStore from '../../store/userAgents';
 import UserAgentForm from '../forms/UserAgent';
@@ -18,17 +17,43 @@ import {
   Button,
   Stack,
 } from '@mantine/core';
-import { IconSquarePlus } from '@tabler/icons-react';
-import { SquareMinus, SquarePen, Check, X } from 'lucide-react';
+import { SquareMinus, SquarePen, Check, X, SquarePlus } from 'lucide-react';
+import { CustomTable, useTable } from './CustomTable';
+import useLocalStorage from '../../hooks/useLocalStorage';
+
+const RowActions = ({ row, editUserAgent, deleteUserAgent }) => {
+  return (
+    <>
+      <ActionIcon
+        variant="transparent"
+        size="sm" // Makes the button smaller
+        color="yellow.5" // Red color for delete actions
+        onClick={() => {
+          editUserAgent(row.original);
+        }}
+      >
+        <SquarePen size="18" /> {/* Small icon size */}
+      </ActionIcon>
+      <ActionIcon
+        variant="transparent"
+        size="sm"
+        color="red.9" // Red color for delete actions
+        onClick={() => deleteUserAgent(row.original.id)}
+      >
+        <SquareMinus size="18" /> {/* Small icon size */}
+      </ActionIcon>
+    </>
+  );
+};
 
 const UserAgentsTable = () => {
   const [userAgent, setUserAgent] = useState(null);
   const [userAgentModalOpen, setUserAgentModalOpen] = useState(false);
-  const [rowSelection, setRowSelection] = useState([]);
   const [activeFilterValue, setActiveFilterValue] = useState('all');
 
   const userAgents = useUserAgentsStore((state) => state.userAgents);
   const settings = useSettingsStore((s) => s.settings);
+  const [tableSize] = useLocalStorage('table-size', 'default');
 
   const columns = useMemo(
     //column definitions...
@@ -36,13 +61,14 @@ const UserAgentsTable = () => {
       {
         header: 'Name',
         accessorKey: 'name',
-        size: 100,
+        size: 125,
       },
       {
         header: 'User-Agent',
         accessorKey: 'user_agent',
         enableSorting: false,
-        Cell: ({ cell }) => (
+        grow: true,
+        cell: ({ cell }) => (
           <div
             style={{
               whiteSpace: 'nowrap',
@@ -58,7 +84,7 @@ const UserAgentsTable = () => {
         header: 'Description',
         accessorKey: 'description',
         enableSorting: false,
-        Cell: ({ cell }) => (
+        cell: ({ cell }) => (
           <div
             style={{
               whiteSpace: 'nowrap',
@@ -73,56 +99,23 @@ const UserAgentsTable = () => {
       {
         header: 'Active',
         accessorKey: 'is_active',
-        size: 10,
         sortingFn: 'basic',
         enableSorting: false,
-        mantineTableHeadCellProps: {
-          align: 'right',
-        },
-        mantineTableBodyCellProps: {
-          align: 'right',
-        },
-        Cell: ({ cell }) => (
+        size: 60,
+        cell: ({ cell }) => (
           <Center>
             {cell.getValue() ? <Check color="green" /> : <X color="red" />}
           </Center>
         ),
-        Filter: ({ column }) => (
-          <Select
-            size="small"
-            value={activeFilterValue}
-            onChange={(e) => {
-              setActiveFilterValue(e.target.value);
-              column.setFilterValue(e.target.value);
-            }}
-            displayEmpty
-            data={[
-              {
-                value: 'all',
-                label: 'All',
-              },
-              {
-                value: 'active',
-                label: 'Active',
-              },
-              {
-                value: 'inactive',
-                label: 'Inactive',
-              },
-            ]}
-          />
-        ),
-        filterFn: (row, _columnId, activeFilterValue) => {
-          if (activeFilterValue == 'all') return true; // Show all if no filter
-          return String(row.getValue('is_active')) === activeFilterValue;
-        },
+      },
+      {
+        id: 'actions',
+        header: 'Actions',
+        size: tableSize == 'compact' ? 50 : 75,
       },
     ],
     []
   );
-
-  //optionally access the underlying virtualizer instance
-  const rowVirtualizerInstanceRef = useRef(null);
 
   const [isLoading, setIsLoading] = useState(true);
   const [sorting, setSorting] = useState([]);
@@ -167,101 +160,60 @@ const UserAgentsTable = () => {
     }
   }, []);
 
-  useEffect(() => {
-    //scroll to the top of the table when the sorting changes
-    try {
-      rowVirtualizerInstanceRef.current?.scrollToIndex?.(0);
-    } catch (error) {
-      console.error(error);
+  const renderHeaderCell = (header) => {
+    switch (header.id) {
+      default:
+        return (
+          <Text size="sm" name={header.id}>
+            {header.column.columnDef.header}
+          </Text>
+        );
     }
-  }, [sorting]);
+  };
 
-  const table = useMantineReactTable({
-    ...TableHelper.defaultProperties,
+  const renderBodyCell = ({ cell, row }) => {
+    switch (cell.column.id) {
+      case 'actions':
+        return (
+          <RowActions
+            row={row}
+            editUserAgent={editUserAgent}
+            deleteUserAgent={deleteUserAgent}
+          />
+        );
+    }
+  };
+
+  const table = useTable({
     columns,
     data: userAgents,
-    enablePagination: false,
-    enableRowVirtualization: true,
-    // enableRowSelection: true,
-    renderTopToolbar: false,
-    // onRowSelectionChange: setRowSelection,
-    onSortingChange: setSorting,
-    state: {
-      isLoading,
-      sorting,
-      // rowSelection,
+    allRowIds: userAgents.map((ua) => ua.id),
+    bodyCellRenderFns: {
+      actions: renderBodyCell,
     },
-    rowVirtualizerInstanceRef, //optional
-    rowVirtualizerOptions: { overscan: 5 }, //optionally customize the row virtualizer
-    initialState: {
-      density: 'compact',
-    },
-    enableRowActions: true,
-    renderRowActions: ({ row }) => (
-      <>
-        <ActionIcon
-          variant="transparent"
-          size="sm" // Makes the button smaller
-          color="yellow.5" // Red color for delete actions
-          onClick={() => {
-            editUserAgent(row.original);
-          }}
-        >
-          <SquarePen size="18" /> {/* Small icon size */}
-        </ActionIcon>
-        <ActionIcon
-          variant="transparent"
-          size="sm"
-          color="red.9" // Red color for delete actions
-          onClick={() => deleteUserAgent(row.original.id)}
-        >
-          <SquareMinus size="18" /> {/* Small icon size */}
-        </ActionIcon>
-      </>
-    ),
-    mantineTableContainerProps: {
-      style: {
-        maxHeight: 300,
-        overflowY: 'auto',
-        // margin: 5,
-      },
-    },
-    displayColumnDefOptions: {
-      'mrt-row-actions': {
-        size: 10,
-      },
+    headerCellRenderFns: {
+      name: renderHeaderCell,
+      user_agent: renderHeaderCell,
+      description: renderHeaderCell,
+      is_active: renderHeaderCell,
+      actions: renderHeaderCell,
     },
   });
 
   return (
     <Stack gap={0} style={{ padding: 0 }}>
-      <Paper
-        style={
-          {
-            // bgcolor: theme.palette.background.paper,
-            // borderRadius: 2,
-            // overflow: 'hidden',
-            // height: 'calc(100vh - 75px)',
-            // display: 'flex',
-            // flexDirection: 'column',
-          }
-        }
-      >
-        {/* Top toolbar with Remove, Assign, Auto-match, and Add buttons */}
+      <Paper>
         <Box
           style={{
             display: 'flex',
-            // alignItems: 'center',
-            // backgroundColor: theme.palette.background.paper,
             justifyContent: 'flex-end',
             padding: 10,
-            // gap: 1,
           }}
         >
           <Flex gap={6}>
             <Tooltip label="Assign">
               <Button
-                leftSection={<IconSquarePlus size={18} />}
+                leftSection={<SquarePlus size={18} />}
                 variant="light"
                 size="xs"
                 onClick={() => editUserAgent()}
@@ -280,7 +232,30 @@ const UserAgentsTable = () => {
         </Box>
       </Paper>
 
-      <MantineReactTable table={table} />
+      <Box
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          maxHeight: 300,
+          width: '100%',
+          overflow: 'hidden',
+        }}
+      >
+        <Box
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            overflowX: 'auto',
+            border: 'solid 1px rgb(68,68,68)',
+            borderRadius: 'var(--mantine-radius-default)',
+          }}
+        >
+          <div style={{ minWidth: 500 }}>
+            <CustomTable table={table} />
+          </div>
+        </Box>
+      </Box>
+
       <UserAgentForm
         userAgent={userAgent}
         isOpen={userAgentModalOpen}

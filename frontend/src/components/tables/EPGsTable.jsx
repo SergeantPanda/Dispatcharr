@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { MantineReactTable, useMantineReactTable } from 'mantine-react-table';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import API from '../../api';
 import useEPGsStore from '../../store/epgs';
 import EPGForm from '../forms/EPG';
+import DummyEPGForm from '../forms/DummyEPG';
 import { TableHelper } from '../../helpers';
 import {
   ActionIcon,
@@ -17,15 +17,26 @@ import {
   Badge,
   Progress,
   Stack,
+  Group,
+  Menu,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconSquarePlus } from '@tabler/icons-react';
-import { RefreshCcw, SquareMinus, SquarePen } from 'lucide-react';
+import {
+  ArrowDownWideNarrow,
+  ArrowUpDown,
+  ArrowUpNarrowWide,
+  RefreshCcw,
+  SquareMinus,
+  SquarePen,
+  SquarePlus,
+  ChevronDown,
+} from 'lucide-react';
 import dayjs from 'dayjs';
 import useSettingsStore from '../../store/settings';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
+import { CustomTable, useTable } from './CustomTable';
 
 // Helper function to format status text
 const formatStatusText = (status) => {
@@ -36,22 +47,69 @@ const formatStatusText = (status) => {
 // Helper function to get status text color
 const getStatusColor = (status) => {
   switch (status) {
-    case 'idle': return 'gray.5';
-    case 'fetching': return 'blue.5';
-    case 'parsing': return 'indigo.5';
-    case 'error': return 'red.5';
-    case 'success': return 'green.5';
-    default: return 'gray.5';
+    case 'idle':
+      return 'gray.5';
+    case 'fetching':
+      return 'blue.5';
+    case 'parsing':
+      return 'indigo.5';
+    case 'error':
+      return 'red.5';
+    case 'success':
+      return 'green.5';
+    default:
+      return 'gray.5';
   }
+};
+
+const RowActions = ({ tableSize, row, editEPG, deleteEPG, refreshEPG }) => {
+  const iconSize =
+    tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
+  const isDummyEPG = row.original.source_type === 'dummy';
+
+  return (
+    <>
+      <ActionIcon
+        variant="transparent"
+        size={iconSize} // Use standardized icon size
+        color="yellow.5" // Red color for delete actions
+        onClick={() => editEPG(row.original)}
+      >
+        <SquarePen size={tableSize === 'compact' ? 16 : 18} />{' '}
+        {/* Small icon size */}
+      </ActionIcon>
+      <ActionIcon
+        variant="transparent"
+        size={iconSize} // Use standardized icon size
+        color="red.9" // Red color for delete actions
+        onClick={() => deleteEPG(row.original.id)}
+      >
+        <SquareMinus size={tableSize === 'compact' ? 16 : 18} />{' '}
+        {/* Small icon size */}
+      </ActionIcon>
+      <ActionIcon
+        variant="transparent"
+        size={iconSize} // Use standardized icon size
+        color="blue.5" // Red color for delete actions
+        onClick={() => refreshEPG(row.original.id)}
+        disabled={!row.original.is_active || isDummyEPG}
+      >
+        <RefreshCcw size={tableSize === 'compact' ? 16 : 18} />{' '}
+        {/* Small icon size */}
+      </ActionIcon>
+    </>
+  );
 };
 
 const EPGsTable = () => {
   const [epg, setEPG] = useState(null);
   const [epgModalOpen, setEPGModalOpen] = useState(false);
+  const [dummyEpgModalOpen, setDummyEpgModalOpen] = useState(false);
   const [rowSelection, setRowSelection] = useState([]);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [epgToDelete, setEpgToDelete] = useState(null);
+  const [data, setData] = useState([]);
 
   const epgs = useEPGsStore((s) => s.epgs);
   const refreshProgress = useEPGsStore((s) => s.refreshProgress);
@@ -61,10 +119,12 @@ const EPGsTable = () => {
   const [tableSize] = useLocalStorage('table-size', 'default');
 
   // Get proper size for action icons to match ChannelsTable
-  const iconSize = tableSize === 'compact' ? 'xs' : tableSize === 'large' ? 'md' : 'sm';
+  const iconSize =
+    tableSize === 'compact' ? 'xs' : tableSize === 'large' ? 'md' : 'sm';
 
   // Calculate density for Mantine Table
-  const tableDensity = tableSize === 'compact' ? 'xs' : tableSize === 'large' ? 'xl' : 'md';
+  const tableDensity =
+    tableSize === 'compact' ? 'xs' : tableSize === 'large' ? 'xl' : 'md';
 
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -72,10 +132,13 @@ const EPGsTable = () => {
   const toggleActive = async (epg) => {
     try {
       // Send only the is_active field to trigger our special handling
-      await API.updateEPG({
-        id: epg.id,
-        is_active: !epg.is_active,
-      }, true); // Add a new parameter to indicate this is just a toggle
+      await API.updateEPG(
+        {
+          id: epg.id,
+          is_active: !epg.is_active,
+        },
+        true
+      ); // Add a new parameter to indicate this is just a toggle
     } catch (error) {
       console.error('Error toggling active state:', error);
     }
@@ -103,9 +166,17 @@ const EPGsTable = () => {
 
     return (
       <Stack spacing={2}>
-        <Text size="xs">{label}: {parseInt(progress.progress)}%</Text>
-        <Progress value={parseInt(progress.progress)} size="xs" style={{ margin: '2px 0' }} />
-        {progress.speed && <Text size="xs">Speed: {parseInt(progress.speed)} KB/s</Text>}
+        <Text size="xs">
+          {label}: {parseInt(progress.progress)}%
+        </Text>
+        <Progress
+          value={parseInt(progress.progress)}
+          size="xs"
+          style={{ margin: '2px 0' }}
+        />
+        {progress.speed && (
+          <Text size="xs">Speed: {parseInt(progress.speed)} KB/s</Text>
+        )}
       </Stack>
     );
   };
@@ -116,23 +187,24 @@ const EPGsTable = () => {
       {
         header: 'Name',
         accessorKey: 'name',
-        size: 150,
-        minSize: 100,
+        size: 200,
       },
       {
-        header: 'Source Type',
+        header: 'Type',
         accessorKey: 'source_type',
-        size: 120,
-        minSize: 100,
+        size: 100,
       },
       {
         header: 'URL / API Key / File Path',
         accessorKey: 'url',
-        size: 200,
-        minSize: 120,
         enableSorting: false,
-        Cell: ({ cell, row }) => {
-          const value = cell.getValue() || row.original.api_key || row.original.file_path || '';
+        minSize: 250,
+        cell: ({ cell, row }) => {
+          const value =
+            cell.getValue() ||
+            row.original.api_key ||
+            row.original.file_path ||
+            '';
           return (
             <Tooltip label={value} disabled={!value}>
               <div
@@ -153,18 +225,16 @@ const EPGsTable = () => {
         header: 'Status',
         accessorKey: 'status',
         size: 100,
-        minSize: 80,
-        Cell: ({ row }) => {
+        cell: ({ row }) => {
           const data = row.original;
+          const isDummyEPG = data.source_type === 'dummy';
 
-          // Always show status text, even when there's progress happening
+          // Dummy EPGs always show idle status
+          const displayStatus = isDummyEPG ? 'idle' : data.status;
+
           return (
-            <Text
-              size="sm"
-              fw={500}
-              c={getStatusColor(data.status)}
-            >
-              {formatStatusText(data.status)}
+            <Text size="sm" fw={500} c={getStatusColor(displayStatus)}>
+              {formatStatusText(displayStatus)}
             </Text>
           );
         },
@@ -172,14 +242,23 @@ const EPGsTable = () => {
       {
         header: 'Status Message',
         accessorKey: 'last_message',
-        size: 250,
-        minSize: 150,
         enableSorting: false,
-        Cell: ({ row }) => {
+        minSize: 250,
+        grow: true,
+        cell: ({ row }) => {
           const data = row.original;
+          const isDummyEPG = data.source_type === 'dummy';
+
+          // Dummy EPGs don't have status messages
+          if (isDummyEPG) {
+            return null;
+          }
 
           // Check if there's an active progress for this EPG - show progress first if active
-          if (refreshProgress[data.id] && refreshProgress[data.id].progress < 100) {
+          if (
+            refreshProgress[data.id] &&
+            refreshProgress[data.id].progress < 100
+          ) {
             return buildProgressDisplay(data);
           }
 
@@ -187,7 +266,12 @@ const EPGsTable = () => {
           if (data.status === 'error' && data.last_message) {
             return (
               <Tooltip label={data.last_message} multiline width={300}>
-                <Text c="dimmed" size="xs" lineClamp={2} style={{ color: theme.colors.red[6], lineHeight: 1.3 }}>
+                <Text
+                  c="dimmed"
+                  size="xs"
+                  lineClamp={2}
+                  style={{ color: theme.colors.red[6], lineHeight: 1.3 }}
+                >
                   {data.last_message}
                 </Text>
               </Tooltip>
@@ -197,7 +281,11 @@ const EPGsTable = () => {
           // Show success message for successful sources
           if (data.status === 'success') {
             return (
-              <Text c="dimmed" size="xs" style={{ color: theme.colors.green[6], lineHeight: 1.3 }}>
+              <Text
+                c="dimmed"
+                size="xs"
+                style={{ color: theme.colors.green[6], lineHeight: 1.3 }}
+              >
                 EPG data refreshed successfully
               </Text>
             );
@@ -210,46 +298,69 @@ const EPGsTable = () => {
       {
         header: 'Updated',
         accessorKey: 'updated_at',
-        size: 180,
-        minSize: 100,
+        size: 175,
         enableSorting: false,
-        Cell: ({ cell }) => {
+        cell: ({ cell }) => {
           const value = cell.getValue();
-          return value ? dayjs(value).format('MMMM D, YYYY h:mma') : 'Never';
+          return value ? (
+            <Text size="xs">{new Date(value).toLocaleString()}</Text>
+          ) : (
+            <Text size="xs">Never</Text>
+          );
         },
       },
       {
         header: 'Active',
         accessorKey: 'is_active',
-        size: 80,
-        minSize: 60,
+        size: 50,
         sortingFn: 'basic',
         mantineTableBodyCellProps: {
           align: 'left',
         },
-        Cell: ({ row, cell }) => (
-          <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-            <Switch
-              size="xs"
-              checked={cell.getValue()}
-              onChange={() => toggleActive(row.original)}
-            />
-          </Box>
-        ),
+        cell: ({ row, cell }) => {
+          const isDummyEPG = row.original.source_type === 'dummy';
+          return (
+            <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+              <Switch
+                size="xs"
+                checked={cell.getValue()}
+                onChange={() => toggleActive(row.original)}
+                disabled={isDummyEPG}
+              />
+            </Box>
+          );
+        },
+      },
+      {
+        id: 'actions',
+        header: 'Actions',
+        size: tableSize == 'compact' ? 75 : 100,
       },
     ],
     [refreshProgress]
   );
-
-  //optionally access the underlying virtualizer instance
-  const rowVirtualizerInstanceRef = useRef(null);
 
   const [isLoading, setIsLoading] = useState(true);
   const [sorting, setSorting] = useState([]);
 
   const editEPG = async (epg = null) => {
     setEPG(epg);
+    // Open the appropriate modal based on source type
+    if (epg?.source_type === 'dummy') {
+      setDummyEpgModalOpen(true);
+    } else {
+      setEPGModalOpen(true);
+    }
+  };
+
+  const createStandardEPG = () => {
+    setEPG(null);
     setEPGModalOpen(true);
+  };
+
+  const createDummyEPG = () => {
+    setEPG(null);
+    setDummyEpgModalOpen(true);
   };
 
   const deleteEPG = async (id) => {
@@ -285,119 +396,139 @@ const EPGsTable = () => {
     setEPGModalOpen(false);
   };
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setIsLoading(false);
-    }
-  }, []);
+  const closeDummyEPGForm = () => {
+    setEPG(null);
+    setDummyEpgModalOpen(false);
+  };
 
   useEffect(() => {
-    //scroll to the top of the table when the sorting changes
-    try {
-      rowVirtualizerInstanceRef.current?.scrollToIndex?.(0);
-    } catch (error) {
-      console.error(error);
-    }
-  }, [sorting]);
-
-  const table = useMantineReactTable({
-    ...TableHelper.defaultProperties,
-    columns,
-    // Sort data before passing to table: active first, then by name
-    data: Object.values(epgs)
-      .sort((a, b) => {
+    setData(
+      Object.values(epgs).sort((a, b) => {
         // First sort by active status (active items first)
         if (a.is_active !== b.is_active) {
           return a.is_active ? -1 : 1;
         }
         // Then sort by name (case-insensitive)
         return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-      }),
+      })
+    );
+  }, [epgs]);
+
+  const renderBodyCell = ({ cell, row }) => {
+    switch (cell.column.id) {
+      case 'actions':
+        return (
+          <RowActions
+            tableSize={tableSize}
+            row={row}
+            editEPG={editEPG}
+            deleteEPG={deleteEPG}
+            refreshEPG={refreshEPG}
+          />
+        );
+    }
+  };
+
+  const renderHeaderCell = (header) => {
+    let sortingIcon = ArrowUpDown;
+    if (sorting[0]?.id == header.id) {
+      if (sorting[0].desc === false) {
+        sortingIcon = ArrowUpNarrowWide;
+      } else {
+        sortingIcon = ArrowDownWideNarrow;
+      }
+    }
+
+    switch (header.id) {
+      default:
+        return (
+          <Group>
+            <Text size="sm" name={header.id}>
+              {header.column.columnDef.header}
+            </Text>
+            {header.column.columnDef.sortable && (
+              <Center>
+                {React.createElement(sortingIcon, {
+                  onClick: () => onSortingChange(header.id),
+                  size: 14,
+                })}
+              </Center>
+            )}
+          </Group>
+        );
+    }
+  };
+
+  const onSortingChange = (column) => {
+    console.log(column);
+    const sortField = sorting[0]?.id;
+    const sortDirection = sorting[0]?.desc;
+
+    const newSorting = [];
+    if (sortField == column) {
+      if (sortDirection == false) {
+        newSorting[0] = {
+          id: column,
+          desc: true,
+        };
+      }
+    } else {
+      newSorting[0] = {
+        id: column,
+        desc: false,
+      };
+    }
+
+    setSorting(newSorting);
+    if (newSorting.length > 0) {
+      const compareColumn = newSorting[0].id;
+      const compareDesc = newSorting[0].desc;
+
+      setData(
+        epgs.sort((a, b) => {
+          console.log(a);
+          console.log(newSorting[0].id);
+          if (a[compareColumn] !== b[compareColumn]) {
+            return compareDesc ? 1 : -1;
+          }
+
+          return 0;
+        })
+      );
+    }
+  };
+
+  const table = useTable({
+    columns,
+    data,
+    allRowIds: data.map((epg) => epg.id),
     enablePagination: false,
-    enableRowVirtualization: true,
     enableRowSelection: false,
     renderTopToolbar: false,
     onRowSelectionChange: setRowSelection,
-    onSortingChange: setSorting,
-    state: {
-      isLoading,
-      sorting,
-      rowSelection,
-      density: tableDensity,
+    manualSorting: true,
+    bodyCellRenderFns: {
+      actions: renderBodyCell,
     },
-    rowVirtualizerInstanceRef, //optional
-    rowVirtualizerOptions: { overscan: 5 }, //optionally customize the row virtualizer
-    initialState: {
-      density: tableDensity,
-    },
-    enableRowActions: true,
-    positionActionsColumn: 'last',
-    displayColumnDefOptions: {
-      'mrt-row-actions': {
-        size: 120, // Make action column wider
-        minSize: 120, // Ensure minimum width for action buttons
-      },
-    },
-    renderRowActions: ({ row }) => (
-      <>
-        <ActionIcon
-          variant="transparent"
-          size={iconSize} // Use standardized icon size
-          color="yellow.5" // Red color for delete actions
-          onClick={() => editEPG(row.original)}
-        >
-          <SquarePen size={tableSize === 'compact' ? 16 : 18} /> {/* Small icon size */}
-        </ActionIcon>
-        <ActionIcon
-          variant="transparent"
-          size={iconSize} // Use standardized icon size
-          color="red.9" // Red color for delete actions
-          onClick={() => deleteEPG(row.original.id)}
-        >
-          <SquareMinus size={tableSize === 'compact' ? 16 : 18} /> {/* Small icon size */}
-        </ActionIcon>
-        <ActionIcon
-          variant="transparent"
-          size={iconSize} // Use standardized icon size
-          color="blue.5" // Red color for delete actions
-          onClick={() => refreshEPG(row.original.id)}
-          disabled={!row.original.is_active}
-        >
-          <RefreshCcw size={tableSize === 'compact' ? 16 : 18} /> {/* Small icon size */}
-        </ActionIcon>
-      </>
-    ),
-    mantineTableContainerProps: {
-      style: {
-        height: 'calc(40vh - 10px)',
-        overflowX: 'auto', // Ensure horizontal scrolling works
-      },
-    },
-    mantineTableProps: {
-      ...TableHelper.defaultProperties.mantineTableProps,
-      className: `table-size-${tableSize}`,
+    headerCellRenderFns: {
+      name: renderHeaderCell,
+      source_type: renderHeaderCell,
+      url: renderHeaderCell,
+      status: renderHeaderCell,
+      last_message: renderHeaderCell,
+      updated_at: renderHeaderCell,
+      is_active: renderHeaderCell,
+      actions: renderHeaderCell,
     },
     // Add custom cell styles to match CustomTable's sizing
-    mantineTableBodyCellProps: ({ cell }) => {
-      // Check if this is a status message cell with active progress
-      const progressData = cell.column.id === 'last_message' &&
-        refreshProgress[cell.row.original.id] &&
-        refreshProgress[cell.row.original.id].progress < 100 ?
-        refreshProgress[cell.row.original.id] : null;
-
-      // Only expand height for certain actions that need more space
-      const needsExpandedHeight = progressData &&
-        ['downloading', 'parsing_channels', 'parsing_programs'].includes(progressData.action);
-
+    tableCellProps: ({ cell }) => {
       return {
-        style: {
-          // Apply taller height for progress cells (except initializing), otherwise use standard height
-          height: needsExpandedHeight ? '80px' : (
-            tableSize === 'compact' ? '28px' : tableSize === 'large' ? '48px' : '40px'
-          ),
-          fontSize: tableSize === 'compact' ? 'var(--mantine-font-size-xs)' : 'var(--mantine-font-size-sm)',
-          padding: tableSize === 'compact' ? '2px 8px' : '4px 10px'
-        }
+        // Apply taller height for progress cells (except initializing), otherwise use standard height
+        fontSize:
+          tableSize === 'compact'
+            ? 'var(--mantine-font-size-xs)'
+            : 'var(--mantine-font-size-sm)',
+        padding: tableSize === 'compact' ? '2px 8px' : '4px 10px',
       };
     },
   });
@@ -408,6 +539,7 @@ const EPGsTable = () => {
         style={{
           display: 'flex',
           alignItems: 'center',
+          justifyContent: 'space-between',
           paddingBottom: 10,
         }}
         gap={15}
@@ -426,6 +558,31 @@ const EPGsTable = () => {
         >
           EPGs
         </Text>
+        <Menu shadow="md" width={200}>
+          <Menu.Target>
+            <Button
+              leftSection={<SquarePlus size={18} />}
+              rightSection={<ChevronDown size={16} />}
+              variant="light"
+              size="xs"
+              p={5}
+              color="green"
+              style={{
+                borderWidth: '1px',
+                borderColor: 'green',
+                color: 'white',
+              }}
+            >
+              Add EPG
+            </Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item onClick={createStandardEPG}>
+              Standard EPG Source
+            </Menu.Item>
+            <Menu.Item onClick={createDummyEPG}>Dummy EPG Source</Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
       </Flex>
 
       <Paper
@@ -441,34 +598,38 @@ const EPGsTable = () => {
             // alignItems: 'center',
             // backgroundColor: theme.palette.background.paper,
             justifyContent: 'flex-end',
-            padding: 10,
+            padding: 0,
             // gap: 1,
           }}
-        >
-          <Flex gap={6}>
-            <Tooltip label="Assign">
-              <Button
-                leftSection={<IconSquarePlus size={18} />}
-                variant="light"
-                size="xs"
-                onClick={() => editEPG()}
-                p={5}
-                color="green"
-                style={{
-                  borderWidth: '1px',
-                  borderColor: 'green',
-                  color: 'white',
-                }}
-              >
-                Add EPG
-              </Button>
-            </Tooltip>
-          </Flex>
-        </Box>
+        ></Box>
       </Paper>
 
-      <MantineReactTable table={table} />
+      <Box
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: 'calc(40vh - 15px)',
+        }}
+      >
+        <Box
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            overflowX: 'auto',
+            border: 'solid 1px rgb(68,68,68)',
+            borderRadius: 'var(--mantine-radius-default)',
+          }}
+        >
+          <CustomTable table={table} />
+        </Box>
+      </Box>
+
       <EPGForm epg={epg} isOpen={epgModalOpen} onClose={closeEPGForm} />
+      <DummyEPGForm
+        epg={epg}
+        isOpen={dummyEpgModalOpen}
+        onClose={closeDummyEPGForm}
+      />
 
       <ConfirmationDialog
         opened={confirmDeleteOpen}
@@ -482,9 +643,15 @@ const EPGsTable = () => {
 
 Name: ${epgToDelete.name}
 Source Type: ${epgToDelete.source_type}
-${epgToDelete.url ? `URL: ${epgToDelete.url}` :
-                  epgToDelete.api_key ? `API Key: ${epgToDelete.api_key}` :
-                    epgToDelete.file_path ? `File Path: ${epgToDelete.file_path}` : ''}
+${
+  epgToDelete.url
+    ? `URL: ${epgToDelete.url}`
+    : epgToDelete.api_key
+      ? `API Key: ${epgToDelete.api_key}`
+      : epgToDelete.file_path
+        ? `File Path: ${epgToDelete.file_path}`
+        : ''
+}
 
 This will remove all related program information and channel associations.
 This action cannot be undone.`}

@@ -8,7 +8,7 @@ from .models import Channel, Stream, ChannelProfile, ChannelProfileMembership, R
 from apps.m3u.models import M3UAccount
 from apps.epg.tasks import parse_programs_for_tvg_id
 import logging, requests, time
-from .tasks import run_recording
+from .tasks import run_recording, prefetch_recording_artwork
 from django.utils.timezone import now, is_aware, make_aware
 from datetime import timedelta
 
@@ -45,6 +45,20 @@ def set_default_m3u_account(sender, instance, **kwargs):
         else:
             raise ValueError("No default M3UAccount found.")
 
+@receiver(post_save, sender=Stream)
+def generate_custom_stream_hash(sender, instance, created, **kwargs):
+    """
+    Generate a stable stream_hash for custom streams after creation.
+    Uses the stream's ID to ensure the hash never changes even if name/url is edited.
+    """
+    if instance.is_custom and not instance.stream_hash and created:
+        import hashlib
+        # Use stream ID for a stable, unique hash that never changes
+        unique_string = f"custom_stream_{instance.id}"
+        instance.stream_hash = hashlib.sha256(unique_string.encode()).hexdigest()
+        # Use update to avoid triggering signals again
+        Stream.objects.filter(id=instance.id).update(stream_hash=instance.stream_hash)
+
 @receiver(post_save, sender=Channel)
 def refresh_epg_programs(sender, instance, created, **kwargs):
     """
@@ -62,15 +76,6 @@ def refresh_epg_programs(sender, instance, created, **kwargs):
         logger.info(f"New channel {instance.id} ({instance.name}) created with EPG data, refreshing program data")
         parse_programs_for_tvg_id.delay(instance.epg_data.id)
 
-@receiver(post_save, sender=Channel)
-def add_new_channel_to_groups(sender, instance, created, **kwargs):
-    if created:
-        profiles = ChannelProfile.objects.all()
-        ChannelProfileMembership.objects.bulk_create([
-            ChannelProfileMembership(channel_profile=profile, channel=instance)
-            for profile in profiles
-        ])
-
 @receiver(post_save, sender=ChannelProfile)
 def create_profile_memberships(sender, instance, created, **kwargs):
     if created:
@@ -82,8 +87,9 @@ def create_profile_memberships(sender, instance, created, **kwargs):
 
 def schedule_recording_task(instance):
     eta = instance.start_time
+    # Pass recording_id first so task can persist metadata to the correct row
     task = run_recording.apply_async(
-        args=[instance.channel_id, str(instance.start_time), str(instance.end_time)],
+        args=[instance.id, instance.channel_id, str(instance.start_time), str(instance.end_time)],
         eta=eta
     )
     return task.id
@@ -132,6 +138,11 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
                 instance.save(update_fields=['task_id'])
             else:
                 print("Start time is in the past. Not scheduling.")
+        # Kick off poster/artwork prefetch to enrich Upcoming cards
+        try:
+            prefetch_recording_artwork.apply_async(args=[instance.id], countdown=1)
+        except Exception as e:
+            print("Error scheduling artwork prefetch:", e)
     except Exception as e:
         import traceback
         print("Error in post_save signal:", e)

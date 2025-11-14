@@ -14,13 +14,17 @@ import Guide from './pages/Guide';
 import Stats from './pages/Stats';
 import DVR from './pages/DVR';
 import Settings from './pages/Settings';
+import PluginsPage from './pages/Plugins';
+import Users from './pages/Users';
+import LogosPage from './pages/Logos';
+import VODsPage from './pages/VODs';
 import useAuthStore from './store/auth';
+import useLogosStore from './store/logos';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
 import '@mantine/core/styles.css'; // Ensure Mantine global styles load
 import '@mantine/notifications/styles.css';
-import 'mantine-react-table/styles.css';
 import '@mantine/dropzone/styles.css';
 import '@mantine/dates/styles.css';
 import './index.css';
@@ -36,6 +40,8 @@ const defaultRoute = '/channels';
 
 const App = () => {
   const [open, setOpen] = useState(true);
+  const [backgroundLoadingStarted, setBackgroundLoadingStarted] =
+    useState(false);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const setIsAuthenticated = useAuthStore((s) => s.setIsAuthenticated);
   const logout = useAuthStore((s) => s.logout);
@@ -75,18 +81,22 @@ const App = () => {
         const loggedIn = await initializeAuth();
         if (loggedIn) {
           await initData();
-          setIsAuthenticated(true);
+          // Start background logo loading after app is fully initialized (only once)
+          if (!backgroundLoadingStarted) {
+            setBackgroundLoadingStarted(true);
+            useLogosStore.getState().startBackgroundLoading();
+          }
         } else {
           await logout();
         }
       } catch (error) {
-        console.error("Auth check failed:", error);
+        console.error('Auth check failed:', error);
         await logout();
       }
     };
 
     checkAuth();
-  }, [initializeAuth, initData, setIsAuthenticated, logout]);
+  }, [initializeAuth, initData, logout, backgroundLoadingStarted]);
 
   return (
     <MantineProvider
@@ -102,15 +112,21 @@ const App = () => {
               height: 0,
             }}
             navbar={{
-              width: open ? drawerWidth : miniDrawerWidth,
+              width: isAuthenticated
+                ? open
+                  ? drawerWidth
+                  : miniDrawerWidth
+                : 0,
             }}
           >
-            <Sidebar
-              drawerWidth
-              miniDrawerWidth
-              collapsed={!open}
-              toggleDrawer={toggleDrawer}
-            />
+            {isAuthenticated && (
+              <Sidebar
+                drawerWidth={drawerWidth}
+                miniDrawerWidth={miniDrawerWidth}
+                collapsed={!open}
+                toggleDrawer={toggleDrawer}
+              />
+            )}
 
             <AppShell.Main>
               <Box
@@ -132,7 +148,11 @@ const App = () => {
                         <Route path="/guide" element={<Guide />} />
                         <Route path="/dvr" element={<DVR />} />
                         <Route path="/stats" element={<Stats />} />
+                        <Route path="/plugins" element={<PluginsPage />} />
+                        <Route path="/users" element={<Users />} />
                         <Route path="/settings" element={<Settings />} />
+                        <Route path="/logos" element={<LogosPage />} />
+                        <Route path="/vods" element={<VODsPage />} />
                       </>
                     ) : (
                       <Route path="/login" element={<Login needsSuperuser />} />

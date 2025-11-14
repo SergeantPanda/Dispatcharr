@@ -19,6 +19,26 @@ const usePlaylistsStore = create((set) => ({
       editPlaylistId: id,
     })),
 
+  fetchPlaylist: async (id) => {
+    set({ isLoading: true, error: null });
+    try {
+      const playlist = await api.getPlaylist(id);
+      set((state) => ({
+        playlists: state.playlists.map((p) => (p.id == id ? playlist : p)),
+        isLoading: false,
+        profiles: {
+          ...state.profiles,
+          [id]: playlist.profiles,
+        },
+      }));
+
+      return playlist;
+    } catch (error) {
+      console.error('Failed to fetch playlists:', error);
+      set({ error: 'Failed to load playlists.', isLoading: false });
+    }
+  },
+
   fetchPlaylists: async () => {
     set({ isLoading: true, error: null });
     try {
@@ -91,9 +111,11 @@ const usePlaylistsStore = create((set) => ({
       const existingProgress = state.refreshProgress[accountId];
 
       // Don't replace 'initializing' status with empty/early server messages
-      if (existingProgress &&
+      if (
+        existingProgress &&
         existingProgress.action === 'initializing' &&
-        accountIdOrData.progress === 0) {
+        accountIdOrData.progress === 0
+      ) {
         return state; // Keep showing 'initializing' until real progress comes
       }
 

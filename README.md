@@ -22,6 +22,7 @@ Dispatcharr has officially entered **BETA**, bringing powerful new features and 
 📊 **Real-Time Stats Dashboard** — Live insights into stream health and client activity\
 🧠 **EPG Auto-Match** — Match program data to channels automatically\
 ⚙️ **Streamlink + FFmpeg Support** — Flexible backend options for streaming and recording\
+🎬 **VOD Management** — Full Video on Demand support with movies and TV series\
 🧼 **UI & UX Enhancements** — Smoother, faster, more responsive interface\
 🛁 **Output Compatibility** — HDHomeRun, M3U, and XMLTV EPG support for Plex, Jellyfin, and more
 
@@ -31,6 +32,7 @@ Dispatcharr has officially entered **BETA**, bringing powerful new features and 
 
 ✅ **Full IPTV Control** — Import, organize, proxy, and monitor IPTV streams on your own terms\
 ✅ **Smart Playlist Handling** — M3U import, filtering, grouping, and failover support\
+✅ **VOD Content Management** — Organize movies and TV series with metadata and streaming\
 ✅ **Reliable EPG Integration** — Match and manage TV guide data with ease\
 ✅ **Clean & Responsive Interface** — Modern design that gets out of your way\
 ✅ **Fully Self-Hosted** — Total control, zero reliance on third-party services

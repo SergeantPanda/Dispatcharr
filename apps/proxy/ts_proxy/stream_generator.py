@@ -52,6 +52,10 @@ class StreamGenerator:
         self.last_stats_bytes = 0
         self.current_rate = 0.0
 
+        # TTL refresh tracking
+        self.last_ttl_refresh = time.time()
+        self.ttl_refresh_interval = 3  # Refresh TTL every 3 seconds of active streaming
+
     def generate(self):
         """
         Generator function that produces the stream content for the client.
@@ -204,6 +208,18 @@ class StreamGenerator:
                 self.empty_reads += 1
                 self.consecutive_empty += 1
 
+                # Check if we're too far behind (chunks expired from Redis)
+                chunks_behind = self.buffer.index - self.local_index
+                if chunks_behind > 50:  # If more than 50 chunks behind, jump forward
+                    # Calculate new position: stay a few chunks behind current buffer
+                    initial_behind = ConfigHelper.initial_behind_chunks()
+                    new_index = max(self.local_index, self.buffer.index - initial_behind)
+
+                    logger.warning(f"[{self.client_id}] Client too far behind ({chunks_behind} chunks), jumping from {self.local_index} to {new_index}")
+                    self.local_index = new_index
+                    self.consecutive_empty = 0  # Reset since we're repositioning
+                    continue  # Try again immediately with new position
+
                 if self._should_send_keepalive(self.local_index):
                     keepalive_packet = create_ts_packet('keepalive')
                     logger.debug(f"[{self.client_id}] Sending keepalive packet while waiting at buffer head")
@@ -324,7 +340,20 @@ class StreamGenerator:
                             ChannelMetadataField.STATS_UPDATED_AT: str(current_time)
                         }
                         proxy_server.redis_client.hset(client_key, mapping=stats)
-                        # No need to set expiration as client heartbeat will refresh this key
+
+                        # Refresh TTL periodically while actively streaming
+                        # This provides proof-of-life independent of heartbeat thread
+                        if current_time - self.last_ttl_refresh > self.ttl_refresh_interval:
+                            try:
+                                # Refresh TTL on client key
+                                proxy_server.redis_client.expire(client_key, Config.CLIENT_RECORD_TTL)
+                                # Also refresh the client set TTL
+                                client_set_key = f"ts_proxy:channel:{self.channel_id}:clients"
+                                proxy_server.redis_client.expire(client_set_key, Config.CLIENT_RECORD_TTL)
+                                self.last_ttl_refresh = current_time
+                                logger.debug(f"[{self.client_id}] Refreshed client TTL (active streaming)")
+                            except Exception as ttl_error:
+                                logger.debug(f"[{self.client_id}] Failed to refresh TTL: {ttl_error}")
                     except Exception as e:
                         logger.warning(f"[{self.client_id}] Failed to store stats in Redis: {e}")
 

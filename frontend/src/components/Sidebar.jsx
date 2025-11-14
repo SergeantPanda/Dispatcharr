@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { copyToClipboard } from '../utils';
 import {
   ListOrdered,
   Play,
@@ -10,6 +11,10 @@ import {
   Copy,
   ChartLine,
   Video,
+  PlugZap,
+  LogOut,
+  User,
+  FileImage,
 } from 'lucide-react';
 import {
   Avatar,
@@ -21,13 +26,17 @@ import {
   UnstyledButton,
   TextInput,
   ActionIcon,
+  Menu,
 } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import logo from '../images/logo.png';
 import useChannelsStore from '../store/channels';
 import './sidebar.css';
 import useSettingsStore from '../store/settings';
 import useAuthStore from '../store/auth'; // Add this import
 import API from '../api';
+import { USER_LEVELS } from '../constants';
+import UserForm from './forms/User';
 
 const NavLink = ({ item, isActive, collapsed }) => {
   return (
@@ -63,11 +72,77 @@ const NavLink = ({ item, isActive, collapsed }) => {
 
 const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const location = useLocation();
+
   const channels = useChannelsStore((s) => s.channels);
   const environment = useSettingsStore((s) => s.environment);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const authUser = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
+
   const publicIPRef = useRef(null);
-  const [appVersion, setAppVersion] = useState({ version: '', timestamp: null });
+
+  const [appVersion, setAppVersion] = useState({
+    version: '',
+    timestamp: null,
+  });
+  const [userFormOpen, setUserFormOpen] = useState(false);
+
+  const closeUserForm = () => setUserFormOpen(false);
+
+  // Navigation Items
+  const navItems =
+    authUser && authUser.user_level == USER_LEVELS.ADMIN
+      ? [
+          {
+            label: 'Channels',
+            icon: <ListOrdered size={20} />,
+            path: '/channels',
+            badge: `(${Object.keys(channels).length})`,
+          },
+          {
+            label: 'VODs',
+            path: '/vods',
+            icon: <Video size={20} />,
+          },
+          {
+            label: 'M3U & EPG Manager',
+            icon: <Play size={20} />,
+            path: '/sources',
+          },
+          { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
+          { label: 'DVR', icon: <Database size={20} />, path: '/dvr' },
+          { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
+          { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
+          {
+            label: 'Users',
+            icon: <User size={20} />,
+            path: '/users',
+          },
+          {
+            label: 'Logo Manager',
+            icon: <FileImage size={20} />,
+            path: '/logos',
+          },
+          {
+            label: 'Settings',
+            icon: <LucideSettings size={20} />,
+            path: '/settings',
+          },
+        ]
+      : [
+          {
+            label: 'Channels',
+            icon: <ListOrdered size={20} />,
+            path: '/channels',
+            badge: `(${Object.keys(channels).length})`,
+          },
+          { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
+          {
+            label: 'Settings',
+            icon: <LucideSettings size={20} />,
+            path: '/settings',
+          },
+        ];
 
   // Fetch environment settings including version on component mount
   useEffect(() => {
@@ -99,40 +174,23 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
     fetchVersion();
   }, []);
-  // Navigation Items
-  const navItems = [
-    {
-      label: 'Channels',
-      icon: <ListOrdered size={20} />,
-      path: '/channels',
-      badge: `(${Object.keys(channels).length})`,
-    },
-    { label: 'M3U & EPG Manager', icon: <Play size={20} />, path: '/sources' },
-    { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-    { label: 'DVR', icon: <Video size={20} />, path: '/dvr' },
-    { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
-    {
-      label: 'Settings',
-      icon: <LucideSettings size={20} />,
-      path: '/settings',
-    },
-  ];
 
   const copyPublicIP = async () => {
-    try {
-      await navigator.clipboard.writeText(environment.public_ip);
-    } catch (err) {
-      const inputElement = publicIPRef.current; // Get the actual input
-      console.log(inputElement);
-
-      if (inputElement) {
-        inputElement.focus();
-        inputElement.select();
-
-        // For older browsers
-        document.execCommand('copy');
-      }
+    const success = await copyToClipboard(environment.public_ip);
+    if (success) {
+      notifications.show({
+        title: 'Success',
+        message: 'Public IP copied to clipboard',
+        color: 'green',
+      });
+    } else {
+      console.error('Failed to copy public IP to clipboard');
     }
+  };
+
+  const onLogout = () => {
+    logout();
+    window.location.reload();
   };
 
   return (
@@ -242,8 +300,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               />
             )}
 
-            <Avatar src="https://via.placeholder.com/40" radius="xl" />
-            {!collapsed && (
+            <Avatar src="" radius="xl" />
+            {!collapsed && authUser && (
               <Group
                 style={{
                   flex: 1,
@@ -251,12 +309,13 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                   whiteSpace: 'nowrap',
                 }}
               >
-                <Text size="sm" color="white">
-                  John Doe
-                </Text>
-                <Text size="sm" color="white">
-                  •••
-                </Text>
+                <UnstyledButton onClick={() => setUserFormOpen(true)}>
+                  {authUser.first_name || authUser.username}
+                </UnstyledButton>
+
+                <ActionIcon variant="transparent" color="white" size="sm">
+                  <LogOut onClick={logout} />
+                </ActionIcon>
               </Group>
             )}
           </Group>
@@ -270,6 +329,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           {appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
         </Text>
       )}
+
+      <UserForm user={authUser} isOpen={userFormOpen} onClose={closeUserForm} />
     </AppShell.Navbar>
   );
 };

@@ -50,18 +50,27 @@ app.conf.update(
 )
 
 # Add memory cleanup after task completion
-#@task_postrun.connect  # Use the imported signal
+@task_postrun.connect  # Use the imported signal
 def cleanup_task_memory(**kwargs):
-    """Clean up memory after each task completes"""
+    """Clean up memory and database connections after each task completes"""
+    from django.db import connection
+    
     # Get task name from kwargs
     task_name = kwargs.get('task').name if kwargs.get('task') else ''
 
-    # Only run cleanup for memory-intensive tasks
+    # Close database connection for this Celery worker process
+    try:
+        connection.close()
+    except Exception:
+        pass
+
+    # Only run memory cleanup for memory-intensive tasks
     memory_intensive_tasks = [
         'apps.m3u.tasks.refresh_single_m3u_account',
         'apps.m3u.tasks.refresh_m3u_accounts',
         'apps.m3u.tasks.process_m3u_batch',
         'apps.m3u.tasks.process_xc_category',
+        'apps.m3u.tasks.sync_auto_channels',
         'apps.epg.tasks.refresh_epg_data',
         'apps.epg.tasks.refresh_all_epg_data',
         'apps.epg.tasks.parse_programs_for_source',

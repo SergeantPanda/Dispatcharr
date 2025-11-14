@@ -73,7 +73,6 @@ def stream_view(request, channel_uuid):
             default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
             profiles = [obj for obj in m3u_profiles if not obj.is_default]
 
-
             # -- Loop through profiles and pick the first active one --
             for profile in [default_profile] + profiles:
                 logger.debug(f'Checking profile {profile.name}...')
@@ -174,7 +173,7 @@ def stream_view(request, channel_uuid):
             persistent_lock.release()
             logger.debug("Persistent lock released for channel ID=%s", channel.id)
 
-    return StreamingHttpResponse(
-        stream_generator(process, stream, persistent_lock),
-        content_type="video/MP2T"
-    )
+        return StreamingHttpResponse(
+            stream_generator(process, stream, persistent_lock),
+            content_type="video/MP2T"
+        )

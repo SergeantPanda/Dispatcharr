@@ -131,6 +131,8 @@ class ProxyServer:
             max_retries = 10
             base_retry_delay = 1  # Start with 1 second delay
             max_retry_delay = 30  # Cap at 30 seconds
+            pubsub_client = None
+            pubsub = None
 
             while True:
                 try:
@@ -206,7 +208,7 @@ class ProxyServer:
                                                 self.redis_client.setex(disconnect_key, 60, str(time.time()))
 
                                                 # Get configured shutdown delay or default
-                                                shutdown_delay = getattr(Config, 'CHANNEL_SHUTDOWN_DELAY', 0)
+                                                shutdown_delay = ConfigHelper.channel_shutdown_delay()
 
                                                 if shutdown_delay > 0:
                                                     logger.info(f"Waiting {shutdown_delay}s before stopping channel...")
@@ -339,19 +341,26 @@ class ProxyServer:
                     logger.error(f"Error in event listener: {e}. Retrying in {final_delay:.1f}s (attempt {retry_count})")
                     gevent.sleep(final_delay)  # REPLACE: time.sleep(final_delay)
 
-                    # Try to clean up the old connection
-                    try:
-                        if 'pubsub' in locals():
-                            pubsub.close()
-                        if 'pubsub_client' in locals():
-                            pubsub_client.close()
-                    except:
-                        pass
-
                 except Exception as e:
                     logger.error(f"Error in event listener: {e}")
                     # Add a short delay to prevent rapid retries on persistent errors
                     gevent.sleep(5)  # REPLACE: time.sleep(5)
+
+                finally:
+                    # Always clean up PubSub connections in all error paths
+                    try:
+                        if pubsub:
+                            pubsub.close()
+                            pubsub = None
+                    except Exception as e:
+                        logger.debug(f"Error closing pubsub: {e}")
+
+                    try:
+                        if pubsub_client:
+                            pubsub_client.close()
+                            pubsub_client = None
+                    except Exception as e:
+                        logger.debug(f"Error closing pubsub_client: {e}")
 
         thread = threading.Thread(target=event_listener, daemon=True)
         thread.name = "redis-event-listener"
@@ -472,7 +481,7 @@ class ProxyServer:
                     if b'state' in metadata:
                         state = metadata[b'state'].decode('utf-8')
                         active_states = [ChannelState.INITIALIZING, ChannelState.CONNECTING,
-                                        ChannelState.WAITING_FOR_CLIENTS, ChannelState.ACTIVE]
+                                        ChannelState.WAITING_FOR_CLIENTS, ChannelState.ACTIVE, ChannelState.BUFFERING]
                         if state in active_states:
                             logger.info(f"Channel {channel_id} already being initialized with state {state}")
                             # Create buffer and client manager only if we don't have them
@@ -486,17 +495,18 @@ class ProxyServer:
                                 )
                             return True
 
-            # Create buffer and client manager instances
-            buffer = StreamBuffer(channel_id, redis_client=self.redis_client)
-            client_manager = ClientManager(
-                channel_id,
-                redis_client=self.redis_client,
-                worker_id=self.worker_id
-            )
+            # Create buffer and client manager instances (or reuse if they exist)
+            if channel_id not in self.stream_buffers:
+                buffer = StreamBuffer(channel_id, redis_client=self.redis_client)
+                self.stream_buffers[channel_id] = buffer
 
-            # Store in local tracking
-            self.stream_buffers[channel_id] = buffer
-            self.client_managers[channel_id] = client_manager
+            if channel_id not in self.client_managers:
+                client_manager = ClientManager(
+                    channel_id,
+                    redis_client=self.redis_client,
+                    worker_id=self.worker_id
+                )
+                self.client_managers[channel_id] = client_manager
 
             # IMPROVED: Set initializing state in Redis BEFORE any other operations
             if self.redis_client:
@@ -550,13 +560,15 @@ class ProxyServer:
                 logger.info(f"Channel {channel_id} already owned by worker {current_owner}")
                 logger.info(f"This worker ({self.worker_id}) will read from Redis buffer only")
 
-                # Create buffer but not stream manager
-                buffer = StreamBuffer(channel_id=channel_id, redis_client=self.redis_client)
-                self.stream_buffers[channel_id] = buffer
+                # Create buffer but not stream manager (only if not already exists)
+                if channel_id not in self.stream_buffers:
+                    buffer = StreamBuffer(channel_id=channel_id, redis_client=self.redis_client)
+                    self.stream_buffers[channel_id] = buffer
 
-                # Create client manager with channel_id and redis_client
-                client_manager = ClientManager(channel_id=channel_id, redis_client=self.redis_client, worker_id=self.worker_id)
-                self.client_managers[channel_id] = client_manager
+                # Create client manager with channel_id and redis_client (only if not already exists)
+                if channel_id not in self.client_managers:
+                    client_manager = ClientManager(channel_id=channel_id, redis_client=self.redis_client, worker_id=self.worker_id)
+                    self.client_managers[channel_id] = client_manager
 
                 return True
 
@@ -571,13 +583,15 @@ class ProxyServer:
                 # Another worker just acquired ownership
                 logger.info(f"Another worker just acquired ownership of channel {channel_id}")
 
-                # Create buffer but not stream manager
-                buffer = StreamBuffer(channel_id=channel_id, redis_client=self.redis_client)
-                self.stream_buffers[channel_id] = buffer
+                # Create buffer but not stream manager (only if not already exists)
+                if channel_id not in self.stream_buffers:
+                    buffer = StreamBuffer(channel_id=channel_id, redis_client=self.redis_client)
+                    self.stream_buffers[channel_id] = buffer
 
-                # Create client manager with channel_id and redis_client
-                client_manager = ClientManager(channel_id=channel_id, redis_client=self.redis_client, worker_id=self.worker_id)
-                self.client_managers[channel_id] = client_manager
+                # Create client manager with channel_id and redis_client (only if not already exists)
+                if channel_id not in self.client_managers:
+                    client_manager = ClientManager(channel_id=channel_id, redis_client=self.redis_client, worker_id=self.worker_id)
+                    self.client_managers[channel_id] = client_manager
 
                 return True
 
@@ -596,7 +610,7 @@ class ProxyServer:
                 if channel_user_agent:
                     metadata["user_agent"] = channel_user_agent
 
-                # CRITICAL FIX: Make sure stream_id is always set in metadata and properly logged
+                # Make sure stream_id is always set in metadata and properly logged
                 if channel_stream_id:
                     metadata["stream_id"] = str(channel_stream_id)
                     logger.info(f"Storing stream_id {channel_stream_id} in metadata for channel {channel_id}")
@@ -632,13 +646,14 @@ class ProxyServer:
             logger.info(f"Created StreamManager for channel {channel_id} with stream ID {channel_stream_id}")
             self.stream_managers[channel_id] = stream_manager
 
-            # Create client manager with channel_id, redis_client AND worker_id
-            client_manager = ClientManager(
-                channel_id=channel_id,
-                redis_client=self.redis_client,
-                worker_id=self.worker_id
-            )
-            self.client_managers[channel_id] = client_manager
+            # Create client manager with channel_id, redis_client AND worker_id (only if not already exists)
+            if channel_id not in self.client_managers:
+                client_manager = ClientManager(
+                    channel_id=channel_id,
+                    redis_client=self.redis_client,
+                    worker_id=self.worker_id
+                )
+                self.client_managers[channel_id] = client_manager
 
             # Start stream manager thread only for the owner
             thread = threading.Thread(target=stream_manager.run, daemon=True)
@@ -689,7 +704,8 @@ class ProxyServer:
                 owner = metadata.get(b'owner', b'').decode('utf-8')
 
                 # States that indicate the channel is running properly
-                valid_states = [ChannelState.ACTIVE, ChannelState.WAITING_FOR_CLIENTS, ChannelState.CONNECTING]
+                valid_states = [ChannelState.ACTIVE, ChannelState.WAITING_FOR_CLIENTS,
+                                ChannelState.CONNECTING, ChannelState.BUFFERING, ChannelState.INITIALIZING]
 
                 # If the channel is in a valid state, check if the owner is still active
                 if state in valid_states:
@@ -707,7 +723,7 @@ class ProxyServer:
                 elif state in [ChannelState.STOPPING, ChannelState.STOPPED, ChannelState.ERROR]:
                     # These states indicate the channel should be reinitialized
                     logger.info(f"Channel {channel_id} exists but in terminal state: {state}")
-                    return False
+                    return True
                 else:
                     # Unknown or initializing state, check how long it's been in this state
                     if b'state_changed_at' in metadata:
@@ -845,6 +861,10 @@ class ProxyServer:
             # Clean up client manager - SAFE CHECK HERE TOO
             if channel_id in self.client_managers:
                 try:
+                    client_manager = self.client_managers[channel_id]
+                    # Stop the heartbeat thread before deleting
+                    if hasattr(client_manager, 'stop'):
+                        client_manager.stop()
                     del self.client_managers[channel_id]
                     logger.info(f"Removed client manager for channel {channel_id}")
                 except KeyError:
@@ -941,7 +961,7 @@ class ProxyServer:
 
                                 # If waiting for clients, check grace period
                                 if connection_ready_time:
-                                    grace_period = ConfigHelper.get('CHANNEL_INIT_GRACE_PERIOD', 20)
+                                    grace_period = ConfigHelper.channel_init_grace_period()
                                     time_since_ready = time.time() - connection_ready_time
 
                                     # Add this debug log

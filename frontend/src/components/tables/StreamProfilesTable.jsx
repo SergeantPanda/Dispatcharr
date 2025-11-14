@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { MantineReactTable, useMantineReactTable } from 'mantine-react-table';
 import API from '../../api';
 import StreamProfileForm from '../forms/StreamProfile';
 import useStreamProfilesStore from '../../store/streamProfiles';
@@ -19,59 +18,112 @@ import {
   Switch,
   Stack,
 } from '@mantine/core';
-import { IconSquarePlus } from '@tabler/icons-react';
-import { SquareMinus, SquarePen, Check, X, Eye, EyeOff } from 'lucide-react';
+import {
+  SquareMinus,
+  SquarePen,
+  Check,
+  X,
+  Eye,
+  EyeOff,
+  SquarePlus,
+} from 'lucide-react';
+import { CustomTable, useTable } from './CustomTable';
+import useLocalStorage from '../../hooks/useLocalStorage';
+
+const RowActions = ({ row, editStreamProfile, deleteStreamProfile }) => {
+  return (
+    <>
+      <ActionIcon
+        variant="transparent"
+        color="yellow.5"
+        size="sm"
+        disabled={row.original.locked}
+        onClick={() => editStreamProfile(row.original)}
+      >
+        <SquarePen size="18" /> {/* Small icon size */}
+      </ActionIcon>
+      <ActionIcon
+        variant="transparent"
+        size="sm"
+        color="red.9"
+        disabled={row.original.locked}
+        onClick={() => deleteStreamProfile(row.original.id)}
+      >
+        <SquareMinus fontSize="small" /> {/* Small icon size */}
+      </ActionIcon>
+    </>
+  );
+};
 
 const StreamProfiles = () => {
   const [profile, setProfile] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
-  const [rowSelection, setRowSelection] = useState([]);
-  const [activeFilterValue, setActiveFilterValue] = useState('all');
   const [hideInactive, setHideInactive] = useState(false);
+  const [data, setData] = useState([]);
 
   const streamProfiles = useStreamProfilesStore((state) => state.profiles);
   const settings = useSettingsStore((s) => s.settings);
+  const [tableSize] = useLocalStorage('table-size', 'default');
 
   const theme = useMantineTheme();
 
   const columns = useMemo(
-    //column definitions...
     () => [
       {
         header: 'Name',
         accessorKey: 'name',
-        size: 50,
+        size: 175,
+        cell: ({ cell }) => (
+          <div
+            style={{
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {cell.getValue()}
+          </div>
+        ),
       },
       {
         header: 'Command',
         accessorKey: 'command',
         size: 100,
+        cell: ({ cell }) => (
+          <div
+            style={{
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {cell.getValue()}
+          </div>
+        ),
       },
       {
         header: 'Parameters',
         accessorKey: 'parameters',
-        enableSorting: false,
-        mantineTableBodyCellProps: {
-          style: {
-            whiteSpace: 'nowrap',
-            // maxWidth: 400,
-            paddingLeft: 10,
-            paddingRight: 10,
-          },
-        },
+        grow: true,
+        cell: ({ cell }) => (
+          <Tooltip label={cell.getValue()}>
+            <div
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {cell.getValue()}
+            </div>
+          </Tooltip>
+        ),
       },
       {
         header: 'Active',
         accessorKey: 'is_active',
-        size: 10,
-        enableSorting: false,
-        mantineTableHeadCellProps: {
-          align: 'right',
-        },
-        mantineTableBodyCellProps: {
-          align: 'right',
-        },
-        Cell: ({ row, cell }) => (
+        size: 60,
+        cell: ({ row, cell }) => (
           <Center>
             <Switch
               size="xs"
@@ -81,24 +133,11 @@ const StreamProfiles = () => {
             />
           </Center>
         ),
-        Filter: ({ column }) => (
-          <Box>
-            <Select
-              size="small"
-              value={activeFilterValue}
-              onChange={(e) => {
-                setActiveFilterValue(e.target.value);
-                column.setFilterValue(e.target.value);
-              }}
-              displayEmpty
-              data={['All', 'Active', 'Inactive']}
-            />
-          </Box>
-        ),
-        filterFn: (row, _columnId, filterValue) => {
-          if (filterValue == 'all') return true;
-          return String(row.getValue('is_active')) === filterValue;
-        },
+      },
+      {
+        id: 'actions',
+        header: 'Actions',
+        size: tableSize == 'compact' ? 50 : 75,
       },
     ],
     []
@@ -159,63 +198,48 @@ const StreamProfiles = () => {
     });
   };
 
-  const filteredData = streamProfiles.filter((profile) =>
-    hideInactive && !profile.is_active ? false : true
-  );
+  useEffect(() => {
+    setData(
+      streamProfiles.filter((profile) =>
+        hideInactive && !profile.is_active ? false : true
+      )
+    );
+  }, [streamProfiles, hideInactive]);
 
-  const table = useMantineReactTable({
-    ...TableHelper.defaultProperties,
+  const renderHeaderCell = (header) => {
+    return (
+      <Text size="sm" name={header.id}>
+        {header.column.columnDef.header}
+      </Text>
+    );
+  };
+
+  const renderBodyCell = ({ cell, row }) => {
+    switch (cell.column.id) {
+      case 'actions':
+        return (
+          <RowActions
+            row={row}
+            editStreamProfile={editStreamProfile}
+            deleteStreamProfile={deleteStreamProfile}
+          />
+        );
+    }
+  };
+
+  const table = useTable({
     columns,
-    data: filteredData,
-    enablePagination: false,
-    enableRowVirtualization: true,
-    // enableRowSelection: true,
-    renderTopToolbar: false,
-    // onRowSelectionChange: setRowSelection,
-    onSortingChange: setSorting,
-    state: {
-      isLoading,
-      sorting,
-      // rowSelection,
+    data,
+    allRowIds: data.map((d) => d.id),
+    bodyCellRenderFns: {
+      actions: renderBodyCell,
     },
-    rowVirtualizerInstanceRef, //optional
-    rowVirtualizerOptions: { overscan: 5 }, //optionally customize the row virtualizer
-    initialState: {
-      density: 'compact',
-    },
-    displayColumnDefOptions: {
-      'mrt-row-actions': {
-        size: 10,
-      },
-    },
-    enableRowActions: true,
-    renderRowActions: ({ row }) => (
-      <>
-        <ActionIcon
-          variant="transparent"
-          color="yellow.5"
-          size="sm"
-          disabled={row.original.locked}
-          onClick={() => editStreamProfile(row.original)}
-        >
-          <SquarePen size="18" /> {/* Small icon size */}
-        </ActionIcon>
-        <ActionIcon
-          variant="transparent"
-          size="sm"
-          color="red.9"
-          disabled={row.original.locked}
-          onClick={() => deleteStreamProfile(row.original.id)}
-        >
-          <SquareMinus fontSize="small" /> {/* Small icon size */}
-        </ActionIcon>
-      </>
-    ),
-    mantineTableContainerProps: {
-      style: {
-        // height: 'calc(60vh - 100px)',
-        overflowY: 'auto',
-      },
+    headerCellRenderFns: {
+      name: renderHeaderCell,
+      command: renderHeaderCell,
+      parameters: renderHeaderCell,
+      is_active: renderHeaderCell,
+      actions: renderHeaderCell,
     },
   });
 
@@ -256,7 +280,7 @@ const StreamProfiles = () => {
             </Tooltip>
             <Tooltip label="Assign">
               <Button
-                leftSection={<IconSquarePlus size={18} />}
+                leftSection={<SquarePlus size={18} />}
                 variant="light"
                 size="xs"
                 onClick={() => editStreamProfile()}
@@ -275,7 +299,27 @@ const StreamProfiles = () => {
         </Box>
       </Paper>
 
-      <MantineReactTable table={table} />
+      <Box
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          maxHeight: 300,
+        }}
+      >
+        <Box
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            overflowX: 'auto',
+            border: 'solid 1px rgb(68,68,68)',
+            borderRadius: 'var(--mantine-radius-default)',
+          }}
+        >
+          <div style={{ minWidth: 600 }}>
+            <CustomTable table={table} />
+          </div>
+        </Box>
+      </Box>
 
       <StreamProfileForm
         profile={profile}
