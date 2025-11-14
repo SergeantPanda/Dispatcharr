@@ -512,22 +512,23 @@ export default function TVChannelGuide({ startDate, endDate }) {
       }
 
       const { scrollLeft } = node;
-      if (scrollLeft === guideScrollLeftRef.current) {
-        return;
-      }
 
-      guideScrollLeftRef.current = scrollLeft;
-      setGuideScrollLeft(scrollLeft);
-
+      // Always sync if timeline is out of sync, even if ref matches
       if (
         timelineRef.current &&
         timelineRef.current.scrollLeft !== scrollLeft
       ) {
         isSyncingScroll.current = true;
         timelineRef.current.scrollLeft = scrollLeft;
+        guideScrollLeftRef.current = scrollLeft;
+        setGuideScrollLeft(scrollLeft);
         requestAnimationFrame(() => {
           isSyncingScroll.current = false;
         });
+      } else if (scrollLeft !== guideScrollLeftRef.current) {
+        // Update ref even if timeline was already synced
+        guideScrollLeftRef.current = scrollLeft;
+        setGuideScrollLeft(scrollLeft);
       }
     };
 
@@ -604,6 +605,130 @@ export default function TVChannelGuide({ startDate, endDate }) {
       tvGuide.removeEventListener('wheel', handleContainerWheel, {
         capture: true,
       });
+    };
+  }, []);
+
+  // Fallback: continuously monitor for any scroll changes
+  useEffect(() => {
+    let rafId = null;
+    let lastCheck = 0;
+
+    const checkSync = (timestamp) => {
+      // Throttle to check every 100ms instead of every frame
+      if (timestamp - lastCheck > 100) {
+        const guide = guideRef.current;
+        const timeline = timelineRef.current;
+
+        if (guide && timeline && guide.scrollLeft !== timeline.scrollLeft) {
+          timeline.scrollLeft = guide.scrollLeft;
+          guideScrollLeftRef.current = guide.scrollLeft;
+          setGuideScrollLeft(guide.scrollLeft);
+        }
+        lastCheck = timestamp;
+      }
+
+      rafId = requestAnimationFrame(checkSync);
+    };
+
+    rafId = requestAnimationFrame(checkSync);
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, []);
+
+  useEffect(() => {
+    const tvGuide = tvGuideRef.current;
+    if (!tvGuide) return;
+
+    let lastTouchX = null;
+    let isTouching = false;
+    let rafId = null;
+    let lastScrollLeft = 0;
+    let stableFrames = 0;
+
+    const syncScrollPositions = () => {
+      const guide = guideRef.current;
+      const timeline = timelineRef.current;
+
+      if (!guide || !timeline) return false;
+
+      const currentScroll = guide.scrollLeft;
+
+      // Check if scroll position has changed
+      if (currentScroll !== lastScrollLeft) {
+        timeline.scrollLeft = currentScroll;
+        guideScrollLeftRef.current = currentScroll;
+        setGuideScrollLeft(currentScroll);
+        lastScrollLeft = currentScroll;
+        stableFrames = 0;
+        return true; // Still scrolling
+      } else {
+        stableFrames++;
+        return stableFrames < 10; // Continue for 10 stable frames to catch late updates
+      }
+    };
+
+    const startPolling = () => {
+      if (rafId) return; // Already polling
+
+      const poll = () => {
+        const shouldContinue = isTouching || syncScrollPositions();
+
+        if (shouldContinue) {
+          rafId = requestAnimationFrame(poll);
+        } else {
+          rafId = null;
+        }
+      };
+
+      rafId = requestAnimationFrame(poll);
+    };
+
+    const handleTouchStart = (e) => {
+      if (e.touches.length === 1) {
+        const guide = guideRef.current;
+        if (guide) {
+          lastTouchX = e.touches[0].clientX;
+          lastScrollLeft = guide.scrollLeft;
+          isTouching = true;
+          stableFrames = 0;
+          startPolling();
+        }
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      if (!isTouching || e.touches.length !== 1) return;
+      const guide = guideRef.current;
+      if (!guide) return;
+
+      const touchX = e.touches[0].clientX;
+      const deltaX = lastTouchX - touchX;
+      lastTouchX = touchX;
+
+      if (Math.abs(deltaX) > 0) {
+        guide.scrollLeft += deltaX;
+      }
+    };
+
+    const handleTouchEnd = () => {
+      isTouching = false;
+      lastTouchX = null;
+      // Polling continues until scroll stabilizes
+    };
+
+    tvGuide.addEventListener('touchstart', handleTouchStart, { passive: true });
+    tvGuide.addEventListener('touchmove', handleTouchMove, { passive: false });
+    tvGuide.addEventListener('touchend', handleTouchEnd, { passive: true });
+    tvGuide.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      tvGuide.removeEventListener('touchstart', handleTouchStart);
+      tvGuide.removeEventListener('touchmove', handleTouchMove);
+      tvGuide.removeEventListener('touchend', handleTouchEnd);
+      tvGuide.removeEventListener('touchcancel', handleTouchEnd);
     };
   }, []);
 
