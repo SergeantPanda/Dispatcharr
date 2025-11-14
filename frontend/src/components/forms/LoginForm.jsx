@@ -15,6 +15,7 @@ import {
   Modal,
   Anchor,
   Code,
+  Checkbox,
 } from '@mantine/core';
 import logo from '../../assets/logo.png';
 
@@ -26,7 +27,19 @@ const LoginForm = () => {
 
   const navigate = useNavigate(); // Hook to navigate to other routes
   const [formData, setFormData] = useState({ username: '', password: '' });
+  const [rememberMe, setRememberMe] = useState(false);
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
+
+  useEffect(() => {
+    // Load saved username if it exists
+    const savedUsername = localStorage.getItem(
+      'dispatcharr_remembered_username'
+    );
+    if (savedUsername) {
+      setFormData((prev) => ({ ...prev, username: savedUsername }));
+      setRememberMe(true);
+    }
+  }, []);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -46,6 +59,17 @@ const LoginForm = () => {
 
     try {
       await login(formData);
+
+      // Save username if remember me is checked
+      if (rememberMe) {
+        localStorage.setItem(
+          'dispatcharr_remembered_username',
+          formData.username
+        );
+      } else {
+        localStorage.removeItem('dispatcharr_remembered_username');
+      }
+
       await initData();
       // Navigation will happen automatically via the useEffect or route protection
     } catch (e) {
@@ -99,11 +123,13 @@ const LoginForm = () => {
               // required
             />
 
-            <Button type="submit" mt="sm" fullWidth>
-              Login
-            </Button>
-
-            <Group justify="flex-end">
+            <Group justify="space-between" align="center">
+              <Checkbox
+                label="Remember me"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.currentTarget.checked)}
+                size="sm"
+              />
               <Anchor
                 size="sm"
                 component="button"
@@ -116,6 +142,10 @@ const LoginForm = () => {
                 Forgot password?
               </Anchor>
             </Group>
+
+            <Button type="submit" mt="sm" fullWidth>
+              Login
+            </Button>
           </Stack>
         </form>
       </Paper>
