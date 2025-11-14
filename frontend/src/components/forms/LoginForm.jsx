@@ -12,11 +12,11 @@ const LoginForm = () => {
   const navigate = useNavigate(); // Hook to navigate to other routes
   const [formData, setFormData] = useState({ username: '', password: '' });
 
-  // useEffect(() => {
-  //   if (isAuthenticated) {
-  //     navigate('/channels');
-  //   }
-  // }, [isAuthenticated, navigate]);
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate('/channels');
+    }
+  }, [isAuthenticated, navigate]);
 
   const handleInputChange = (e) => {
     setFormData({
@@ -27,13 +27,14 @@ const LoginForm = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    await login(formData);
 
     try {
+      await login(formData);
       await initData();
-      navigate('/channels');
+      // Navigation will happen automatically via the useEffect or route protection
     } catch (e) {
       console.log(`Failed to login: ${e}`);
+      await logout();
     }
   };
 
