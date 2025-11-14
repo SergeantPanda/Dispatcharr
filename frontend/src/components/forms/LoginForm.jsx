@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import useAuthStore from '../../store/auth';
+import API from '../../api';
 import {
   Paper,
   Title,
@@ -29,6 +30,14 @@ const LoginForm = () => {
   const [formData, setFormData] = useState({ username: '', password: '' });
   const [rememberMe, setRememberMe] = useState(false);
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
+  const [version, setVersion] = useState(null);
+
+  useEffect(() => {
+    // Fetch version info
+    API.getVersion().then((data) => {
+      setVersion(data?.version);
+    });
+  }, []);
 
   useEffect(() => {
     // Load saved username if it exists
@@ -86,7 +95,14 @@ const LoginForm = () => {
     >
       <Paper
         elevation={3}
-        style={{ padding: 30, width: '100%', maxWidth: 500 }}
+        style={{
+          paddingTop: 30,
+          paddingLeft: 30,
+          paddingRight: 30,
+          paddingBottom: 8,
+          width: '100%',
+          maxWidth: 500,
+        }}
       >
         <Stack align="center" spacing="lg">
           <Image
@@ -148,6 +164,19 @@ const LoginForm = () => {
             </Button>
           </Stack>
         </form>
+
+        {version && (
+          <Text
+            size="xs"
+            color="dimmed"
+            align="right"
+            style={{
+              marginTop: '4px',
+            }}
+          >
+            v{version}
+          </Text>
+        )}
       </Paper>
 
       <Modal
