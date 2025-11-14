@@ -29,8 +29,29 @@ const LoginForm = () => {
   const navigate = useNavigate(); // Hook to navigate to other routes
   const [formData, setFormData] = useState({ username: '', password: '' });
   const [rememberMe, setRememberMe] = useState(false);
+  const [savePassword, setSavePassword] = useState(false);
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
   const [version, setVersion] = useState(null);
+
+  // Simple base64 encoding/decoding for localStorage
+  // Note: This is obfuscation, not encryption. Use browser's password manager for real security.
+  const encodePassword = (password) => {
+    try {
+      return btoa(password);
+    } catch (error) {
+      console.error('Encoding error:', error);
+      return null;
+    }
+  };
+
+  const decodePassword = (encoded) => {
+    try {
+      return atob(encoded);
+    } catch (error) {
+      console.error('Decoding error:', error);
+      return '';
+    }
+  };
 
   useEffect(() => {
     // Fetch version info
@@ -44,9 +65,23 @@ const LoginForm = () => {
     const savedUsername = localStorage.getItem(
       'dispatcharr_remembered_username'
     );
+    const savedPassword = localStorage.getItem('dispatcharr_saved_password');
+
     if (savedUsername) {
       setFormData((prev) => ({ ...prev, username: savedUsername }));
       setRememberMe(true);
+
+      if (savedPassword) {
+        try {
+          const decrypted = decodePassword(savedPassword);
+          if (decrypted) {
+            setFormData((prev) => ({ ...prev, password: decrypted }));
+            setSavePassword(true);
+          }
+        } catch {
+          // If decoding fails, just skip
+        }
+      }
     }
   }, []);
 
@@ -75,8 +110,19 @@ const LoginForm = () => {
           'dispatcharr_remembered_username',
           formData.username
         );
+
+        // Save password if save password is checked
+        if (savePassword) {
+          const encoded = encodePassword(formData.password);
+          if (encoded) {
+            localStorage.setItem('dispatcharr_saved_password', encoded);
+          }
+        } else {
+          localStorage.removeItem('dispatcharr_saved_password');
+        }
       } else {
         localStorage.removeItem('dispatcharr_remembered_username');
+        localStorage.removeItem('dispatcharr_saved_password');
       }
 
       await initData();
@@ -140,12 +186,22 @@ const LoginForm = () => {
             />
 
             <Group justify="space-between" align="center">
-              <Checkbox
-                label="Remember me"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.currentTarget.checked)}
-                size="sm"
-              />
+              <Group align="center" spacing="xs">
+                <Checkbox
+                  label="Remember me"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.currentTarget.checked)}
+                  size="sm"
+                />
+                {rememberMe && (
+                  <Checkbox
+                    label="Save password"
+                    checked={savePassword}
+                    onChange={(e) => setSavePassword(e.currentTarget.checked)}
+                    size="sm"
+                  />
+                )}
+              </Group>
               <Anchor
                 size="sm"
                 component="button"
@@ -159,7 +215,31 @@ const LoginForm = () => {
               </Anchor>
             </Group>
 
-            <Button type="submit" mt="sm" fullWidth>
+            <div
+              style={{
+                position: 'relative',
+                height: '0',
+                overflow: 'visible',
+                marginBottom: '-4px',
+              }}
+            >
+              {savePassword && (
+                <Text
+                  size="xs"
+                  color="red"
+                  style={{
+                    marginTop: '-10px',
+                    marginBottom: '0',
+                    lineHeight: '1.2',
+                  }}
+                >
+                  ⚠ Password will be stored locally without encryption. Only
+                  use on trusted devices.
+                </Text>
+              )}
+            </div>
+
+            <Button type="submit" fullWidth>
               Login
             </Button>
           </Stack>
