@@ -947,7 +947,7 @@ class ProxyServer:
 
                             # If in connecting or waiting_for_clients state, check grace period
                             if channel_state in [ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS]:
-                                # Get connection ready time from metadata
+                                # Get connection_ready_time from metadata (indicates if channel reached ready state)
                                 connection_ready_time = None
                                 if metadata and b'connection_ready_time' in metadata:
                                     try:
@@ -955,17 +955,60 @@ class ProxyServer:
                                     except (ValueError, TypeError):
                                         pass
 
-                                # If still connecting, give it more time
-                                if channel_state == ChannelState.CONNECTING:
-                                    logger.debug(f"Channel {channel_id} still connecting - not checking for clients yet")
-                                    continue
+                                if total_clients == 0:
+                                    # Check if we have a connection_attempt timestamp (set when CONNECTING starts)
+                                    connection_attempt_time = None
+                                    attempt_key = RedisKeys.connection_attempt(channel_id)
+                                    if self.redis_client:
+                                        attempt_value = self.redis_client.get(attempt_key)
+                                        if attempt_value:
+                                            try:
+                                                connection_attempt_time = float(attempt_value.decode('utf-8'))
+                                            except (ValueError, TypeError):
+                                                pass
 
-                                # If waiting for clients, check grace period
-                                if connection_ready_time:
+                                    # Also get init time as a fallback
+                                    init_time = None
+                                    if metadata and b'init_time' in metadata:
+                                        try:
+                                            init_time = float(metadata[b'init_time'].decode('utf-8'))
+                                        except (ValueError, TypeError):
+                                            pass
+
+                                    # Use whichever timestamp we have (prefer connection_attempt as it's more recent)
+                                    start_time = connection_attempt_time or init_time
+
+                                    if start_time:
+                                        # Check which timeout to apply based on channel lifecycle
+                                        if connection_ready_time:
+                                            # Already reached ready - use shutdown_delay
+                                            time_since_ready = time.time() - connection_ready_time
+                                            shutdown_delay = ConfigHelper.channel_shutdown_delay()
+
+                                            if time_since_ready > shutdown_delay:
+                                                logger.warning(
+                                                    f"Channel {channel_id} in {channel_state} state with 0 clients for {time_since_ready:.1f}s "
+                                                    f"(after reaching ready, shutdown_delay: {shutdown_delay}s) - stopping channel"
+                                                )
+                                                self.stop_channel(channel_id)
+                                                continue
+                                        else:
+                                            # Never reached ready - use grace_period timeout
+                                            time_since_start = time.time() - start_time
+                                            connecting_timeout = ConfigHelper.channel_init_grace_period()
+
+                                            if time_since_start > connecting_timeout:
+                                                logger.warning(
+                                                    f"Channel {channel_id} stuck in {channel_state} state for {time_since_start:.1f}s "
+                                                    f"with no clients (timeout: {connecting_timeout}s) - stopping channel due to upstream issues"
+                                                )
+                                                self.stop_channel(channel_id)
+                                                continue
+                                elif connection_ready_time:
+                                    # We have clients now, but check grace period for state transition
                                     grace_period = ConfigHelper.channel_init_grace_period()
                                     time_since_ready = time.time() - connection_ready_time
 
-                                    # Add this debug log
                                     logger.debug(f"GRACE PERIOD CHECK: Channel {channel_id} in {channel_state} state, "
                                                  f"time_since_ready={time_since_ready:.1f}s, grace_period={grace_period}s, "
                                                  f"total_clients={total_clients}")
@@ -974,16 +1017,9 @@ class ProxyServer:
                                         # Still within grace period
                                         logger.debug(f"Channel {channel_id} in grace period - {time_since_ready:.1f}s of {grace_period}s elapsed")
                                         continue
-                                    elif total_clients == 0:
-                                        # Grace period expired with no clients
-                                        logger.info(f"Grace period expired ({time_since_ready:.1f}s > {grace_period}s) with no clients - stopping channel {channel_id}")
-                                        self.stop_channel(channel_id)
                                     else:
-                                        # Grace period expired but we have clients - mark channel as active
+                                        # Grace period expired with clients - mark channel as active
                                         logger.info(f"Grace period expired with {total_clients} clients - marking channel {channel_id} as active")
-                                        old_state = "unknown"
-                                        if metadata and b'state' in metadata:
-                                            old_state = metadata[b'state'].decode('utf-8')
                                         if self.update_channel_state(channel_id, ChannelState.ACTIVE, {
                                             "grace_period_ended_at": str(time.time()),
                                             "clients_at_activation": str(total_clients)
