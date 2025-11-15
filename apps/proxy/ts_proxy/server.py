@@ -703,9 +703,10 @@ class ProxyServer:
                 state = metadata.get(b'state', b'unknown').decode('utf-8')
                 owner = metadata.get(b'owner', b'').decode('utf-8')
 
-                # States that indicate the channel is running properly
+                # States that indicate the channel is running properly or shutting down
                 valid_states = [ChannelState.ACTIVE, ChannelState.WAITING_FOR_CLIENTS,
-                                ChannelState.CONNECTING, ChannelState.BUFFERING, ChannelState.INITIALIZING]
+                                ChannelState.CONNECTING, ChannelState.BUFFERING, ChannelState.INITIALIZING,
+                                ChannelState.STOPPING]
 
                 # If the channel is in a valid state, check if the owner is still active
                 if state in valid_states:
@@ -720,10 +721,10 @@ class ProxyServer:
                         logger.warning(f"Detected zombie channel {channel_id} - owner {owner} is no longer active")
                         self._clean_zombie_channel(channel_id, metadata)
                         return False
-                elif state in [ChannelState.STOPPING, ChannelState.STOPPED, ChannelState.ERROR]:
-                    # These states indicate the channel should be reinitialized
-                    logger.info(f"Channel {channel_id} exists but in terminal state: {state}")
-                    return True
+                elif state in [ChannelState.STOPPED, ChannelState.ERROR]:
+                    # These terminal states indicate the channel should be cleaned up and reinitialized
+                    logger.info(f"Channel {channel_id} in terminal state {state} - returning False to trigger cleanup")
+                    return False
                 else:
                     # Unknown or initializing state, check how long it's been in this state
                     if b'state_changed_at' in metadata:
