@@ -145,12 +145,10 @@ const LoginForm = () => {
       <Paper
         elevation={3}
         style={{
-          paddingTop: 30,
-          paddingLeft: 30,
-          paddingRight: 30,
-          paddingBottom: 8,
+          padding: 30,
           width: '100%',
           maxWidth: 500,
+          position: 'relative',
         }}
       >
         <Stack align="center" spacing="lg">
@@ -258,9 +256,10 @@ const LoginForm = () => {
           <Text
             size="xs"
             color="dimmed"
-            align="right"
             style={{
-              marginTop: '4px',
+              position: 'absolute',
+              bottom: 6,
+              right: 30,
             }}
           >
             v{version}
