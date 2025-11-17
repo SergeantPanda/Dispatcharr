@@ -1070,8 +1070,15 @@ class ChannelViewSet(viewsets.ModelViewSet):
     def batch_set_epg(self, request):
         """Efficiently associate multiple channels with EPG data at once."""
         associations = request.data.get("associations", [])
-        channels_updated = 0
-        programs_refreshed = 0
+
+        if not associations:
+            return Response(
+                {"error": "associations list is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Extract channel IDs upfront
+        channel_updates = {}
         unique_epg_ids = set()
 
         for assoc in associations:
@@ -1081,39 +1088,58 @@ class ChannelViewSet(viewsets.ModelViewSet):
             if not channel_id:
                 continue
 
-            try:
-                # Get the channel
-                channel = Channel.objects.get(id=channel_id)
+            channel_updates[channel_id] = epg_data_id
+            if epg_data_id:
+                unique_epg_ids.add(epg_data_id)
 
-                # Set the EPG data
-                channel.epg_data_id = epg_data_id
-                channel.save(update_fields=["epg_data"])
-                channels_updated += 1
+        # Batch fetch all channels (single query)
+        channels_dict = {
+            c.id: c for c in Channel.objects.filter(id__in=channel_updates.keys())
+        }
 
-                # Track unique EPG data IDs
-                if epg_data_id:
-                    unique_epg_ids.add(epg_data_id)
-
-            except Channel.DoesNotExist:
+        # Collect channels to update
+        channels_to_update = []
+        for channel_id, epg_data_id in channel_updates.items():
+            if channel_id not in channels_dict:
                 logger.error(f"Channel with ID {channel_id} not found")
-            except Exception as e:
-                logger.error(
-                    f"Error setting EPG data for channel {channel_id}: {str(e)}"
+                continue
+
+            channel = channels_dict[channel_id]
+            channel.epg_data_id = epg_data_id
+            channels_to_update.append(channel)
+
+        # Bulk update all channels (single query)
+        if channels_to_update:
+            with transaction.atomic():
+                Channel.objects.bulk_update(
+                    channels_to_update,
+                    fields=["epg_data_id"],
+                    batch_size=100
                 )
+
+        channels_updated = len(channels_to_update)
 
         # Trigger program refresh for unique EPG data IDs (skip dummy EPGs)
         from apps.epg.tasks import parse_programs_for_tvg_id
         from apps.epg.models import EPGData
 
+        # Batch fetch EPG data (single query)
+        epg_data_dict = {
+            epg.id: epg
+            for epg in EPGData.objects.filter(id__in=unique_epg_ids).select_related('epg_source')
+        }
+
+        programs_refreshed = 0
         for epg_id in unique_epg_ids:
-            try:
-                epg_data = EPGData.objects.select_related('epg_source').get(id=epg_id)
-                # Only refresh non-dummy EPG sources
-                if epg_data.epg_source.source_type != 'dummy':
-                    parse_programs_for_tvg_id.delay(epg_id)
-                    programs_refreshed += 1
-            except EPGData.DoesNotExist:
+            epg_data = epg_data_dict.get(epg_id)
+            if not epg_data:
                 logger.error(f"EPGData with ID {epg_id} not found")
+                continue
+
+            # Only refresh non-dummy EPG sources
+            if epg_data.epg_source.source_type != 'dummy':
+                parse_programs_for_tvg_id.delay(epg_id)
+                programs_refreshed += 1
 
         return Response(
             {
