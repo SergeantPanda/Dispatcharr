@@ -462,7 +462,16 @@ export default class API {
         }
       );
 
-      // Don't automatically update the store here - let the caller handle it
+      // Show success notification
+      if (response.message) {
+        notifications.show({
+          title: 'Channels Updated',
+          message: response.message,
+          color: 'green',
+          autoClose: 4000,
+        });
+      }
+
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
