@@ -435,8 +435,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["patch"], url_path="edit/bulk")
     def edit_bulk(self, request):
         """
-        Bulk edit channels.
-        Expects a list of channels with their updates.
+        Bulk edit channels efficiently.
+        Validates all updates first, then applies in a single transaction.
         """
         data = request.data
         if not isinstance(data, list):
@@ -445,63 +445,94 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        updated_channels = []
-        errors = []
+        # Extract IDs and validate presence
+        channel_updates = {}
+        missing_ids = []
 
-        for channel_data in data:
+        for i, channel_data in enumerate(data):
             channel_id = channel_data.get("id")
             if not channel_id:
-                errors.append({"error": "Channel ID is required"})
-                continue
+                missing_ids.append(f"Item {i}: Channel ID is required")
+            else:
+                channel_updates[channel_id] = channel_data
 
-            try:
-                channel = Channel.objects.get(id=channel_id)
+        if missing_ids:
+            return Response(
+                {"errors": missing_ids},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-                # Handle channel_group_id properly - convert string to integer if needed
-                if 'channel_group_id' in channel_data:
-                    group_id = channel_data['channel_group_id']
-                    if group_id is not None:
-                        try:
-                            channel_data['channel_group_id'] = int(group_id)
-                        except (ValueError, TypeError):
-                            channel_data['channel_group_id'] = None
+        # Fetch all channels at once (one query)
+        channels_dict = {
+            c.id: c for c in Channel.objects.filter(id__in=channel_updates.keys())
+        }
 
-                # Use the serializer to validate and update
-                serializer = ChannelSerializer(
-                    channel, data=channel_data, partial=True
-                )
+        # Validate and prepare updates
+        validated_updates = []
+        errors = []
 
-                if serializer.is_valid():
-                    updated_channel = serializer.save()
-                    updated_channels.append(updated_channel)
-                else:
-                    errors.append({
-                        "channel_id": channel_id,
-                        "errors": serializer.errors
-                    })
+        for channel_id, channel_data in channel_updates.items():
+            channel = channels_dict.get(channel_id)
 
-            except Channel.DoesNotExist:
+            if not channel:
                 errors.append({
                     "channel_id": channel_id,
                     "error": "Channel not found"
                 })
-            except Exception as e:
+                continue
+
+            # Handle channel_group_id conversion
+            if 'channel_group_id' in channel_data:
+                group_id = channel_data['channel_group_id']
+                if group_id is not None:
+                    try:
+                        channel_data['channel_group_id'] = int(group_id)
+                    except (ValueError, TypeError):
+                        channel_data['channel_group_id'] = None
+
+            # Validate with serializer
+            serializer = ChannelSerializer(
+                channel, data=channel_data, partial=True
+            )
+
+            if serializer.is_valid():
+                validated_updates.append((channel, serializer.validated_data))
+            else:
                 errors.append({
                     "channel_id": channel_id,
-                    "error": str(e)
+                    "errors": serializer.errors
                 })
 
         if errors:
             return Response(
-                {"errors": errors, "updated_count": len(updated_channels)},
+                {"errors": errors, "updated_count": len(validated_updates)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Serialize the updated channels for response
-        serialized_channels = ChannelSerializer(updated_channels, many=True).data
+        # Apply all updates in a transaction
+        with transaction.atomic():
+            for channel, validated_data in validated_updates:
+                for key, value in validated_data.items():
+                    setattr(channel, key, value)
+
+            # Single bulk_update query instead of individual saves
+            channels_to_update = [channel for channel, _ in validated_updates]
+            if channels_to_update:
+                Channel.objects.bulk_update(
+                    channels_to_update,
+                    fields=list(validated_updates[0][1].keys()),
+                    batch_size=100
+                )
+
+        # Return the updated objects (already in memory)
+        serialized_channels = ChannelSerializer(
+            [channel for channel, _ in validated_updates],
+            many=True,
+            context=self.get_serializer_context()
+        ).data
 
         return Response({
-            "message": f"Successfully updated {len(updated_channels)} channels",
+            "message": f"Successfully updated {len(validated_updates)} channels",
             "channels": serialized_channels
         })
 
