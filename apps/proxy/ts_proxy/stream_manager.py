@@ -227,11 +227,12 @@ class StreamManager:
                         # Continue with normal flow
 
                 # Check stream type before connecting
-                stream_type = detect_stream_type(self.url)
-                if self.transcode == False and stream_type == StreamType.HLS:
-                    logger.info(f"Detected HLS stream: {self.url} for channel {self.channel_id}")
-                    logger.info(f"HLS streams will be handled with FFmpeg for now - future version will support HLS natively for channel {self.channel_id}")
-                    # Enable transcoding for HLS streams
+                self.stream_type = detect_stream_type(self.url)
+                if self.transcode == False and self.stream_type in (StreamType.HLS, StreamType.RTSP, StreamType.UDP):
+                    stream_type_name = "HLS" if self.stream_type == StreamType.HLS else ("RTSP/RTP" if self.stream_type == StreamType.RTSP else "UDP")
+                    logger.info(f"Detected {stream_type_name} stream: {self.url} for channel {self.channel_id}")
+                    logger.info(f"{stream_type_name} streams require FFmpeg for channel {self.channel_id}")
+                    # Enable transcoding for HLS, RTSP/RTP, and UDP streams
                     self.transcode = True
                     # We'll override the stream profile selection with ffmpeg in the transcoding section
                     self.force_ffmpeg = True
@@ -420,7 +421,7 @@ class StreamManager:
                 from core.models import StreamProfile
                 try:
                     stream_profile = StreamProfile.objects.get(name='ffmpeg', locked=True)
-                    logger.info("Using FFmpeg stream profile for HLS content")
+                    logger.info("Using FFmpeg stream profile for unsupported proxy content (HLS/RTSP/UDP)")
                 except StreamProfile.DoesNotExist:
                     # Fall back to channel's profile if FFmpeg not found
                     stream_profile = channel.get_stream_profile()
@@ -430,6 +431,13 @@ class StreamManager:
 
             # Build and start transcode command
             self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
+
+            # For UDP streams, remove any user_agent parameters from the command
+            if hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP:
+                # Filter out any arguments that contain the user_agent value or related headers
+                self.transcode_cmd = [arg for arg in self.transcode_cmd if self.user_agent not in arg and 'user-agent' not in arg.lower() and 'user_agent' not in arg.lower()]
+                logger.debug(f"Removed user_agent parameters from UDP stream command for channel: {self.channel_id}")
+
             logger.debug(f"Starting transcode process: {self.transcode_cmd} for channel: {self.channel_id}")
 
             # Modified to capture stderr instead of discarding it
@@ -948,10 +956,10 @@ class StreamManager:
                         logger.debug(f"Updated m3u profile for channel {self.channel_id} to use profile from stream {stream_id}")
                     else:
                         logger.warning(f"Failed to update stream profile for channel {self.channel_id}")
-                    
+
             except Exception as e:
                 logger.error(f"Error updating stream profile for channel {self.channel_id}: {e}")
-                
+
             finally:
                 # Always close database connection after profile update
                 try:

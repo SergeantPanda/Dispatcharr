@@ -1157,6 +1157,12 @@ def parse_programs_for_tvg_id(epg_id):
         epg = EPGData.objects.get(id=epg_id)
         epg_source = epg.epg_source
 
+        # Skip program parsing for dummy EPG sources - they don't have program data files
+        if epg_source.source_type == 'dummy':
+            logger.info(f"Skipping program parsing for dummy EPG source {epg_source.name} (ID: {epg_id})")
+            release_task_lock('parse_epg_programs', epg_id)
+            return
+
         if not Channel.objects.filter(epg_data=epg).exists():
             logger.info(f"No channels matched to EPG {epg.tvg_id}")
             release_task_lock('parse_epg_programs', epg_id)

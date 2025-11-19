@@ -377,12 +377,14 @@ def validate_flexible_url(value):
         import re
 
         # More flexible pattern for non-FQDN hostnames with paths
-        # Matches: http://hostname, http://hostname/, http://hostname:port/path/to/file.xml
-        non_fqdn_pattern = r'^https?://[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\:[0-9]+)?(/[^\s]*)?$'
+        # Matches: http://hostname, https://hostname/, http://hostname:port/path/to/file.xml, rtp://192.168.2.1,  rtsp://192.168.178.1, udp://239.0.0.1:1234
+        # Also matches FQDNs for rtsp/rtp/udp protocols: rtsp://FQDN/path?query=value
+        # Also supports authentication: rtsp://user:pass@hostname/path
+        non_fqdn_pattern = r'^(rts?p|https?|udp)://([a-zA-Z0-9_\-\.]+:[^\s@]+@)?([a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,61}[a-zA-Z0-9])?|[0-9.]+)?(\:[0-9]+)?(/[^\s]*)?$'
         non_fqdn_match = re.match(non_fqdn_pattern, value)
 
         if non_fqdn_match:
-            return  # Accept non-FQDN hostnames
+            return  # Accept non-FQDN hostnames and rtsp/rtp/udp URLs with optional authentication
 
         # If it doesn't match our flexible patterns, raise the original error
         raise ValidationError("Enter a valid URL.")

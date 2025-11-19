@@ -402,6 +402,9 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
     """
     Validate if a stream URL is accessible without downloading the full content.
 
+    Note: UDP/RTP/RTSP streams are automatically considered valid as they cannot
+    be validated via HTTP methods.
+
     Args:
         url (str): The URL to validate
         user_agent (str): User agent to use for the request
@@ -410,6 +413,12 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
     Returns:
         tuple: (is_valid, final_url, status_code, message)
     """
+    # Check if URL uses non-HTTP protocols (UDP/RTP/RTSP)
+    # These cannot be validated via HTTP methods, so we skip validation
+    if url.startswith(('udp://', 'rtp://', 'rtsp://')):
+        logger.info(f"Skipping HTTP validation for non-HTTP protocol: {url}")
+        return True, url, 200, "Non-HTTP protocol (UDP/RTP/RTSP) - validation skipped"
+
     try:
         # Create session with proper headers
         session = requests.Session()
