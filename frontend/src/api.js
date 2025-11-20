@@ -2481,4 +2481,21 @@ export default class API {
       errorNotification('Failed to update playback position', e);
     }
   }
+
+  static async getSystemEvents(limit = 100, offset = 0, eventType = null) {
+    try {
+      const params = new URLSearchParams();
+      params.append('limit', limit);
+      params.append('offset', offset);
+      if (eventType) {
+        params.append('event_type', eventType);
+      }
+      const response = await request(
+        `${host}/api/core/system-events/?${params.toString()}`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve system events', e);
+    }
+  }
 }
