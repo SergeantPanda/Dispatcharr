@@ -23,23 +23,64 @@ from django.db.models.functions import Lower
 import os
 from apps.m3u.utils import calculate_tuner_count
 import regex
+from core.utils import log_system_event
+import hashlib
 
 logger = logging.getLogger(__name__)
 
+def get_client_identifier(request):
+    """Get client information including IP, user agent, and a unique hash identifier
+
+    Returns:
+        tuple: (client_id_hash, client_ip, user_agent)
+    """
+    # Get client IP (handle proxies)
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        client_ip = x_forwarded_for.split(',')[0].strip()
+    else:
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+
+    # Get user agent
+    user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+
+    # Create a hash for a shorter cache key
+    client_str = f"{client_ip}:{user_agent}"
+    client_id_hash = hashlib.md5(client_str.encode()).hexdigest()[:12]
+
+    return client_id_hash, client_ip, user_agent
+
 def m3u_endpoint(request, profile_name=None, user=None):
+    logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
     if not network_access_allowed(request, "M3U_EPG"):
         return JsonResponse({"error": "Forbidden"}, status=403)
+
+    # Handle HEAD requests efficiently without generating content
+    if request.method == "HEAD":
+        logger.debug("Handling HEAD request for M3U")
+        response = HttpResponse(content_type="audio/x-mpegurl")
+        response["Content-Disposition"] = 'attachment; filename="channels.m3u"'
+        return response
 
     return generate_m3u(request, profile_name, user)
 
 def epg_endpoint(request, profile_name=None, user=None):
+    logger.debug("epg_endpoint called: method=%s, profile=%s", request.method, profile_name)
     if not network_access_allowed(request, "M3U_EPG"):
         return JsonResponse({"error": "Forbidden"}, status=403)
+
+    # Handle HEAD requests efficiently without generating content
+    if request.method == "HEAD":
+        logger.debug("Handling HEAD request for EPG")
+        response = HttpResponse(content_type="application/xml")
+        response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'
+        response["Cache-Control"] = "no-cache"
+        return response
 
     return generate_epg(request, profile_name, user)
 
 @csrf_exempt
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["GET", "POST", "HEAD"])
 def generate_m3u(request, profile_name=None, user=None):
     """
     Dynamically generate an M3U file from channels.
@@ -47,7 +88,19 @@ def generate_m3u(request, profile_name=None, user=None):
     Supports both GET and POST methods for compatibility with IPTVSmarters.
     """
     # Check if this is a POST request and the body is not empty (which we don't want to allow)
-    logger.debug("Generating M3U for profile: %s, user: %s", profile_name, user.username if user else "Anonymous")
+    logger.debug("Generating M3U for profile: %s, user: %s, method: %s", profile_name, user.username if user else "Anonymous", request.method)
+
+    # Check cache for recent identical request (helps with double-GET from browsers)
+    from django.core.cache import cache
+    cache_params = f"{profile_name or 'all'}:{user.username if user else 'anonymous'}:{request.GET.urlencode()}"
+    content_cache_key = f"m3u_content:{cache_params}"
+
+    cached_content = cache.get(content_cache_key)
+    if cached_content:
+        logger.debug("Serving M3U from cache")
+        response = HttpResponse(cached_content, content_type="audio/x-mpegurl")
+        response["Content-Disposition"] = 'attachment; filename="channels.m3u"'
+        return response
     # Check if this is a POST request with data (which we don't want to allow)
     if request.method == "POST" and request.body:
         if request.body.decode() != '{}':
@@ -183,6 +236,23 @@ def generate_m3u(request, profile_name=None, user=None):
             stream_url = f"{base_url}/proxy/ts/stream/{channel.uuid}"
 
         m3u_content += extinf_line + stream_url + "\n"
+
+    # Cache the generated content for 2 seconds to handle double-GET requests
+    cache.set(content_cache_key, m3u_content, 2)
+
+    # Log system event for M3U download (with deduplication based on client)
+    client_id, client_ip, user_agent = get_client_identifier(request)
+    event_cache_key = f"m3u_download:{user.username if user else 'anonymous'}:{profile_name or 'all'}:{client_id}"
+    if not cache.get(event_cache_key):
+        log_system_event(
+            event_type='m3u_download',
+            profile=profile_name or 'all',
+            user=user.username if user else 'anonymous',
+            channels=channels.count(),
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        cache.set(event_cache_key, True, 2)  # Prevent duplicate events for 2 seconds
 
     response = HttpResponse(m3u_content, content_type="audio/x-mpegurl")
     response["Content-Disposition"] = 'attachment; filename="channels.m3u"'
@@ -1126,8 +1196,22 @@ def generate_epg(request, profile_name=None, user=None):
     by their associated EPGData record.
     This version filters data based on the 'days' parameter and sends keep-alives during processing.
     """
+    # Check cache for recent identical request (helps with double-GET from browsers)
+    from django.core.cache import cache
+    cache_params = f"{profile_name or 'all'}:{user.username if user else 'anonymous'}:{request.GET.urlencode()}"
+    content_cache_key = f"epg_content:{cache_params}"
+
+    cached_content = cache.get(content_cache_key)
+    if cached_content:
+        logger.debug("Serving EPG from cache")
+        response = HttpResponse(cached_content, content_type="application/xml")
+        response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'
+        response["Cache-Control"] = "no-cache"
+        return response
+
     def epg_generator():
-        """Generator function that yields EPG data with keep-alives during processing"""        # Send initial HTTP headers as comments (these will be ignored by XML parsers but keep connection alive)
+        """Generator function that yields EPG data with keep-alives during processing"""
+        # Send initial HTTP headers as comments (these will be ignored by XML parsers but keep connection alive)
 
         xml_lines = []
         xml_lines.append('<?xml version="1.0" encoding="UTF-8"?>')
@@ -1286,7 +1370,8 @@ def generate_epg(request, profile_name=None, user=None):
             xml_lines.append("  </channel>")
 
         # Send all channel definitions
-        yield '\n'.join(xml_lines) + '\n'
+        channel_xml = '\n'.join(xml_lines) + '\n'
+        yield channel_xml
         xml_lines = []  # Clear to save memory
 
         # Process programs for each channel
@@ -1676,7 +1761,8 @@ def generate_epg(request, profile_name=None, user=None):
 
                         # Send batch when full or send keep-alive
                         if len(program_batch) >= batch_size:
-                            yield '\n'.join(program_batch) + '\n'
+                            batch_xml = '\n'.join(program_batch) + '\n'
+                            yield batch_xml
                             program_batch = []
 
                     # Move to next chunk
@@ -1684,12 +1770,40 @@ def generate_epg(request, profile_name=None, user=None):
 
                 # Send remaining programs in batch
                 if program_batch:
-                    yield '\n'.join(program_batch) + '\n'
+                    batch_xml = '\n'.join(program_batch) + '\n'
+                    yield batch_xml
 
         # Send final closing tag and completion message
-        yield "</tv>\n"    # Return streaming response
+        yield "</tv>\n"
+
+        # Log system event for EPG download after streaming completes (with deduplication based on client)
+        client_id, client_ip, user_agent = get_client_identifier(request)
+        event_cache_key = f"epg_download:{user.username if user else 'anonymous'}:{profile_name or 'all'}:{client_id}"
+        if not cache.get(event_cache_key):
+            log_system_event(
+                event_type='epg_download',
+                profile=profile_name or 'all',
+                user=user.username if user else 'anonymous',
+                channels=channels.count(),
+                client_ip=client_ip,
+                user_agent=user_agent,
+            )
+            cache.set(event_cache_key, True, 2)  # Prevent duplicate events for 2 seconds
+
+    # Wrapper generator that collects content for caching
+    def caching_generator():
+        collected_content = []
+        for chunk in epg_generator():
+            collected_content.append(chunk)
+            yield chunk
+        # After streaming completes, cache the full content
+        full_content = ''.join(collected_content)
+        cache.set(content_cache_key, full_content, 300)
+        logger.debug("Cached EPG content (%d bytes)", len(full_content))
+
+    # Return streaming response
     response = StreamingHttpResponse(
-        streaming_content=epg_generator(),
+        streaming_content=caching_generator(),
         content_type="application/xml"
     )
     response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'

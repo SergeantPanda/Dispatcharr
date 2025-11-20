@@ -8,6 +8,7 @@ import {
   Container,
   Flex,
   Group,
+  Pagination,
   Progress,
   SimpleGrid,
   Stack,
@@ -25,9 +26,11 @@ import useLogosStore from '../store/logos';
 import logo from '../images/logo.png';
 import {
   ChevronDown,
+  CirclePlay,
   Gauge,
   HardDriveDownload,
   HardDriveUpload,
+  RefreshCw,
   SquareX,
   Timer,
   Users,
@@ -44,6 +47,7 @@ import { useLocation } from 'react-router-dom';
 import { notifications } from '@mantine/notifications';
 import { CustomTable, useTable } from '../components/tables/CustomTable';
 import useLocalStorage from '../hooks/useLocalStorage';
+import SystemEvents from '../components/SystemEvents';
 
 dayjs.extend(duration);
 dayjs.extend(relativeTime);
@@ -1545,6 +1549,7 @@ const ChannelsPage = () => {
           display: 'grid',
           gap: '1rem',
           padding: '10px',
+          paddingBottom: '120px',
           gridTemplateColumns: 'repeat(auto-fill, minmax(500px, 1fr))',
         }}
       >
@@ -1583,6 +1588,23 @@ const ChannelsPage = () => {
           })
         )}
       </div>
+
+      {/* System Events Section - Fixed at bottom */}
+      <Box
+        style={{
+          position: 'fixed',
+          bottom: 0,
+          left: 'var(--app-shell-navbar-width, 0)',
+          right: 0,
+          zIndex: 100,
+          padding: '0 1rem 1rem 1rem',
+          pointerEvents: 'none',
+        }}
+      >
+        <Box style={{ pointerEvents: 'auto' }}>
+          <SystemEvents />
+        </Box>
+      </Box>
     </Box>
   );
 };
