@@ -1963,7 +1963,9 @@ def xc_player_api(request, full=False):
         else:
             return JsonResponse([], safe=False)
 
-    raise Http404()
+    # For any other action (including get_account_info or unknown actions),
+    # return server_info/account_info to match provider behavior
+    return JsonResponse(server_info)
 
 
 def xc_panel_api(request):
