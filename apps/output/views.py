@@ -53,6 +53,17 @@ def get_client_identifier(request):
 def m3u_endpoint(request, profile_name=None, user=None):
     logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
     if not network_access_allowed(request, "M3U_EPG"):
+        # Log blocked M3U download
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='m3u_blocked',
+            profile=profile_name or 'all',
+            reason='Network access denied',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({"error": "Forbidden"}, status=403)
 
     # Handle HEAD requests efficiently without generating content
@@ -67,6 +78,17 @@ def m3u_endpoint(request, profile_name=None, user=None):
 def epg_endpoint(request, profile_name=None, user=None):
     logger.debug("epg_endpoint called: method=%s, profile=%s", request.method, profile_name)
     if not network_access_allowed(request, "M3U_EPG"):
+        # Log blocked EPG download
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='epg_blocked',
+            profile=profile_name or 'all',
+            reason='Network access denied',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({"error": "Forbidden"}, status=403)
 
     # Handle HEAD requests efficiently without generating content
@@ -1958,12 +1980,34 @@ def xc_panel_api(request):
 
 def xc_get(request):
     if not network_access_allowed(request, 'XC_API'):
+        # Log blocked M3U download
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='m3u_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Network access denied (XC API)',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
     action = request.GET.get("action")
     user = xc_get_user(request)
 
     if user is None:
+        # Log blocked M3U download due to invalid credentials
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='m3u_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Invalid XC credentials',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
     return generate_m3u(request, None, user)
@@ -1971,11 +2015,33 @@ def xc_get(request):
 
 def xc_xmltv(request):
     if not network_access_allowed(request, 'XC_API'):
+        # Log blocked EPG download
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='epg_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Network access denied (XC API)',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
     user = xc_get_user(request)
 
     if user is None:
+        # Log blocked EPG download due to invalid credentials
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='epg_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Invalid XC credentials',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
     return generate_epg(request, None, user)
