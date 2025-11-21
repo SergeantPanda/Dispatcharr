@@ -664,28 +664,39 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
             try:
                 # Support various date group names: month, day, year
                 month_str = date_groups.get('month', '')
-                day = int(date_groups.get('day', 1))
-                year = int(date_groups.get('year', now.year))  # Default to current year if not provided
+                day_str = date_groups.get('day', '')
+                year_str = date_groups.get('year', '')
+
+                # Parse day - default to current day if empty or invalid
+                day = int(day_str) if day_str else now.day
+
+                # Parse year - default to current year if empty or invalid (matches frontend behavior)
+                year = int(year_str) if year_str else now.year
 
                 # Parse month - can be numeric (1-12) or text (Jan, January, etc.)
                 month = None
-                if month_str.isdigit():
-                    month = int(month_str)
-                else:
-                    # Try to parse text month names
-                    import calendar
-                    month_str_lower = month_str.lower()
-                    # Check full month names
-                    for i, month_name in enumerate(calendar.month_name):
-                        if month_name.lower() == month_str_lower:
-                            month = i
-                            break
-                    # Check abbreviated month names if not found
-                    if month is None:
-                        for i, month_abbr in enumerate(calendar.month_abbr):
-                            if month_abbr.lower() == month_str_lower:
+                if month_str:
+                    if month_str.isdigit():
+                        month = int(month_str)
+                    else:
+                        # Try to parse text month names
+                        import calendar
+                        month_str_lower = month_str.lower()
+                        # Check full month names
+                        for i, month_name in enumerate(calendar.month_name):
+                            if month_name.lower() == month_str_lower:
                                 month = i
                                 break
+                        # Check abbreviated month names if not found
+                        if month is None:
+                            for i, month_abbr in enumerate(calendar.month_abbr):
+                                if month_abbr.lower() == month_str_lower:
+                                    month = i
+                                    break
+
+                # Default to current month if not extracted or invalid
+                if month is None:
+                    month = now.month
 
                 if month and 1 <= month <= 12 and 1 <= day <= 31:
                     date_info = {'year': year, 'month': month, 'day': day}
