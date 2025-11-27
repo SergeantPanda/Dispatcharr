@@ -14,9 +14,9 @@ import {
   Switch,
   Table,
   Text,
+  TextInput,
   Tooltip,
 } from '@mantine/core';
-import { TimeInput } from '@mantine/dates';
 import {
   Download,
   PlayCircle,
@@ -30,6 +30,32 @@ import { notifications } from '@mantine/notifications';
 
 import API from '../../api';
 import ConfirmationDialog from '../ConfirmationDialog';
+import useLocalStorage from '../../hooks/useLocalStorage';
+
+// Convert 24h time string to 12h format with period
+function to12Hour(time24) {
+  if (!time24) return { time: '12:00', period: 'AM' };
+  const [hours, minutes] = time24.split(':').map(Number);
+  const period = hours >= 12 ? 'PM' : 'AM';
+  const hours12 = hours % 12 || 12;
+  return {
+    time: `${hours12}:${String(minutes).padStart(2, '0')}`,
+    period,
+  };
+}
+
+// Convert 12h time + period to 24h format
+function to24Hour(time12, period) {
+  if (!time12) return '00:00';
+  const [hours, minutes] = time12.split(':').map(Number);
+  let hours24 = hours;
+  if (period === 'PM' && hours !== 12) {
+    hours24 = hours + 12;
+  } else if (period === 'AM' && hours === 12) {
+    hours24 = 0;
+  }
+  return `${String(hours24).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
 
 const DAYS_OF_WEEK = [
   { value: '0', label: 'Sunday' },
@@ -65,6 +91,10 @@ export default function BackupManager() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [selectedBackup, setSelectedBackup] = useState(null);
 
+  // Read user's time format preference from settings
+  const [timeFormat] = useLocalStorage('time-format', '12h');
+  const is12Hour = timeFormat === '12h';
+
   // Schedule state
   const [schedule, setSchedule] = useState({
     enabled: false,
@@ -76,6 +106,10 @@ export default function BackupManager() {
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleChanged, setScheduleChanged] = useState(false);
+
+  // For 12-hour display mode
+  const [displayTime, setDisplayTime] = useState('3:00');
+  const [timePeriod, setTimePeriod] = useState('AM');
 
   const loadBackups = async () => {
     setLoading(true);
@@ -99,6 +133,10 @@ export default function BackupManager() {
       const settings = await API.getBackupSchedule();
       setSchedule(settings);
       setScheduleChanged(false);
+      // Initialize 12-hour display values from the loaded time
+      const { time, period } = to12Hour(settings.time);
+      setDisplayTime(time);
+      setTimePeriod(period);
     } catch (error) {
       // Ignore errors on initial load - settings may not exist yet
     } finally {
@@ -114,6 +152,26 @@ export default function BackupManager() {
   const handleScheduleChange = (field, value) => {
     setSchedule((prev) => ({ ...prev, [field]: value }));
     setScheduleChanged(true);
+  };
+
+  // Handle time changes in 12-hour mode
+  const handleTimeChange12h = (newTime, newPeriod) => {
+    const time = newTime ?? displayTime;
+    const period = newPeriod ?? timePeriod;
+    setDisplayTime(time);
+    setTimePeriod(period);
+    // Convert to 24h and update schedule
+    const time24 = to24Hour(time, period);
+    handleScheduleChange('time', time24);
+  };
+
+  // Handle time changes in 24-hour mode
+  const handleTimeChange24h = (value) => {
+    handleScheduleChange('time', value);
+    // Also update 12h display state in case user switches formats
+    const { time, period } = to12Hour(value);
+    setDisplayTime(time);
+    setTimePeriod(period);
   };
 
   const handleSaveSchedule = async () => {
@@ -290,12 +348,36 @@ export default function BackupManager() {
                 ]}
                 disabled={!schedule.enabled}
               />
-              <TimeInput
-                label="Time"
-                value={schedule.time}
-                onChange={(e) => handleScheduleChange('time', e.currentTarget.value)}
-                disabled={!schedule.enabled}
-              />
+              {is12Hour ? (
+                <Group grow align="flex-end" gap="xs">
+                  <TextInput
+                    label="Time"
+                    value={displayTime}
+                    onChange={(e) => handleTimeChange12h(e.currentTarget.value, null)}
+                    placeholder="3:00"
+                    disabled={!schedule.enabled}
+                    style={{ flex: 2 }}
+                  />
+                  <Select
+                    value={timePeriod}
+                    onChange={(value) => handleTimeChange12h(null, value)}
+                    data={[
+                      { value: 'AM', label: 'AM' },
+                      { value: 'PM', label: 'PM' },
+                    ]}
+                    disabled={!schedule.enabled}
+                    style={{ flex: 1 }}
+                  />
+                </Group>
+              ) : (
+                <TextInput
+                  label="Time"
+                  value={schedule.time}
+                  onChange={(e) => handleTimeChange24h(e.currentTarget.value)}
+                  placeholder="03:00"
+                  disabled={!schedule.enabled}
+                />
+              )}
               {schedule.frequency === 'weekly' && (
                 <Select
                   label="Day of Week"
