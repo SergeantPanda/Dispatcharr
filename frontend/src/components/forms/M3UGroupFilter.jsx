@@ -186,6 +186,10 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
       title="M3U Group Filter & Auto Channel Sync"
       size={1000}
       styles={{ content: { '--mantine-color-body': '#27272A' } }}
+      scrollAreaComponent={Modal.NativeScrollArea}
+      lockScroll={false}
+      withinPortal={true}
+      yOffset="2vh"
     >
       <LoadingOverlay visible={isLoading} overlayBlur={2} />
       <Stack>
