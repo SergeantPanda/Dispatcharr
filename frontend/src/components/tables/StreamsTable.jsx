@@ -385,7 +385,14 @@ const StreamsTable = () => {
 
     // Apply sorting
     if (sorting.length > 0) {
-      const sortField = sorting[0].id;
+      const columnId = sorting[0].id;
+      // Map frontend column IDs to backend field names
+      const fieldMapping = {
+        name: 'name',
+        group: 'channel_group__name',
+        m3u: 'm3u_account__name',
+      };
+      const sortField = fieldMapping[columnId] || columnId;
       const sortDirection = sorting[0].desc ? '-' : '';
       params.append('ordering', `${sortDirection}${sortField}`);
     }
@@ -747,41 +754,57 @@ const StreamsTable = () => {
 
       case 'group':
         return (
-          <Box onClick={handleSelectClick} style={{ width: '100%' }}>
-            <MultiSelect
-              placeholder="Group"
-              searchable
-              size="xs"
-              nothingFoundMessage="No options"
-              onClick={handleSelectClick}
-              onChange={handleGroupChange}
-              data={groupOptions}
-              variant="unstyled"
-              className="table-input-header custom-multiselect"
-              clearable
-            />
-          </Box>
+          <Flex gap="sm">
+            <Box onClick={handleSelectClick} style={{ width: '100%' }}>
+              <MultiSelect
+                placeholder="Group"
+                searchable
+                size="xs"
+                nothingFoundMessage="No options"
+                onClick={handleSelectClick}
+                onChange={handleGroupChange}
+                data={groupOptions}
+                variant="unstyled"
+                className="table-input-header custom-multiselect"
+                clearable
+              />
+            </Box>
+            <Center>
+              {React.createElement(sortingIcon, {
+                onClick: () => onSortingChange('group'),
+                size: 14,
+              })}
+            </Center>
+          </Flex>
         );
 
       case 'm3u':
         return (
-          <Box onClick={handleSelectClick}>
-            <Select
-              placeholder="M3U"
-              searchable
-              clearable
-              size="xs"
-              nothingFoundMessage="No options"
-              onClick={handleSelectClick}
-              onChange={handleM3UChange}
-              data={playlists.map((playlist) => ({
-                label: playlist.name,
-                value: `${playlist.id}`,
-              }))}
-              variant="unstyled"
-              className="table-input-header"
-            />
-          </Box>
+          <Flex gap="sm">
+            <Box onClick={handleSelectClick} style={{ width: '100%' }}>
+              <Select
+                placeholder="M3U"
+                searchable
+                clearable
+                size="xs"
+                nothingFoundMessage="No options"
+                onClick={handleSelectClick}
+                onChange={handleM3UChange}
+                data={playlists.map((playlist) => ({
+                  label: playlist.name,
+                  value: `${playlist.id}`,
+                }))}
+                variant="unstyled"
+                className="table-input-header"
+              />
+            </Box>
+            <Center>
+              {React.createElement(sortingIcon, {
+                onClick: () => onSortingChange('m3u'),
+                size: 14,
+              })}
+            </Center>
+          </Flex>
         );
     }
   };
