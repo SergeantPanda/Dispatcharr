@@ -182,7 +182,7 @@ const StreamsTable = () => {
   const [pageCount, setPageCount] = useState(0);
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
+  const [sorting, setSorting] = useState([{ id: 'name', desc: true }]);
   const [selectedStreamIds, setSelectedStreamIds] = useState([]);
 
   // Channel numbering modal state
@@ -298,6 +298,7 @@ const StreamsTable = () => {
         ),
       },
       {
+        header: 'Group',
         id: 'group',
         accessorFn: (row) =>
           channelGroups[row.channel_group]
@@ -319,6 +320,7 @@ const StreamsTable = () => {
         ),
       },
       {
+        header: 'M3U',
         id: 'm3u',
         size: columnSizing.m3u || 150,
         accessorFn: (row) =>
@@ -698,8 +700,8 @@ const StreamsTable = () => {
     const sortField = sorting[0]?.id;
     const sortDirection = sorting[0]?.desc;
 
-    if (sortField == column) {
-      if (sortDirection == false) {
+    if (sortField === column) {
+      if (sortDirection === false) {
         setSorting([
           {
             id: column,
@@ -707,7 +709,8 @@ const StreamsTable = () => {
           },
         ]);
       } else {
-        setSorting([]);
+        // Reset to default sort (name descending) instead of clearing
+        setSorting([{ id: 'name', desc: true }]);
       }
     } else {
       setSorting([
@@ -754,8 +757,8 @@ const StreamsTable = () => {
 
       case 'group':
         return (
-          <Flex gap="sm">
-            <Box onClick={handleSelectClick} style={{ width: '100%' }}>
+          <Flex gap="sm" style={{ width: '100%' }}>
+            <Box style={{ flex: 1, minWidth: 0 }}>
               <MultiSelect
                 placeholder="Group"
                 searchable
@@ -769,7 +772,7 @@ const StreamsTable = () => {
                 clearable
               />
             </Box>
-            <Center>
+            <Center style={{ flexShrink: 0 }}>
               {React.createElement(sortingIcon, {
                 onClick: () => onSortingChange('group'),
                 size: 14,
@@ -780,8 +783,8 @@ const StreamsTable = () => {
 
       case 'm3u':
         return (
-          <Flex gap="sm">
-            <Box onClick={handleSelectClick} style={{ width: '100%' }}>
+          <Flex gap="sm" style={{ width: '100%' }}>
+            <Box style={{ flex: 1, minWidth: 0 }}>
               <Select
                 placeholder="M3U"
                 searchable
@@ -798,7 +801,7 @@ const StreamsTable = () => {
                 className="table-input-header"
               />
             </Box>
-            <Center>
+            <Center style={{ flexShrink: 0 }}>
               {React.createElement(sortingIcon, {
                 onClick: () => onSortingChange('m3u'),
                 size: 14,
