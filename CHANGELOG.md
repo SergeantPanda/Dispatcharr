@@ -7,12 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `CHANGELOG.md` file following Keep a Changelog format to document all notable changes and project history
+- System event logging and viewer: Comprehensive logging system that tracks internal application events (M3U refreshes, EPG updates, stream switches, errors) with a dedicated UI viewer for filtering and reviewing historical events. Improves monitoring, troubleshooting, and understanding system behavior
+- M3U/EPG endpoint caching: Implements intelligent caching for frequently requested M3U playlists and EPG data to reduce database load and improve response times for clients.
+- Search icon to name headers for the channels and streams tables (#686)
+- Comprehensive logging for user authentication events and network access restrictions
+- Validation for EPG objects and payloads in updateEPG functions to prevent errors from invalid data
+- Referrerpolicy to YouTube iframes in series and VOD modals for better compatibility
+
+### Changed
+
+- XC player API now returns server_info for unknown actions to align with provider behavior
+- XC player API refactored to streamline action handling and ensure consistent responses
+- Date parsing logic in generate_custom_dummy_programs improved to handle empty or invalid inputs
+- UI now reflects date and time formats chosen by user - Thanks [@Biologisten](https://github.com/Biologisten)
+- "Uncategorized" categories and relations now automatically created for VOD accounts to improve content management (#627)
+- Improved minimum horizontal size in the stats page for better usability on smaller displays
+- M3U and EPG generation now handles missing channel profiles with appropriate error logging
+
+### Fixed
+
+- Episode URLs in series modal now use UUID instead of ID, fixing broken links
+- Stream preview now respects selected M3U profile instead of always using default profile (#690)
+- Channel groups filter in M3UGroupFilter component now filters out non-existent groups (prevents blank webui when editing M3U after a group was removed)
+- Stream order now preserved in PATCH/PUT responses from ChannelSerializer, ensuring consistent ordering across all API operations - Thanks [@FiveBoroughs](https://github.com/FiveBoroughs) (#643)
+- XC client compatibility: float channel numbers now converted to integers
+- M3U account and profile modals now scrollable on mobile devices for improved usability
+
 ## [0.12.0] - 2025-11-19
 
 ### Added
 
-- RTSP stream support with automatic protocol detection when a proxy profile requires it. The proxy now forces FFmpeg for RTSP sources and properly handles RTSP URLs - Thanks [@ragchuck](https://github.com/ragchuck) ([#184](https://github.com/Dispatcharr/Dispatcharr/issues/184))
-- UDP stream support, including correct handling when a proxy profile specifies a UDP source. The proxy now skips HTTP-specific headers (like `user_agent`) for non-HTTP protocols and performs manual redirect handling to improve reliability ([#617](https://github.com/Dispatcharr/Dispatcharr/issues/617))
+- RTSP stream support with automatic protocol detection when a proxy profile requires it. The proxy now forces FFmpeg for RTSP sources and properly handles RTSP URLs - Thanks [@ragchuck](https://github.com/ragchuck) (#184)
+- UDP stream support, including correct handling when a proxy profile specifies a UDP source. The proxy now skips HTTP-specific headers (like `user_agent`) for non-HTTP protocols and performs manual redirect handling to improve reliability (#617)
 - Separate VOD logos system with a new `VODLogo` model, database migration, dedicated API/viewset, and server-paginated UI. This separates movie/series logos from channel logos, making cleanup safer and enabling independent bulk operations
 
 ### Changed
@@ -21,17 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bulk channel editing now validates all requested changes up front and applies updates in a single database transaction
 - ProxyServer shutdown & ghost-client handling improved to avoid initializing channels for transient clients and prevent duplicate reinitialization during rapid reconnects
 - URL / Stream validation expanded to support credentials on non-FQDN hosts, skips HTTP-only checks for RTSP/RTP/UDP streams, and improved host/port normalization
-- TV guide scrolling & timeline synchronization improved with mouse-wheel scrolling, synchronized timeline position with guide navigation, and improved mobile momentum scrolling ([#252](https://github.com/Dispatcharr/Dispatcharr/issues/252))
+- TV guide scrolling & timeline synchronization improved with mouse-wheel scrolling, synchronized timeline position with guide navigation, and improved mobile momentum scrolling (#252)
 - EPG Source dropdown now sorts alphabetically - Thanks [@0x53c65c0a8bd30fff](https://github.com/0x53c65c0a8bd30fff)
 - M3U POST handling restored and improved for clients (e.g., Smarters) that request playlists using HTTP POST - Thanks [@maluueu](https://github.com/maluueu)
 - Login form revamped with branding, cleaner layout, loading state, "Remember Me" option, and focused sign-in flow
 - Series & VOD now have copy-link buttons in modals for easier URL sharing
-- `get_host_and_port` now prioritizes verified port sources and handles reverse-proxy edge cases more accurately ([#618](https://github.com/Dispatcharr/Dispatcharr/issues/618))
+- `get_host_and_port` now prioritizes verified port sources and handles reverse-proxy edge cases more accurately (#618)
 
 ### Fixed
 
-- EXTINF parsing overhauled to correctly extract attributes such as `tvg-id`, `tvg-name`, and `group-title`, even when values include quotes or commas ([#637](https://github.com/Dispatcharr/Dispatcharr/issues/637))
-- Websocket payload size reduced during EPG processing to avoid UI freezes, blank screens, or memory spikes in the browser ([#327](https://github.com/Dispatcharr/Dispatcharr/issues/327))
+- EXTINF parsing overhauled to correctly extract attributes such as `tvg-id`, `tvg-name`, and `group-title`, even when values include quotes or commas (#637)
+- Websocket payload size reduced during EPG processing to avoid UI freezes, blank screens, or memory spikes in the browser (#327)
 - Logo management UI fixes including confirmation dialogs, header checkbox reset, delete button reliability, and full client refetch after cleanup
 
 ## [0.11.2] - 2025-11-04
@@ -41,8 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Custom Dummy EPG improvements:
   - Support for using an existing Custom Dummy EPG as a template for creating new EPGs
   - Custom fallback templates for unmatched patterns
-  - `{endtime}` as an available output placeholder and renamed `{time}` → `{starttime}` ([#590](https://github.com/Dispatcharr/Dispatcharr/issues/590))
-  - Support for date placeholders that respect both source and output timezones ([#597](https://github.com/Dispatcharr/Dispatcharr/issues/597))
+  - `{endtime}` as an available output placeholder and renamed `{time}` → `{starttime}` (#590)
+  - Support for date placeholders that respect both source and output timezones (#597)
   - Ability to bulk assign Custom Dummy EPGs to multiple channels
   - "Include New Tag" option to mark programs as new in Dummy EPG output
   - Support for month strings in date parsing
@@ -51,11 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Stream model maximum URL length increased from 2000 to 4096 characters ([#585](https://github.com/Dispatcharr/Dispatcharr/issues/585))
+- Stream model maximum URL length increased from 2000 to 4096 characters (#585)
 - Groups now sorted during `xc_get_live_categories` based on the order they first appear (by lowest channel number)
 - Client TTL settings updated and periodic refresh implemented during active streaming to maintain accurate connection tracking
-- `ProgramData.sub_title` field changed from `CharField` to `TextField` to allow subtitles longer than 255 characters ([#579](https://github.com/Dispatcharr/Dispatcharr/issues/579))
-- Startup improved by verifying `/data` directory ownership and automatically fixing permissions if needed. Pre-creates `/data/models` during initialization ([#614](https://github.com/Dispatcharr/Dispatcharr/issues/614))
+- `ProgramData.sub_title` field changed from `CharField` to `TextField` to allow subtitles longer than 255 characters (#579)
+- Startup improved by verifying `/data` directory ownership and automatically fixing permissions if needed. Pre-creates `/data/models` during initialization (#614)
 - Port detection enhanced to check `request.META.get("SERVER_PORT")` before falling back to defaults, ensuring correct port when generating M3U, EPG, and logo URLs - Thanks [@lasharor](https://github.com/lasharor)
 
 ### Fixed
@@ -79,16 +108,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Support for custom upcoming and ended programs
   - Timezone-aware with source and local timezone selection
   - Option to include categories and date/live tags in Dummy EPG output
-  - ([#293](https://github.com/Dispatcharr/Dispatcharr/issues/293))
+  - (#293)
 - Auto-Enable & Category Improvements:
-  - Auto-enable settings for new groups and categories in M3U and VOD components ([#208](https://github.com/Dispatcharr/Dispatcharr/issues/208))
-- IPv6 CIDR validation in Settings - Thanks [@jordandalley](https://github.com/jordandalley) ([#236](https://github.com/Dispatcharr/Dispatcharr/issues/236))
-- Custom logo support for channel groups in Auto Sync Channels ([#555](https://github.com/Dispatcharr/Dispatcharr/issues/555))
+  - Auto-enable settings for new groups and categories in M3U and VOD components (#208)
+- IPv6 CIDR validation in Settings - Thanks [@jordandalley](https://github.com/jordandalley) (#236)
+- Custom logo support for channel groups in Auto Sync Channels (#555)
 - Tooltips added to the Stream Table
 
 ### Changed
 
-- Celery and uWSGI now have configurable `nice` levels (defaults: `uWSGI=0`, `Celery=5`) to prioritize streaming when needed. ([#571](https://github.com/Dispatcharr/Dispatcharr/issues/571))
+- Celery and uWSGI now have configurable `nice` levels (defaults: `uWSGI=0`, `Celery=5`) to prioritize streaming when needed. (#571)
 - Directory creation and ownership management refactored in init scripts to avoid unnecessary recursive `chown` operations and improve boot speed
 - HTTP streamer switched to threaded model with piped output for improved robustness
 - Chunk timeout configuration improved and StreamManager timeout handling enhanced
@@ -102,15 +131,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Crash when resizing columns in the Channel Table ([#516](https://github.com/Dispatcharr/Dispatcharr/issues/516))
-- Errors when saving stream settings ([#535](https://github.com/Dispatcharr/Dispatcharr/issues/535))
+- Crash when resizing columns in the Channel Table (#516)
+- Errors when saving stream settings (#535)
 - Preview and edit bugs for custom streams where profile and group selections did not display correctly
-- `channel_id` and `channel.uuid` now converted to strings before processing to fix manual switching when the uWSGI worker was not the stream owner ([#269](https://github.com/Dispatcharr/Dispatcharr/issues/269))
-- Stream locking and connection search issues when switching channels; increased search timeout to reduce premature failures ([#503](https://github.com/Dispatcharr/Dispatcharr/issues/503))
+- `channel_id` and `channel.uuid` now converted to strings before processing to fix manual switching when the uWSGI worker was not the stream owner (#269)
+- Stream locking and connection search issues when switching channels; increased search timeout to reduce premature failures (#503)
 - Stream Table buttons no longer shift into multiple rows when selecting many streams
 - Custom stream previews
-- Custom Stream settings not loading properly ([#186](https://github.com/Dispatcharr/Dispatcharr/issues/186))
-- Orphaned categories now automatically removed for VOD and Series during M3U refresh ([#540](https://github.com/Dispatcharr/Dispatcharr/issues/540))
+- Custom Stream settings not loading properly (#186)
+- Orphaned categories now automatically removed for VOD and Series during M3U refresh (#540)
 
 ## [0.10.4] - 2025-10-08
 
@@ -123,8 +152,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ability to set logo name from URL - Thanks [@EmeraldPi](https://github.com/EmeraldPi)
 - Proper timestamp tracking for channel creation and updates; `XC Get Live Streams` now uses this information
 - Time Zone Settings added to the application ([#482](https://github.com/Dispatcharr/Dispatcharr/issues/482), [#347](https://github.com/Dispatcharr/Dispatcharr/issues/347))
-- Comskip settings support including comskip.ini upload and custom directory selection ([#418](https://github.com/Dispatcharr/Dispatcharr/issues/418))
-- Manual recording scheduling for channels without EPG data ([#162](https://github.com/Dispatcharr/Dispatcharr/issues/162))
+- Comskip settings support including comskip.ini upload and custom directory selection (#418)
+- Manual recording scheduling for channels without EPG data (#162)
 
 ### Changed
 
@@ -138,14 +167,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Large EPGs now fully parse all channels
 - Duplicate channel outputs for streamer profiles set to "All"
 - Streamer profiles with "All" assigned now receive all eligible channels
-- PostgreSQL btree index errors from logo URL validation during channel creation ([#519](https://github.com/Dispatcharr/Dispatcharr/issues/519))
-- M3U processing lock not releasing when no streams found during XC refresh, which also skipped VOD scanning ([#449](https://github.com/Dispatcharr/Dispatcharr/issues/449))
-- Float conversion errors by normalizing decimal format during VOD scanning ([#526](https://github.com/Dispatcharr/Dispatcharr/issues/526))
-- Direct URL ordering in M3U output to use correct stream sequence ([#528](https://github.com/Dispatcharr/Dispatcharr/issues/528))
-- Adding multiple M3U accounts without refreshing modified only the first entry ([#397](https://github.com/Dispatcharr/Dispatcharr/issues/397))
+- PostgreSQL btree index errors from logo URL validation during channel creation (#519)
+- M3U processing lock not releasing when no streams found during XC refresh, which also skipped VOD scanning (#449)
+- Float conversion errors by normalizing decimal format during VOD scanning (#526)
+- Direct URL ordering in M3U output to use correct stream sequence (#528)
+- Adding multiple M3U accounts without refreshing modified only the first entry (#397)
 - UI state bug where new playlist creation was not notified to frontend ("Fetching Groups" stuck)
 - Minor FFmpeg task and stream termination bugs in DVR module
-- Input escaping issue where single quotes were interpreted as code delimiters ([#406](https://github.com/Dispatcharr/Dispatcharr/issues/406))
+- Input escaping issue where single quotes were interpreted as code delimiters (#406)
 
 ## [0.10.3] - 2025-10-04
 
@@ -167,8 +196,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `m3u_id` parameter to `generate_hash_key` and updated related calls
-- Support for `x-tvg-url` and `url-tvg` generation with preserved query parameters ([#345](https://github.com/Dispatcharr/Dispatcharr/issues/345))
-- Exact Gracenote ID matching for EPG channel mapping ([#291](https://github.com/Dispatcharr/Dispatcharr/issues/291))
+- Support for `x-tvg-url` and `url-tvg` generation with preserved query parameters (#345)
+- Exact Gracenote ID matching for EPG channel mapping (#291)
 - Recovery handling for XMLTV parser errors
 - `nice -n 5` added to Celery commands for better process priority management
 
@@ -189,17 +218,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Cloudflare-hosted EPG feeds breaking parsing ([#497](https://github.com/Dispatcharr/Dispatcharr/issues/497))
+- Cloudflare-hosted EPG feeds breaking parsing (#497)
 - Bulk channel creation now preserves the order channels were selected in (no longer reversed)
 - M3U hash settings not saving properly
-- VOD selecting the wrong M3U profile at session start ([#461](https://github.com/Dispatcharr/Dispatcharr/issues/461))
+- VOD selecting the wrong M3U profile at session start (#461)
 - Redundant `h` removed from 12-hour time format in settings page
 
 ## [0.10.1] - 2025-09-24
 
 ### Added
 
-- Virtualized rendering for TV Guide for smoother performance when displaying large guides - Thanks [@stlalpha](https://github.com/stlalpha) ([#438](https://github.com/Dispatcharr/Dispatcharr/issues/438))
+- Virtualized rendering for TV Guide for smoother performance when displaying large guides - Thanks [@stlalpha](https://github.com/stlalpha) (#438)
 - Enhanced channel/program mapping to reuse EPG data across multiple channels that share the same TVG-ID
 
 ### Changed
@@ -211,7 +240,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- EPG channel parsing failure when channel `URL` exceeded 500 characters by adding validation during scanning ([#452](https://github.com/Dispatcharr/Dispatcharr/issues/452))
+- EPG channel parsing failure when channel `URL` exceeded 500 characters by adding validation during scanning (#452)
 - Frontend incorrectly saving case-sensitive setting as a JSON string for stream filters
 
 ## [0.10.0] - 2025-09-18
@@ -230,17 +259,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Implemented memory cleanup for ML models after matching operations
   - Removed deprecated matching scripts
 - Logo & EPG Management:
-  - Ability in channel edit form and bulk channel editor to set logos and names from assigned EPG ([#157](https://github.com/Dispatcharr/Dispatcharr/issues/157))
+  - Ability in channel edit form and bulk channel editor to set logos and names from assigned EPG (#157)
   - Improved logo update flow: frontend refreshes on changes, store updates after bulk changes, progress shown via notifications
 - Table Enhancements:
-  - All tables now support adjustable column resizing ([#295](https://github.com/Dispatcharr/Dispatcharr/issues/295))
+  - All tables now support adjustable column resizing (#295)
   - Channels and Streams tables persist column widths and center divider position to local storage
   - Improved sizing and layout for user-agents, stream profiles, logos, M3U, and EPG tables
 
 ### Changed
 
 - Simplified VOD and series access: removed user-level restrictions on M3U accounts
-- Skip disabled M3U accounts when choosing streams during playback ([#402](https://github.com/Dispatcharr/Dispatcharr/issues/402))
+- Skip disabled M3U accounts when choosing streams during playback (#402)
 - Enhanced `UserViewSet` queryset to prefetch related channel profiles for better performance
 - Auto-focus added to EPG filter input
 - Category API retrieval now sorts by name
@@ -251,7 +280,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Bug during VOD cleanup where all VODs not from the current M3U scan could be deleted
 - Logos not being set correctly in some cases
-- Bug where not setting a channel number caused an error when creating a channel ([#422](https://github.com/Dispatcharr/Dispatcharr/issues/422))
+- Bug where not setting a channel number caused an error when creating a channel (#422)
 - Bug where clicking "Add Channel" with a channel selected opened the edit form instead
 - Bug where a newly created channel could reuse streams from another channel due to form not clearing properly
 - VOD page not displaying correct order while changing pages
@@ -263,7 +292,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Broken migrations affecting the plugins system
-- DVR and plugin paths to ensure proper functionality ([#381](https://github.com/Dispatcharr/Dispatcharr/issues/381))
+- DVR and plugin paths to ensure proper functionality (#381)
 
 ## [0.9.0] - 2025-09-12
 
@@ -345,7 +374,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Empty string scrubbing for cleaner data
 - Group relationship cleanup for removed M3U groups
 - Logo cleanup for unused files with proper batch processing
-- Recordings start 5 mins after show starts ([#102](https://github.com/Dispatcharr/Dispatcharr/issues/102))
+- Recordings start 5 mins after show starts (#102)
 
 ### Closed
 
@@ -377,8 +406,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Filters support both inclusion and exclusion logic for precise control
   - Multiple filters can be layered with a priority order for complex rules
 - Ability to reverse the sort order for auto channel sync
-- Custom validator for URL fields now allows non-FQDN hostnames ([#63](https://github.com/Dispatcharr/Dispatcharr/issues/63))
-- Membership creation added in `UpdateChannelMembershipAPIView` if not found ([#275](https://github.com/Dispatcharr/Dispatcharr/issues/275))
+- Custom validator for URL fields now allows non-FQDN hostnames (#63)
+- Membership creation added in `UpdateChannelMembershipAPIView` if not found (#275)
 
 ### Changed
 
@@ -398,7 +427,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Natural sorting for channel names during auto channel sync
 - Ability to sort auto sync order by provider order (default), channel name, TVG ID, or last updated time
-- Auto-created channels can now be assigned to specific channel profiles ([#255](https://github.com/Dispatcharr/Dispatcharr/issues/255))
+- Auto-created channels can now be assigned to specific channel profiles (#255)
 - Channel profiles are now fetched automatically after a successful M3U refresh
 - Uses only whole numbers when assigning the next available channel number
 
@@ -421,19 +450,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Logo Manager:**
   - Complete logo management system with filtering, search, and usage tracking
   - Upload logos directly through the UI
-  - Automatically scan `/data/logos` for existing files ([#69](https://github.com/Dispatcharr/Dispatcharr/issues/69))
+  - Automatically scan `/data/logos` for existing files (#69)
   - View which channels use each logo
   - Bulk delete unused logos with cleanup
   - Enhanced display with hover effects and improved sizing
   - Improved logo fetching with timeouts and user-agent headers to prevent hanging
 - **Group Manager:**
-  - Comprehensive group management interface ([#128](https://github.com/Dispatcharr/Dispatcharr/issues/128))
+  - Comprehensive group management interface (#128)
   - Search and filter groups with ease
   - Bulk operations for cleanup
   - Filter channels by group membership
   - Automatically clean up unused groups
 - **Auto Channel Sync:**
-  - Automatic channel synchronization from M3U sources ([#147](https://github.com/Dispatcharr/Dispatcharr/issues/147))
+  - Automatic channel synchronization from M3U sources (#147)
   - Configure auto-sync settings per M3U account group
   - Set starting channel numbers by group
   - Override group names during sync
@@ -487,16 +516,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Dynamic parameter options for M3U and EPG URLs ([#207](https://github.com/Dispatcharr/Dispatcharr/issues/207))
+- Dynamic parameter options for M3U and EPG URLs (#207)
 - Support for 'num' property in channel number extraction (fixes channel creation from XC streams not having channel numbers)
 
 ### Changed
 
-- EPG generation now uses streaming responses to prevent client timeouts during large EPG file generation ([#179](https://github.com/Dispatcharr/Dispatcharr/issues/179))
+- EPG generation now uses streaming responses to prevent client timeouts during large EPG file generation (#179)
 - Improved reliability when downloading EPG data from external sources
-- Better program positioning - Programs that start before the current view now have proper text positioning ([#223](https://github.com/Dispatcharr/Dispatcharr/issues/223))
+- Better program positioning - Programs that start before the current view now have proper text positioning (#223)
 - Better mobile support - Improved sizing and layout for mobile devices across multiple tables
-- Responsive stats cards - Better calculation for card layout and improved filling on different screen sizes ([#218](https://github.com/Dispatcharr/Dispatcharr/issues/218))
+- Responsive stats cards - Better calculation for card layout and improved filling on different screen sizes (#218)
 - Enhanced table rendering - M3U and EPG tables now render better on small screens
 - Optimized spacing - Removed unnecessary padding and blank space throughout the interface
 - Better settings layout - Improved minimum widths and mobile support for settings pages
@@ -509,7 +538,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stream profile fixes - Resolved issue with setting stream profile to 'use default'
 - Single channel editing - When only one channel is selected, the correct channel editor now opens
 - Bulk edit improvements - Added "no change" options for bulk editing operations
-- Bulk channel editor now properly saves changes ([#222](https://github.com/Dispatcharr/Dispatcharr/issues/222))
+- Bulk channel editor now properly saves changes (#222)
 - Link form improvements - Better sizing and rendering of link forms with proper layering
 - Confirmation dialogs added with warning suppression for user deletion, channel profile deletion, and M3U profile deletion
 
@@ -522,7 +551,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Network access control with CIDR validation and IP-based restrictions
   - Logout functionality and improved loading states for authenticated users
 - **Xtream Codes Output:**
-  - Xtream Codes support enables easy output to IPTV clients ([#195](https://github.com/Dispatcharr/Dispatcharr/issues/195))
+  - Xtream Codes support enables easy output to IPTV clients (#195)
 - **Stream Management & Monitoring:**
   - FFmpeg statistics integration - Real-time display of video/audio codec info, resolution, speed, and stream type
   - Automatic stream switching when buffering is detected
@@ -536,9 +565,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Flexible EPG output with a configurable day limit via `days=#` parameter
   - Support for LIVE tags and `dd_progrid` numbering in EPG processing
 - Proxy settings configuration with UI integration and improved validation
-- Stream retention controls - Set stale stream days to `0` to disable retention completely ([#123](https://github.com/Dispatcharr/Dispatcharr/issues/123))
+- Stream retention controls - Set stale stream days to `0` to disable retention completely (#123)
 - Tuner flexibility - Minimum of 1 tuner now allowed for HDHomeRun output
-- Fallback IP geolocation provider ([#127](https://github.com/Dispatcharr/Dispatcharr/issues/127)) - Thanks [@maluueu](https://github.com/maluueu)
+- Fallback IP geolocation provider (#127) - Thanks [@maluueu](https://github.com/maluueu)
 - POST method now allowed for M3U output, enabling support for Smarters IPTV - Thanks [@maluueu](https://github.com/maluueu)
 
 ### Changed
@@ -563,25 +592,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed M3U profile ID behavior when switching streams
 - Corrected stream switching logic - Redis is only updated on successful switches
 - Fixed connection counting - Excludes the current profile from available connection counts
-- Fixed custom stream channel creation when no group is assigned ([#122](https://github.com/Dispatcharr/Dispatcharr/issues/122))
+- Fixed custom stream channel creation when no group is assigned (#122)
 - Resolved EPG auto-matching deadlock when many channels match simultaneously - Thanks [@xham3](https://github.com/xham3)
 
 ## [0.5.2] - 2025-06-03
 
 ### Added
 
-- Direct Logo Support: Added ability to bypass logo caching by adding `?cachedlogos=false` to the end of M3U and EPG URLs ([#109](https://github.com/Dispatcharr/Dispatcharr/issues/109))
+- Direct Logo Support: Added ability to bypass logo caching by adding `?cachedlogos=false` to the end of M3U and EPG URLs (#109)
 
 ### Changed
 
-- Dynamic Resource Management: Auto-scales Celery workers based on demand, reducing overall memory and CPU usage while still allowing high-demand tasks to complete quickly ([#111](https://github.com/Dispatcharr/Dispatcharr/issues/111))
+- Dynamic Resource Management: Auto-scales Celery workers based on demand, reducing overall memory and CPU usage while still allowing high-demand tasks to complete quickly (#111)
 - Enhanced Logging:
   - Improved logging for M3U processing
   - Better error output from XML parser for easier troubleshooting
 
 ### Fixed
 
-- XMLTV Parsing: Added `remove_blank_text=True` to lxml parser to prevent crashes with poorly formatted XMLTV files ([#115](https://github.com/Dispatcharr/Dispatcharr/issues/115))
+- XMLTV Parsing: Added `remove_blank_text=True` to lxml parser to prevent crashes with poorly formatted XMLTV files (#115)
 - Stats Display: Refactored channel info retrieval for safer decoding and improved error logging, fixing intermittent issues with statistics not displaying properly
 
 ## [0.5.1] - 2025-05-28
