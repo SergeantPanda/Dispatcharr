@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - XC player API now returns server_info for unknown actions to align with provider behavior
 - XC player API refactored to streamline action handling and ensure consistent responses
 - Date parsing logic in generate_custom_dummy_programs improved to handle empty or invalid inputs
-- UI now reflects date and time formats chosen by user - Thanks [@Biologisten](https://github.com/Biologisten)
+- DVR cards now reflect date and time formats chosen by user - Thanks [@Biologisten](https://github.com/Biologisten)
 - "Uncategorized" categories and relations now automatically created for VOD accounts to improve content management (#627)
 - Improved minimum horizontal size in the stats page for better usability on smaller displays
 - M3U and EPG generation now handles missing channel profiles with appropriate error logging
