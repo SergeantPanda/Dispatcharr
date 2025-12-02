@@ -1,4 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import API from '../api';
 import useSettingsStore from '../store/settings';
 import useUserAgentsStore from '../store/userAgents';
@@ -11,6 +17,7 @@ import {
   Center,
   Flex,
   Group,
+  FileInput,
   MultiSelect,
   Select,
   Stack,
@@ -20,6 +27,7 @@ import {
   NumberInput,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
+import { notifications } from '@mantine/notifications';
 import UserAgentsTable from '../components/tables/UserAgentsTable';
 import StreamProfilesTable from '../components/tables/StreamProfilesTable';
 import BackupManager from '../components/backups/BackupManager';
@@ -33,6 +41,140 @@ import {
 } from '../constants';
 import ConfirmationDialog from '../components/ConfirmationDialog';
 import useWarningsStore from '../store/warnings';
+
+const TIMEZONE_FALLBACKS = [
+  'UTC',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'America/Phoenix',
+  'America/Anchorage',
+  'Pacific/Honolulu',
+  'Europe/London',
+  'Europe/Paris',
+  'Europe/Berlin',
+  'Europe/Madrid',
+  'Europe/Warsaw',
+  'Europe/Moscow',
+  'Asia/Dubai',
+  'Asia/Kolkata',
+  'Asia/Shanghai',
+  'Asia/Tokyo',
+  'Asia/Seoul',
+  'Australia/Sydney',
+];
+
+const getSupportedTimeZones = () => {
+  try {
+    if (typeof Intl.supportedValuesOf === 'function') {
+      return Intl.supportedValuesOf('timeZone');
+    }
+  } catch (error) {
+    console.warn('Unable to enumerate supported time zones:', error);
+  }
+  return TIMEZONE_FALLBACKS;
+};
+
+const getTimeZoneOffsetMinutes = (date, timeZone) => {
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    const parts = dtf.formatToParts(date).reduce((acc, part) => {
+      if (part.type !== 'literal') acc[part.type] = part.value;
+      return acc;
+    }, {});
+    const asUTC = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+      Number(parts.second)
+    );
+    return (asUTC - date.getTime()) / 60000;
+  } catch (error) {
+    console.warn(`Failed to compute offset for ${timeZone}:`, error);
+    return 0;
+  }
+};
+
+const formatOffset = (minutes) => {
+  const rounded = Math.round(minutes);
+  const sign = rounded < 0 ? '-' : '+';
+  const absolute = Math.abs(rounded);
+  const hours = String(Math.floor(absolute / 60)).padStart(2, '0');
+  const mins = String(absolute % 60).padStart(2, '0');
+  return `UTC${sign}${hours}:${mins}`;
+};
+
+const buildTimeZoneOptions = (preferredZone) => {
+  const zones = getSupportedTimeZones();
+  const referenceYear = new Date().getUTCFullYear();
+  const janDate = new Date(Date.UTC(referenceYear, 0, 1, 12, 0, 0));
+  const julDate = new Date(Date.UTC(referenceYear, 6, 1, 12, 0, 0));
+
+  const options = zones
+    .map((zone) => {
+      const janOffset = getTimeZoneOffsetMinutes(janDate, zone);
+      const julOffset = getTimeZoneOffsetMinutes(julDate, zone);
+      const currentOffset = getTimeZoneOffsetMinutes(new Date(), zone);
+      const minOffset = Math.min(janOffset, julOffset);
+      const maxOffset = Math.max(janOffset, julOffset);
+      const usesDst = minOffset !== maxOffset;
+      const labelParts = [`now ${formatOffset(currentOffset)}`];
+      if (usesDst) {
+        labelParts.push(
+          `DST range ${formatOffset(minOffset)} to ${formatOffset(maxOffset)}`
+        );
+      }
+      return {
+        value: zone,
+        label: `${zone} (${labelParts.join(' | ')})`,
+        numericOffset: minOffset,
+      };
+    })
+    .sort((a, b) => {
+      if (a.numericOffset !== b.numericOffset) {
+        return a.numericOffset - b.numericOffset;
+      }
+      return a.value.localeCompare(b.value);
+    });
+  if (
+    preferredZone &&
+    !options.some((option) => option.value === preferredZone)
+  ) {
+    const currentOffset = getTimeZoneOffsetMinutes(new Date(), preferredZone);
+    options.push({
+      value: preferredZone,
+      label: `${preferredZone} (now ${formatOffset(currentOffset)})`,
+      numericOffset: currentOffset,
+    });
+    options.sort((a, b) => {
+      if (a.numericOffset !== b.numericOffset) {
+        return a.numericOffset - b.numericOffset;
+      }
+      return a.value.localeCompare(b.value);
+    });
+  }
+  return options;
+};
+
+const getDefaultTimeZone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch (error) {
+    return 'UTC';
+  }
+};
 
 const SettingsPage = () => {
   const settings = useSettingsStore((s) => s.settings);
@@ -51,6 +193,7 @@ const SettingsPage = () => {
     useState([]);
 
   const [proxySettingsSaved, setProxySettingsSaved] = useState(false);
+  const [generalSettingsSaved, setGeneralSettingsSaved] = useState(false);
   const [rehashingStreams, setRehashingStreams] = useState(false);
   const [rehashSuccess, setRehashSuccess] = useState(false);
   const [rehashConfirmOpen, setRehashConfirmOpen] = useState(false);
@@ -58,10 +201,53 @@ const SettingsPage = () => {
   // Add a new state to track the dialog type
   const [rehashDialogType, setRehashDialogType] = useState(null); // 'save' or 'rehash'
 
+  // Store pending changed settings when showing the dialog
+  const [pendingChangedSettings, setPendingChangedSettings] = useState(null);
+  const [comskipFile, setComskipFile] = useState(null);
+  const [comskipUploadLoading, setComskipUploadLoading] = useState(false);
+  const [comskipConfig, setComskipConfig] = useState({
+    path: '',
+    exists: false,
+  });
+
   // UI / local storage settings
   const [tableSize, setTableSize] = useLocalStorage('table-size', 'default');
   const [timeFormat, setTimeFormat] = useLocalStorage('time-format', '12h');
   const [dateFormat, setDateFormat] = useLocalStorage('date-format', 'mdy');
+  const [timeZone, setTimeZone] = useLocalStorage(
+    'time-zone',
+    getDefaultTimeZone()
+  );
+  const timeZoneOptions = useMemo(
+    () => buildTimeZoneOptions(timeZone),
+    [timeZone]
+  );
+  const timeZoneSyncedRef = useRef(false);
+
+  const persistTimeZoneSetting = useCallback(
+    async (tzValue) => {
+      try {
+        const existing = settings['system-time-zone'];
+        if (existing && existing.id) {
+          await API.updateSetting({ ...existing, value: tzValue });
+        } else {
+          await API.createSetting({
+            key: 'system-time-zone',
+            name: 'System Time Zone',
+            value: tzValue,
+          });
+        }
+      } catch (error) {
+        console.error('Failed to persist time zone setting', error);
+        notifications.show({
+          title: 'Failed to update time zone',
+          message: 'Could not save the selected time zone. Please try again.',
+          color: 'red',
+        });
+      }
+    },
+    [settings]
+  );
 
   const regionChoices = REGION_CHOICES;
 
@@ -78,6 +264,7 @@ const SettingsPage = () => {
       'dvr-tv-fallback-template': '',
       'dvr-movie-fallback-template': '',
       'dvr-comskip-enabled': false,
+      'dvr-comskip-custom-path': '',
       'dvr-pre-offset-minutes': 0,
       'dvr-post-offset-minutes': 0,
     },
@@ -92,14 +279,17 @@ const SettingsPage = () => {
   const networkAccessForm = useForm({
     mode: 'controlled',
     initialValues: Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
-      acc[key] = '0.0.0.0/0';
+      acc[key] = '0.0.0.0/0,::0/0';
       return acc;
     }, {}),
     validate: Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
       acc[key] = (value) => {
         const cidrs = value.split(',');
+        const ipv4CidrRegex = /^([0-9]{1,3}\.){3}[0-9]{1,3}\/\d+$/;
+        const ipv6CidrRegex =
+          /(?:(?:(?:[A-F0-9]{1,4}:){6}|(?=(?:[A-F0-9]{0,4}:){0,6}(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![:.\w]))(([0-9A-F]{1,4}:){0,5}|:)((:[0-9A-F]{1,4}){1,5}:|:)|::(?:[A-F0-9]{1,4}:){5})(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}|(?=(?:[A-F0-9]{0,4}:){0,7}[A-F0-9]{0,4}(?![:.\w]))(([0-9A-F]{1,4}:){1,7}|:)((:[0-9A-F]{1,4}){1,7}|:)|(?:[A-F0-9]{1,4}:){7}:|:(:[A-F0-9]{1,4}){7})(?![:.\w])\/(?:12[0-8]|1[01][0-9]|[1-9]?[0-9])/;
         for (const cidr of cidrs) {
-          if (cidr.match(/^([0-9]{1,3}\.){3}[0-9]{1,3}\/\d+$/)) {
+          if (cidr.match(ipv4CidrRegex) || cidr.match(ipv6CidrRegex)) {
             continue;
           }
 
@@ -137,7 +327,8 @@ const SettingsPage = () => {
           let val = null;
           switch (key) {
             case 'm3u-hash-key':
-              val = value.value.split(',');
+              // Split comma-separated string, filter out empty strings
+              val = value.value ? value.value.split(',').filter((v) => v) : [];
               break;
             case 'dvr-pre-offset-minutes':
             case 'dvr-post-offset-minutes':
@@ -156,13 +347,19 @@ const SettingsPage = () => {
       );
 
       form.setValues(formValues);
+      if (formValues['dvr-comskip-custom-path']) {
+        setComskipConfig((prev) => ({
+          path: formValues['dvr-comskip-custom-path'],
+          exists: prev.exists,
+        }));
+      }
 
       const networkAccessSettings = JSON.parse(
         settings['network-access'].value || '{}'
       );
       networkAccessForm.setValues(
         Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
-          acc[key] = networkAccessSettings[key] || '0.0.0.0/0';
+          acc[key] = networkAccessSettings[key] || '0.0.0.0/0,::0/0';
           return acc;
         }, {})
       );
@@ -175,10 +372,51 @@ const SettingsPage = () => {
           console.error('Error parsing proxy settings:', error);
         }
       }
+
+      const tzSetting = settings['system-time-zone'];
+      if (tzSetting?.value) {
+        timeZoneSyncedRef.current = true;
+        setTimeZone((prev) =>
+          prev === tzSetting.value ? prev : tzSetting.value
+        );
+      } else if (!timeZoneSyncedRef.current && timeZone) {
+        timeZoneSyncedRef.current = true;
+        persistTimeZoneSetting(timeZone);
+      }
     }
-  }, [settings]);
+  }, [settings, timeZone, setTimeZone, persistTimeZoneSetting]);
+
+  useEffect(() => {
+    const loadComskipConfig = async () => {
+      try {
+        const response = await API.getComskipConfig();
+        if (response) {
+          setComskipConfig({
+            path: response.path || '',
+            exists: Boolean(response.exists),
+          });
+          if (response.path) {
+            form.setFieldValue('dvr-comskip-custom-path', response.path);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load comskip config', error);
+      }
+    };
+    loadComskipConfig();
+  }, []);
+
+  // Clear success states when switching accordion panels
+  useEffect(() => {
+    setGeneralSettingsSaved(false);
+    setProxySettingsSaved(false);
+    setNetworkAccessSaved(false);
+    setRehashSuccess(false);
+  }, [accordianValue]);
 
   const onSubmit = async () => {
+    setGeneralSettingsSaved(false);
+
     const values = form.getValues();
     const changedSettings = {};
     let m3uHashKeyChanged = false;
@@ -186,12 +424,26 @@ const SettingsPage = () => {
     for (const settingKey in values) {
       // Only compare against existing value if the setting exists
       const existing = settings[settingKey];
+
+      // Convert array values (like m3u-hash-key) to comma-separated strings
+      let stringValue;
+      if (Array.isArray(values[settingKey])) {
+        stringValue = values[settingKey].join(',');
+      } else {
+        stringValue = `${values[settingKey]}`;
+      }
+
+      // Skip empty values to avoid validation errors
+      if (!stringValue) {
+        continue;
+      }
+
       if (!existing) {
         // Create new setting on save
-        changedSettings[settingKey] = `${values[settingKey]}`;
-      } else if (String(values[settingKey]) !== String(existing.value)) {
+        changedSettings[settingKey] = stringValue;
+      } else if (stringValue !== String(existing.value)) {
         // If the user changed the setting's value from what's in the DB:
-        changedSettings[settingKey] = `${values[settingKey]}`;
+        changedSettings[settingKey] = stringValue;
 
         // Check if M3U hash key was changed
         if (settingKey === 'm3u-hash-key') {
@@ -202,26 +454,44 @@ const SettingsPage = () => {
 
     // If M3U hash key changed, show warning (unless suppressed)
     if (m3uHashKeyChanged && !isWarningSuppressed('rehash-streams')) {
+      // Store the changed settings before showing dialog
+      setPendingChangedSettings(changedSettings);
       setRehashDialogType('save'); // Set dialog type to save
       setRehashConfirmOpen(true);
       return;
     }
 
     // Update each changed setting in the backend (create if missing)
-    for (const updatedKey in changedSettings) {
-      const existing = settings[updatedKey];
-      if (existing && existing.id) {
-        await API.updateSetting({
-          ...existing,
-          value: changedSettings[updatedKey],
-        });
-      } else {
-        await API.createSetting({
-          key: updatedKey,
-          name: updatedKey.replace(/-/g, ' '),
-          value: changedSettings[updatedKey],
-        });
+    try {
+      for (const updatedKey in changedSettings) {
+        const existing = settings[updatedKey];
+        if (existing && existing.id) {
+          const result = await API.updateSetting({
+            ...existing,
+            value: changedSettings[updatedKey],
+          });
+          // API functions return undefined on error
+          if (!result) {
+            throw new Error('Failed to update setting');
+          }
+        } else {
+          const result = await API.createSetting({
+            key: updatedKey,
+            name: updatedKey.replace(/-/g, ' '),
+            value: changedSettings[updatedKey],
+          });
+          // API functions return undefined on error
+          if (!result) {
+            throw new Error('Failed to create setting');
+          }
+        }
       }
+
+      setGeneralSettingsSaved(true);
+    } catch (error) {
+      // Error notifications are already shown by API functions
+      // Just don't show the success message
+      console.error('Error saving settings:', error);
     }
   };
 
@@ -251,12 +521,52 @@ const SettingsPage = () => {
   const onProxySettingsSubmit = async () => {
     setProxySettingsSaved(false);
 
-    await API.updateSetting({
-      ...settings['proxy-settings'],
-      value: JSON.stringify(proxySettingsForm.getValues()),
-    });
+    try {
+      const result = await API.updateSetting({
+        ...settings['proxy-settings'],
+        value: JSON.stringify(proxySettingsForm.getValues()),
+      });
+      // API functions return undefined on error
+      if (result) {
+        setProxySettingsSaved(true);
+      }
+    } catch (error) {
+      // Error notifications are already shown by API functions
+      console.error('Error saving proxy settings:', error);
+    }
+  };
 
-    setProxySettingsSaved(true);
+  const onComskipUpload = async () => {
+    if (!comskipFile) {
+      return;
+    }
+
+    setComskipUploadLoading(true);
+    try {
+      const response = await API.uploadComskipIni(comskipFile);
+      if (response?.path) {
+        notifications.show({
+          title: 'comskip.ini uploaded',
+          message: response.path,
+          autoClose: 3000,
+          color: 'green',
+        });
+        form.setFieldValue('dvr-comskip-custom-path', response.path);
+        useSettingsStore.getState().updateSetting({
+          ...(settings['dvr-comskip-custom-path'] || {
+            key: 'dvr-comskip-custom-path',
+            name: 'DVR Comskip Custom Path',
+          }),
+          value: response.path,
+        });
+        setComskipConfig({ path: response.path, exists: true });
+      }
+    } catch (error) {
+      console.error('Failed to upload comskip.ini', error);
+    } finally {
+      setComskipUploadLoading(false);
+      setComskipFile(null);
+    }
   };
 
   const resetProxySettingsToDefaults = () => {
@@ -292,36 +602,64 @@ const SettingsPage = () => {
   const onUISettingsChange = (name, value) => {
     switch (name) {
       case 'table-size':
-        setTableSize(value);
+        if (value) setTableSize(value);
         break;
       case 'time-format':
-        setTimeFormat(value);
+        if (value) setTimeFormat(value);
         break;
       case 'date-format':
-        setDateFormat(value);
+        if (value) setDateFormat(value);
+        break;
+      case 'time-zone':
+        if (value) {
+          setTimeZone(value);
+          persistTimeZoneSetting(value);
+        }
         break;
     }
   };
 
   const executeSettingsSaveAndRehash = async () => {
     setRehashConfirmOpen(false);
+    setGeneralSettingsSaved(false);
 
-    // First save the settings
-    const values = form.getValues();
-    const changedSettings = {};
+    // Use the stored pending values that were captured before the dialog was shown
+    const changedSettings = pendingChangedSettings || {};
 
-    for (const settingKey in values) {
-      if (String(values[settingKey]) !== String(settings[settingKey].value)) {
-        changedSettings[settingKey] = `${values[settingKey]}`;
+    // Update each changed setting in the backend (create if missing)
+    try {
+      for (const updatedKey in changedSettings) {
+        const existing = settings[updatedKey];
+        if (existing && existing.id) {
+          const result = await API.updateSetting({
+            ...existing,
+            value: changedSettings[updatedKey],
+          });
+          // API functions return undefined on error
+          if (!result) {
+            throw new Error('Failed to update setting');
+          }
+        } else {
+          const result = await API.createSetting({
+            key: updatedKey,
+            name: updatedKey.replace(/-/g, ' '),
+            value: changedSettings[updatedKey],
+          });
+          // API functions return undefined on error
+          if (!result) {
+            throw new Error('Failed to create setting');
+          }
+        }
       }
-    }
 
-    // Update each changed setting in the backend
-    for (const updatedKey in changedSettings) {
-      await API.updateSetting({
-        ...settings[updatedKey],
-        value: changedSettings[updatedKey],
-      });
+      // Clear the pending values
+      setPendingChangedSettings(null);
+      setGeneralSettingsSaved(true);
+    } catch (error) {
+      // Error notifications are already shown by API functions
+      // Just don't show the success message
+      console.error('Error saving settings:', error);
+      setPendingChangedSettings(null);
     }
   };
 
@@ -402,7 +740,7 @@ const SettingsPage = () => {
                 data={[
                   {
                     value: '12h',
-                    label: '12h hour time',
+                    label: '12 hour time',
                   },
                   {
                     value: '24h',
@@ -425,6 +763,14 @@ const SettingsPage = () => {
                   },
                 ]}
               />
+              <Select
+                label="Time zone"
+                searchable
+                nothingFoundMessage="No matches"
+                value={timeZone}
+                onChange={(val) => onUISettingsChange('time-zone', val)}
+                data={timeZoneOptions}
+              />
             </Accordion.Panel>
           </Accordion.Item>
 
@@ -435,6 +781,13 @@ const SettingsPage = () => {
                 <Accordion.Panel>
                   <form onSubmit={form.onSubmit(onSubmit)}>
                     <Stack gap="sm">
+                      {generalSettingsSaved && (
+                        <Alert
+                          variant="light"
+                          color="green"
+                          title="Saved Successfully"
+                        />
+                      )}
                       <Switch
                         label="Enable Comskip (remove commercials after recording)"
                         {...form.getInputProps('dvr-comskip-enabled', {
@@ -450,6 +803,46 @@ const SettingsPage = () => {
                           'dvr-comskip-enabled'
                         }
                       />
+                      <TextInput
+                        label="Custom comskip.ini path"
+                        description="Leave blank to use the built-in defaults."
+                        placeholder="/app/docker/comskip.ini"
+                        {...form.getInputProps('dvr-comskip-custom-path')}
+                        key={form.key('dvr-comskip-custom-path')}
+                        id={
+                          settings['dvr-comskip-custom-path']?.id ||
+                          'dvr-comskip-custom-path'
+                        }
+                        name={
+                          settings['dvr-comskip-custom-path']?.key ||
+                          'dvr-comskip-custom-path'
+                        }
+                      />
+                      <Group align="flex-end" gap="sm">
+                        <FileInput
+                          placeholder="Select comskip.ini"
+                          accept=".ini"
+                          value={comskipFile}
+                          onChange={setComskipFile}
+                          clearable
+                          disabled={comskipUploadLoading}
+                          style={{ flex: 1 }}
+                        />
+                        <Button
+                          variant="light"
+                          onClick={onComskipUpload}
+                          disabled={!comskipFile || comskipUploadLoading}
+                        >
+                          {comskipUploadLoading
+                            ? 'Uploading...'
+                            : 'Upload comskip.ini'}
+                        </Button>
+                      </Group>
+                      <Text size="xs" c="dimmed">
+                        {comskipConfig.exists && comskipConfig.path
+                          ? `Using ${comskipConfig.path}`
+                          : 'No custom comskip.ini uploaded.'}
+                      </Text>
                       <NumberInput
                         label="Start early (minutes)"
                         description="Begin recording this many minutes before the scheduled start."
@@ -558,6 +951,13 @@ const SettingsPage = () => {
                 <Accordion.Control>Stream Settings</Accordion.Control>
                 <Accordion.Panel>
                   <form onSubmit={form.onSubmit(onSubmit)}>
+                    {generalSettingsSaved && (
+                      <Alert
+                        variant="light"
+                        color="green"
+                        title="Saved Successfully"
+                      />
+                    )}
                     <Select
                       searchable
                       {...form.getInputProps('default-user-agent')}
@@ -652,6 +1052,10 @@ const SettingsPage = () => {
                           value: 'tvg_id',
                           label: 'TVG-ID',
                         },
+                        {
+                          value: 'm3u_id',
+                          label: 'M3U ID',
+                        },
                       ]}
                       {...form.getInputProps('m3u-hash-key')}
                       key={form.key('m3u-hash-key')}
@@ -688,6 +1092,46 @@ const SettingsPage = () => {
                       </Button>
                     </Flex>
                   </form>
+                </Accordion.Panel>
+              </Accordion.Item>
+
+              <Accordion.Item value="system-settings">
+                <Accordion.Control>System Settings</Accordion.Control>
+                <Accordion.Panel>
+                  <Stack gap="md">
+                    {generalSettingsSaved && (
+                      <Alert
+                        variant="light"
+                        color="green"
+                        title="Saved Successfully"
+                      />
+                    )}
+                    <Text size="sm" c="dimmed">
+                      Configure how many system events (channel start/stop,
+                      buffering, etc.) to keep in the database. Events are
+                      displayed on the Stats page.
+                    </Text>
+                    <NumberInput
+                      label="Maximum System Events"
+                      description="Number of events to retain (minimum: 10, maximum: 1000)"
+                      value={form.values['max-system-events'] || 100}
+                      onChange={(value) => {
+                        form.setFieldValue('max-system-events', value);
+                      }}
+                      min={10}
+                      max={1000}
+                      step={10}
+                    />
+                    <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+                      <Button
+                        onClick={form.onSubmit(onSubmit)}
+                        disabled={form.submitting}
+                        variant="default"
+                      >
+                        Save
+                      </Button>
+                    </Flex>
+                  </Stack>
                 </Accordion.Panel>
               </Accordion.Item>
 
@@ -880,6 +1324,8 @@ const SettingsPage = () => {
         onClose={() => {
           setRehashConfirmOpen(false);
           setRehashDialogType(null);
+          // Clear pending values when dialog is cancelled
+          setPendingChangedSettings(null);
         }}
         onConfirm={handleRehashConfirm}
         title={

@@ -55,7 +55,7 @@ class Stream(models.Model):
     """
 
     name = models.CharField(max_length=255, default="Default Stream")
-    url = models.URLField(max_length=2000, blank=True, null=True)
+    url = models.URLField(max_length=4096, blank=True, null=True)
     m3u_account = models.ForeignKey(
         M3UAccount,
         on_delete=models.CASCADE,
@@ -119,11 +119,11 @@ class Stream(models.Model):
         return self.name or self.url or f"Stream ID {self.id}"
 
     @classmethod
-    def generate_hash_key(cls, name, url, tvg_id, keys=None):
+    def generate_hash_key(cls, name, url, tvg_id, keys=None, m3u_id=None):
         if keys is None:
             keys = CoreSettings.get_m3u_hash_key().split(",")
 
-        stream_parts = {"name": name, "url": url, "tvg_id": tvg_id}
+        stream_parts = {"name": name, "url": url, "tvg_id": tvg_id, "m3u_id": m3u_id}
 
         hash_parts = {key: stream_parts[key] for key in keys if key in stream_parts}
 
@@ -152,8 +152,14 @@ class Stream(models.Model):
             stream = cls.objects.create(**fields_to_update)
             return stream, True  # True means it was created
 
-    # @TODO: honor stream's stream profile
     def get_stream_profile(self):
+        """
+        Get the stream profile for this stream.
+        Uses the stream's own profile if set, otherwise returns the default.
+        """
+        if self.stream_profile:
+            return self.stream_profile
+
         stream_profile = StreamProfile.objects.get(
             id=CoreSettings.get_default_stream_profile_id()
         )
@@ -301,6 +307,15 @@ class Channel(models.Model):
         blank=True,
         related_name="auto_created_channels",
         help_text="The M3U account that auto-created this channel"
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Timestamp when this channel was created"
+    )
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        help_text="Timestamp when this channel was last updated"
     )
 
     def clean(self):
@@ -601,3 +616,35 @@ class Recording(models.Model):
 
     def __str__(self):
         return f"{self.channel.name} - {self.start_time} to {self.end_time}"
+
+
+class RecurringRecordingRule(models.Model):
+    """Rule describing a recurring manual DVR schedule."""
+
+    channel = models.ForeignKey(
+        "Channel",
+        on_delete=models.CASCADE,
+        related_name="recurring_rules",
+    )
+    days_of_week = models.JSONField(default=list)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    enabled = models.BooleanField(default=True)
+    name = models.CharField(max_length=255, blank=True)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["channel", "start_time"]
+
+    def __str__(self):
+        channel_name = getattr(self.channel, "name", str(self.channel_id))
+        return f"Recurring rule for {channel_name}"
+
+    def cleaned_days(self):
+        try:
+            return sorted({int(d) for d in (self.days_of_week or []) if 0 <= int(d) <= 6})
+        except Exception:
+            return []

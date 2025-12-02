@@ -24,7 +24,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .models import EPGSource, EPGData, ProgramData
-from core.utils import acquire_task_lock, release_task_lock, send_websocket_update, cleanup_memory
+from core.utils import acquire_task_lock, release_task_lock, send_websocket_update, cleanup_memory, log_system_event
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +133,9 @@ def delete_epg_refresh_task_by_id(epg_id):
 @shared_task
 def refresh_all_epg_data():
     logger.info("Starting refresh_epg_data task.")
-    active_sources = EPGSource.objects.filter(is_active=True)
-    logger.debug(f"Found {active_sources.count()} active EPGSource(s).")
+    # Exclude dummy EPG sources from refresh - they don't need refreshing
+    active_sources = EPGSource.objects.filter(is_active=True).exclude(source_type='dummy')
+    logger.debug(f"Found {active_sources.count()} active EPGSource(s) (excluding dummy EPGs).")
 
     for source in active_sources:
         refresh_epg_data(source.id)
@@ -177,6 +178,13 @@ def refresh_epg_data(source_id):
             logger.info(f"EPG source {source_id} is not active. Skipping.")
             release_task_lock('refresh_epg_data', source_id)
             # Force garbage collection before exit
+            gc.collect()
+            return
+
+        # Skip refresh for dummy EPG sources - they don't need refreshing
+        if source.source_type == 'dummy':
+            logger.info(f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})")
+            release_task_lock('refresh_epg_data', source_id)
             gc.collect()
             return
 
@@ -877,7 +885,7 @@ def parse_channels_only(source):
 
             # Change iterparse to look for both channel and programme elements
             logger.debug(f"Creating iterparse context for channels and programmes")
-            channel_parser = etree.iterparse(source_file, events=('end',), tag=('channel', 'programme'), remove_blank_text=True)
+            channel_parser = etree.iterparse(source_file, events=('end',), tag=('channel', 'programme'), remove_blank_text=True, recover=True)
             if process:
                 logger.debug(f"[parse_channels_only] Memory after creating iterparse: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
@@ -1149,6 +1157,12 @@ def parse_programs_for_tvg_id(epg_id):
         epg = EPGData.objects.get(id=epg_id)
         epg_source = epg.epg_source
 
+        # Skip program parsing for dummy EPG sources - they don't have program data files
+        if epg_source.source_type == 'dummy':
+            logger.info(f"Skipping program parsing for dummy EPG source {epg_source.name} (ID: {epg_id})")
+            release_task_lock('parse_epg_programs', epg_id)
+            return
+
         if not Channel.objects.filter(epg_data=epg).exists():
             logger.info(f"No channels matched to EPG {epg.tvg_id}")
             release_task_lock('parse_epg_programs', epg_id)
@@ -1242,7 +1256,7 @@ def parse_programs_for_tvg_id(epg_id):
             source_file = open(file_path, 'rb')
 
             # Stream parse the file using lxml's iterparse
-            program_parser = etree.iterparse(source_file, events=('end',), tag='programme',  remove_blank_text=True)
+            program_parser = etree.iterparse(source_file, events=('end',), tag='programme',  remove_blank_text=True, recover=True)
 
             for _, elem in program_parser:
                 if elem.get('channel') == epg.tvg_id:
@@ -1481,6 +1495,15 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         epg_source.last_message = f"Successfully processed {program_count} programs across {channel_count} channels. Updated: {updated_count}."
         epg_source.updated_at = timezone.now()
         epg_source.save(update_fields=['status', 'last_message', 'updated_at'])
+
+        # Log system event for EPG refresh
+        log_system_event(
+            event_type='epg_refresh',
+            source_name=epg_source.name,
+            programs=program_count,
+            channels=channel_count,
+            updated=updated_count,
+        )
 
         # Send completion notification with status
         send_epg_update(epg_source.id, "parsing_programs", 100,
@@ -1943,3 +1966,20 @@ def detect_file_format(file_path=None, content=None):
 
     # If we reach here, we couldn't reliably determine the format
     return format_type, is_compressed, file_extension
+
+
+def generate_dummy_epg(source):
+    """
+    DEPRECATED: This function is no longer used.
+
+    Dummy EPG programs are now generated on-demand when they are requested
+    (during XMLTV export or EPG grid display), rather than being pre-generated
+    and stored in the database.
+
+    See: apps/output/views.py - generate_custom_dummy_programs()
+
+    This function remains for backward compatibility but should not be called.
+    """
+    logger.warning(f"generate_dummy_epg() called for {source.name} but this function is deprecated. "
+                   f"Dummy EPG programs are now generated on-demand.")
+    return True

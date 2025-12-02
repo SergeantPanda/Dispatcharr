@@ -1,4 +1,6 @@
 import json
+from datetime import datetime
+
 from rest_framework import serializers
 from .models import (
     Stream,
@@ -10,6 +12,7 @@ from .models import (
     ChannelProfile,
     ChannelProfileMembership,
     Recording,
+    RecurringRecordingRule,
 )
 from apps.epg.serializers import EPGDataSerializer
 from core.models import StreamProfile
@@ -61,75 +64,21 @@ class LogoSerializer(serializers.ModelSerializer):
         return reverse("api:channels:logo-cache", args=[obj.id])
 
     def get_channel_count(self, obj):
-        """Get the number of channels, movies, and series using this logo"""
-        channel_count = obj.channels.count()
-
-        # Safely get movie count
-        try:
-            movie_count = obj.movie.count() if hasattr(obj, 'movie') else 0
-        except AttributeError:
-            movie_count = 0
-
-        # Safely get series count
-        try:
-            series_count = obj.series.count() if hasattr(obj, 'series') else 0
-        except AttributeError:
-            series_count = 0
-
-        return channel_count + movie_count + series_count
+        """Get the number of channels using this logo"""
+        return obj.channels.count()
 
     def get_is_used(self, obj):
-        """Check if this logo is used by any channels, movies, or series"""
-        # Check if used by channels
-        if obj.channels.exists():
-            return True
-
-        # Check if used by movies (handle case where VOD app might not be available)
-        try:
-            if hasattr(obj, 'movie') and obj.movie.exists():
-                return True
-        except AttributeError:
-            pass
-
-        # Check if used by series (handle case where VOD app might not be available)
-        try:
-            if hasattr(obj, 'series') and obj.series.exists():
-                return True
-        except AttributeError:
-            pass
-
-        return False
+        """Check if this logo is used by any channels"""
+        return obj.channels.exists()
 
     def get_channel_names(self, obj):
-        """Get the names of channels, movies, and series using this logo (limited to first 5)"""
+        """Get the names of channels using this logo (limited to first 5)"""
         names = []
 
         # Get channel names
         channels = obj.channels.all()[:5]
         for channel in channels:
             names.append(f"Channel: {channel.name}")
-
-        # Get movie names (only if we haven't reached limit)
-        if len(names) < 5:
-            try:
-                if hasattr(obj, 'movie'):
-                    remaining_slots = 5 - len(names)
-                    movies = obj.movie.all()[:remaining_slots]
-                    for movie in movies:
-                        names.append(f"Movie: {movie.name}")
-            except AttributeError:
-                pass
-
-        # Get series names (only if we haven't reached limit)
-        if len(names) < 5:
-            try:
-                if hasattr(obj, 'series'):
-                    remaining_slots = 5 - len(names)
-                    series = obj.series.all()[:remaining_slots]
-                    for series_item in series:
-                        names.append(f"Series: {series_item.name}")
-            except AttributeError:
-                pass
 
         # Calculate total count for "more" message
         total_count = self.get_channel_count(obj)
@@ -345,8 +294,17 @@ class ChannelSerializer(serializers.ModelSerializer):
 
         if include_streams:
             self.fields["streams"] = serializers.SerializerMethodField()
-
-        return super().to_representation(instance)
+            return super().to_representation(instance)
+        else:
+            # Fix: For PATCH/PUT responses, ensure streams are ordered
+            representation = super().to_representation(instance)
+            if "streams" in representation:
+                representation["streams"] = list(
+                    instance.streams.all()
+                    .order_by("channelstream__order")
+                    .values_list("id", flat=True)
+                )
+            return representation
 
     def get_logo(self, obj):
         return LogoSerializer(obj.logo).data
@@ -454,6 +412,13 @@ class RecordingSerializer(serializers.ModelSerializer):
         start_time = data.get("start_time")
         end_time = data.get("end_time")
 
+        if start_time and timezone.is_naive(start_time):
+            start_time = timezone.make_aware(start_time, timezone.get_current_timezone())
+            data["start_time"] = start_time
+        if end_time and timezone.is_naive(end_time):
+            end_time = timezone.make_aware(end_time, timezone.get_current_timezone())
+            data["end_time"] = end_time
+
         # If this is an EPG-based recording (program provided), apply global pre/post offsets
         try:
             cp = data.get("custom_properties") or {}
@@ -497,3 +462,56 @@ class RecordingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("End time must be after start time.")
 
         return data
+
+
+class RecurringRecordingRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecurringRecordingRule
+        fields = "__all__"
+        read_only_fields = ["created_at", "updated_at"]
+
+    def validate_days_of_week(self, value):
+        if not value:
+            raise serializers.ValidationError("Select at least one day of the week")
+        cleaned = []
+        for entry in value:
+            try:
+                iv = int(entry)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError("Days of week must be integers 0-6")
+            if iv < 0 or iv > 6:
+                raise serializers.ValidationError("Days of week must be between 0 (Monday) and 6 (Sunday)")
+            cleaned.append(iv)
+        return sorted(set(cleaned))
+
+    def validate(self, attrs):
+        start = attrs.get("start_time") or getattr(self.instance, "start_time", None)
+        end = attrs.get("end_time") or getattr(self.instance, "end_time", None)
+        start_date = attrs.get("start_date") if "start_date" in attrs else getattr(self.instance, "start_date", None)
+        end_date = attrs.get("end_date") if "end_date" in attrs else getattr(self.instance, "end_date", None)
+        if start_date is None:
+            existing_start = getattr(self.instance, "start_date", None)
+            if existing_start is None:
+                raise serializers.ValidationError("Start date is required")
+        if start_date and end_date and end_date < start_date:
+            raise serializers.ValidationError("End date must be on or after start date")
+        if end_date is None:
+            existing_end = getattr(self.instance, "end_date", None)
+            if existing_end is None:
+                raise serializers.ValidationError("End date is required")
+        if start and end and start_date and end_date:
+            start_dt = datetime.combine(start_date, start)
+            end_dt = datetime.combine(end_date, end)
+            if end_dt <= start_dt:
+                raise serializers.ValidationError("End datetime must be after start datetime")
+        elif start and end and end == start:
+            raise serializers.ValidationError("End time must be different from start time")
+        # Normalize empty strings to None for dates
+        if attrs.get("end_date") == "":
+            attrs["end_date"] = None
+        if attrs.get("start_date") == "":
+            attrs["start_date"] = None
+        return super().validate(attrs)
+
+    def create(self, validated_data):
+        return super().create(validated_data)

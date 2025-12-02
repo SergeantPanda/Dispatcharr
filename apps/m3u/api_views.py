@@ -81,6 +81,13 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         account_type = response.data.get("account_type")
         account_id = response.data.get("id")
 
+        # Notify frontend that a new playlist was created
+        from core.utils import send_websocket_update
+        send_websocket_update('updates', 'update', {
+            'type': 'playlist_created',
+            'playlist_id': account_id
+        })
+
         if account_type == M3UAccount.Types.XC:
             refresh_m3u_groups(account_id)
 
@@ -145,6 +152,46 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             and not old_vod_enabled
             and new_vod_enabled
         ):
+            # Create Uncategorized categories immediately so they're available in the UI
+            from apps.vod.models import VODCategory, M3UVODCategoryRelation
+
+            # Create movie Uncategorized category
+            movie_category, _ = VODCategory.objects.get_or_create(
+                name="Uncategorized",
+                category_type="movie",
+                defaults={}
+            )
+
+            # Create series Uncategorized category
+            series_category, _ = VODCategory.objects.get_or_create(
+                name="Uncategorized",
+                category_type="series",
+                defaults={}
+            )
+
+            # Create relations for both categories (disabled by default until first refresh)
+            account_custom_props = instance.custom_properties or {}
+            auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+
+            M3UVODCategoryRelation.objects.get_or_create(
+                category=movie_category,
+                m3u_account=instance,
+                defaults={
+                    'enabled': auto_enable_new,
+                    'custom_properties': {}
+                }
+            )
+
+            M3UVODCategoryRelation.objects.get_or_create(
+                category=series_category,
+                m3u_account=instance,
+                defaults={
+                    'enabled': auto_enable_new,
+                    'custom_properties': {}
+                }
+            )
+
+            # Trigger full VOD refresh
             from apps.vod.tasks import refresh_vod_content
 
             refresh_vod_content.delay(instance.id)
