@@ -1,4 +1,5 @@
 # core/models.py
+from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
 from django.core.exceptions import ValidationError
@@ -158,8 +159,10 @@ DVR_TV_FALLBACK_DIR_KEY = slugify("DVR TV Fallback Dir")
 DVR_TV_FALLBACK_TEMPLATE_KEY = slugify("DVR TV Fallback Template")
 DVR_MOVIE_FALLBACK_TEMPLATE_KEY = slugify("DVR Movie Fallback Template")
 DVR_COMSKIP_ENABLED_KEY = slugify("DVR Comskip Enabled")
+DVR_COMSKIP_CUSTOM_PATH_KEY = slugify("DVR Comskip Custom Path")
 DVR_PRE_OFFSET_MINUTES_KEY = slugify("DVR Pre-Offset Minutes")
 DVR_POST_OFFSET_MINUTES_KEY = slugify("DVR Post-Offset Minutes")
+SYSTEM_TIME_ZONE_KEY = slugify("System Time Zone")
 
 
 class CoreSettings(models.Model):
@@ -275,6 +278,27 @@ class CoreSettings(models.Model):
             return False
 
     @classmethod
+    def get_dvr_comskip_custom_path(cls):
+        """Return configured comskip.ini path or empty string if unset."""
+        try:
+            return cls.objects.get(key=DVR_COMSKIP_CUSTOM_PATH_KEY).value
+        except cls.DoesNotExist:
+            return ""
+
+    @classmethod
+    def set_dvr_comskip_custom_path(cls, path: str | None):
+        """Persist the comskip.ini path setting, normalizing nulls to empty string."""
+        value = (path or "").strip()
+        obj, _ = cls.objects.get_or_create(
+            key=DVR_COMSKIP_CUSTOM_PATH_KEY,
+            defaults={"name": "DVR Comskip Custom Path", "value": value},
+        )
+        if obj.value != value:
+            obj.value = value
+            obj.save(update_fields=["value"])
+        return value
+
+    @classmethod
     def get_dvr_pre_offset_minutes(cls):
         """Minutes to start recording before scheduled start (default 0)."""
         try:
@@ -303,6 +327,30 @@ class CoreSettings(models.Model):
                 return 0
 
     @classmethod
+    def get_system_time_zone(cls):
+        """Return configured system time zone or fall back to Django settings."""
+        try:
+            value = cls.objects.get(key=SYSTEM_TIME_ZONE_KEY).value
+            if value:
+                return value
+        except cls.DoesNotExist:
+            pass
+        return getattr(settings, "TIME_ZONE", "UTC") or "UTC"
+
+    @classmethod
+    def set_system_time_zone(cls, tz_name: str | None):
+        """Persist the desired system time zone identifier."""
+        value = (tz_name or "").strip() or getattr(settings, "TIME_ZONE", "UTC") or "UTC"
+        obj, _ = cls.objects.get_or_create(
+            key=SYSTEM_TIME_ZONE_KEY,
+            defaults={"name": "System Time Zone", "value": value},
+        )
+        if obj.value != value:
+            obj.value = value
+            obj.save(update_fields=["value"])
+        return value
+
+    @classmethod
     def get_dvr_series_rules(cls):
         """Return list of series recording rules. Each: {tvg_id, title, mode: 'all'|'new'}"""
         import json
@@ -327,3 +375,48 @@ class CoreSettings(models.Model):
             return rules
         except Exception:
             return rules
+
+
+class SystemEvent(models.Model):
+    """
+    Tracks system events like channel start/stop, buffering, failover, client connections.
+    Maintains a rolling history based on max_system_events setting.
+    """
+    EVENT_TYPES = [
+        ('channel_start', 'Channel Started'),
+        ('channel_stop', 'Channel Stopped'),
+        ('channel_buffering', 'Channel Buffering'),
+        ('channel_failover', 'Channel Failover'),
+        ('channel_reconnect', 'Channel Reconnected'),
+        ('channel_error', 'Channel Error'),
+        ('client_connect', 'Client Connected'),
+        ('client_disconnect', 'Client Disconnected'),
+        ('recording_start', 'Recording Started'),
+        ('recording_end', 'Recording Ended'),
+        ('stream_switch', 'Stream Switched'),
+        ('m3u_refresh', 'M3U Refreshed'),
+        ('m3u_download', 'M3U Downloaded'),
+        ('epg_refresh', 'EPG Refreshed'),
+        ('epg_download', 'EPG Downloaded'),
+        ('login_success', 'Login Successful'),
+        ('login_failed', 'Login Failed'),
+        ('logout', 'User Logged Out'),
+        ('m3u_blocked', 'M3U Download Blocked'),
+        ('epg_blocked', 'EPG Download Blocked'),
+    ]
+
+    event_type = models.CharField(max_length=50, choices=EVENT_TYPES, db_index=True)
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    channel_id = models.UUIDField(null=True, blank=True, db_index=True)
+    channel_name = models.CharField(max_length=255, null=True, blank=True)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['-timestamp']),
+            models.Index(fields=['event_type', '-timestamp']),
+        ]
+
+    def __str__(self):
+        return f"{self.event_type} - {self.channel_name or 'N/A'} @ {self.timestamp}"

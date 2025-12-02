@@ -14,6 +14,7 @@ from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField
 from ..url_utils import get_stream_info_for_switch
+from core.utils import log_system_event
 
 logger = logging.getLogger("ts_proxy")
 
@@ -597,31 +598,40 @@ class ChannelService:
     @staticmethod
     def _update_stream_stats_in_db(stream_id, **stats):
         """Update stream stats in database"""
+        from django.db import connection
+
         try:
             from apps.channels.models import Stream
             from django.utils import timezone
-            
+
             stream = Stream.objects.get(id=stream_id)
-            
+
             # Get existing stats or create new dict
             current_stats = stream.stream_stats or {}
-            
+
             # Update with new stats
             for key, value in stats.items():
                 if value is not None:
                     current_stats[key] = value
-            
+
             # Save updated stats and timestamp
             stream.stream_stats = current_stats
             stream.stream_stats_updated_at = timezone.now()
             stream.save(update_fields=['stream_stats', 'stream_stats_updated_at'])
-            
+
             logger.debug(f"Updated stream stats in database for stream {stream_id}: {stats}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error updating stream stats in database for stream {stream_id}: {e}")
             return False
+
+        finally:
+            # Always close database connection after update
+            try:
+                connection.close()
+            except Exception:
+                pass
 
     # Helper methods for Redis operations
 
@@ -678,7 +688,7 @@ class ChannelService:
 
         switch_request = {
             "event": EventType.STREAM_SWITCH,
-            "channel_id": channel_id,
+            "channel_id": str(channel_id),
             "url": new_url,
             "user_agent": user_agent,
             "stream_id": stream_id,
@@ -691,6 +701,7 @@ class ChannelService:
             RedisKeys.events_channel(channel_id),
             json.dumps(switch_request)
         )
+
         return True
 
     @staticmethod
@@ -703,7 +714,7 @@ class ChannelService:
 
         stop_request = {
             "event": EventType.CHANNEL_STOP,
-            "channel_id": channel_id,
+            "channel_id": str(channel_id),
             "requester_worker_id": proxy_server.worker_id,
             "timestamp": time.time()
         }
@@ -726,7 +737,7 @@ class ChannelService:
 
         stop_request = {
             "event": EventType.CLIENT_STOP,
-            "channel_id": channel_id,
+            "channel_id": str(channel_id),
             "client_id": client_id,
             "requester_worker_id": proxy_server.worker_id,
             "timestamp": time.time()

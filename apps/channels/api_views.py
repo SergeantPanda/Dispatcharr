@@ -28,6 +28,7 @@ from .models import (
     ChannelProfile,
     ChannelProfileMembership,
     Recording,
+    RecurringRecordingRule,
 )
 from .serializers import (
     StreamSerializer,
@@ -38,8 +39,17 @@ from .serializers import (
     BulkChannelProfileMembershipSerializer,
     ChannelProfileSerializer,
     RecordingSerializer,
+    RecurringRecordingRuleSerializer,
 )
-from .tasks import match_epg_channels, evaluate_series_rules, evaluate_series_rules_impl, match_single_channel_epg, match_selected_channels_epg
+from .tasks import (
+    match_epg_channels,
+    evaluate_series_rules,
+    evaluate_series_rules_impl,
+    match_single_channel_epg,
+    match_selected_channels_epg,
+    sync_recurring_rule_impl,
+    purge_recurring_rule_impl,
+)
 import django_filters
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
@@ -49,8 +59,10 @@ from django.db.models import Q
 from django.http import StreamingHttpResponse, FileResponse, Http404
 from django.utils import timezone
 import mimetypes
+from django.conf import settings
 
 from rest_framework.pagination import PageNumberPagination
+
 
 
 logger = logging.getLogger(__name__)
@@ -423,8 +435,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["patch"], url_path="edit/bulk")
     def edit_bulk(self, request):
         """
-        Bulk edit channels.
-        Expects a list of channels with their updates.
+        Bulk edit channels efficiently.
+        Validates all updates first, then applies in a single transaction.
         """
         data = request.data
         if not isinstance(data, list):
@@ -433,63 +445,94 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        updated_channels = []
-        errors = []
+        # Extract IDs and validate presence
+        channel_updates = {}
+        missing_ids = []
 
-        for channel_data in data:
+        for i, channel_data in enumerate(data):
             channel_id = channel_data.get("id")
             if not channel_id:
-                errors.append({"error": "Channel ID is required"})
-                continue
+                missing_ids.append(f"Item {i}: Channel ID is required")
+            else:
+                channel_updates[channel_id] = channel_data
 
-            try:
-                channel = Channel.objects.get(id=channel_id)
+        if missing_ids:
+            return Response(
+                {"errors": missing_ids},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-                # Handle channel_group_id properly - convert string to integer if needed
-                if 'channel_group_id' in channel_data:
-                    group_id = channel_data['channel_group_id']
-                    if group_id is not None:
-                        try:
-                            channel_data['channel_group_id'] = int(group_id)
-                        except (ValueError, TypeError):
-                            channel_data['channel_group_id'] = None
+        # Fetch all channels at once (one query)
+        channels_dict = {
+            c.id: c for c in Channel.objects.filter(id__in=channel_updates.keys())
+        }
 
-                # Use the serializer to validate and update
-                serializer = ChannelSerializer(
-                    channel, data=channel_data, partial=True
-                )
+        # Validate and prepare updates
+        validated_updates = []
+        errors = []
 
-                if serializer.is_valid():
-                    updated_channel = serializer.save()
-                    updated_channels.append(updated_channel)
-                else:
-                    errors.append({
-                        "channel_id": channel_id,
-                        "errors": serializer.errors
-                    })
+        for channel_id, channel_data in channel_updates.items():
+            channel = channels_dict.get(channel_id)
 
-            except Channel.DoesNotExist:
+            if not channel:
                 errors.append({
                     "channel_id": channel_id,
                     "error": "Channel not found"
                 })
-            except Exception as e:
+                continue
+
+            # Handle channel_group_id conversion
+            if 'channel_group_id' in channel_data:
+                group_id = channel_data['channel_group_id']
+                if group_id is not None:
+                    try:
+                        channel_data['channel_group_id'] = int(group_id)
+                    except (ValueError, TypeError):
+                        channel_data['channel_group_id'] = None
+
+            # Validate with serializer
+            serializer = ChannelSerializer(
+                channel, data=channel_data, partial=True
+            )
+
+            if serializer.is_valid():
+                validated_updates.append((channel, serializer.validated_data))
+            else:
                 errors.append({
                     "channel_id": channel_id,
-                    "error": str(e)
+                    "errors": serializer.errors
                 })
 
         if errors:
             return Response(
-                {"errors": errors, "updated_count": len(updated_channels)},
+                {"errors": errors, "updated_count": len(validated_updates)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Serialize the updated channels for response
-        serialized_channels = ChannelSerializer(updated_channels, many=True).data
+        # Apply all updates in a transaction
+        with transaction.atomic():
+            for channel, validated_data in validated_updates:
+                for key, value in validated_data.items():
+                    setattr(channel, key, value)
+
+            # Single bulk_update query instead of individual saves
+            channels_to_update = [channel for channel, _ in validated_updates]
+            if channels_to_update:
+                Channel.objects.bulk_update(
+                    channels_to_update,
+                    fields=list(validated_updates[0][1].keys()),
+                    batch_size=100
+                )
+
+        # Return the updated objects (already in memory)
+        serialized_channels = ChannelSerializer(
+            [channel for channel, _ in validated_updates],
+            many=True,
+            context=self.get_serializer_context()
+        ).data
 
         return Response({
-            "message": f"Successfully updated {len(updated_channels)} channels",
+            "message": f"Successfully updated {len(validated_updates)} channels",
             "channels": serialized_channels
         })
 
@@ -551,6 +594,37 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         return Response({
             "message": f"Started EPG logo setting task for {len(channel_ids)} channels",
+            "task_id": task.id,
+            "channel_count": len(channel_ids)
+        })
+
+    @action(detail=False, methods=["post"], url_path="set-tvg-ids-from-epg")
+    def set_tvg_ids_from_epg(self, request):
+        """
+        Trigger a Celery task to set channel TVG-IDs from EPG data
+        """
+        from .tasks import set_channels_tvg_ids_from_epg
+
+        data = request.data
+        channel_ids = data.get("channel_ids", [])
+
+        if not channel_ids:
+            return Response(
+                {"error": "channel_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not isinstance(channel_ids, list):
+            return Response(
+                {"error": "channel_ids must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Start the Celery task
+        task = set_channels_tvg_ids_from_epg.delay(channel_ids)
+
+        return Response({
+            "message": f"Started EPG TVG-ID setting task for {len(channel_ids)} channels",
             "task_id": task.id,
             "channel_count": len(channel_ids)
         })
@@ -704,10 +778,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
             channel_data["channel_group_id"] = channel_group.id
 
         if stream.logo_url:
-            logo, _ = Logo.objects.get_or_create(
-                url=stream.logo_url, defaults={"name": stream.name or stream.tvg_id}
-            )
-            channel_data["logo_id"] = logo.id
+            # Import validation function
+            from apps.channels.tasks import validate_logo_url
+            validated_logo_url = validate_logo_url(stream.logo_url)
+            if validated_logo_url:
+                logo, _ = Logo.objects.get_or_create(
+                    url=validated_logo_url, defaults={"name": stream.name or stream.tvg_id}
+                )
+                channel_data["logo_id"] = logo.id
 
         # Attempt to find existing EPGs with the same tvg-id
         epgs = EPGData.objects.filter(tvg_id=stream.tvg_id)
@@ -940,19 +1018,27 @@ class ChannelViewSet(viewsets.ModelViewSet):
             channel.epg_data = epg_data
             channel.save(update_fields=["epg_data"])
 
-            # Explicitly trigger program refresh for this EPG
-            from apps.epg.tasks import parse_programs_for_tvg_id
+            # Only trigger program refresh for non-dummy EPG sources
+            status_message = None
+            if epg_data.epg_source.source_type != 'dummy':
+                # Explicitly trigger program refresh for this EPG
+                from apps.epg.tasks import parse_programs_for_tvg_id
 
-            task_result = parse_programs_for_tvg_id.delay(epg_data.id)
+                task_result = parse_programs_for_tvg_id.delay(epg_data.id)
 
-            # Prepare response with task status info
-            status_message = "EPG refresh queued"
-            if task_result.result == "Task already running":
-                status_message = "EPG refresh already in progress"
+                # Prepare response with task status info
+                status_message = "EPG refresh queued"
+                if task_result.result == "Task already running":
+                    status_message = "EPG refresh already in progress"
+
+            # Build response message
+            message = f"EPG data set to {epg_data.tvg_id} for channel {channel.name}"
+            if status_message:
+                message += f". {status_message}"
 
             return Response(
                 {
-                    "message": f"EPG data set to {epg_data.tvg_id} for channel {channel.name}. {status_message}.",
+                    "message": message,
                     "channel": self.get_serializer(channel).data,
                     "task_status": status_message,
                 }
@@ -984,8 +1070,15 @@ class ChannelViewSet(viewsets.ModelViewSet):
     def batch_set_epg(self, request):
         """Efficiently associate multiple channels with EPG data at once."""
         associations = request.data.get("associations", [])
-        channels_updated = 0
-        programs_refreshed = 0
+
+        if not associations:
+            return Response(
+                {"error": "associations list is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Extract channel IDs upfront
+        channel_updates = {}
         unique_epg_ids = set()
 
         for assoc in associations:
@@ -995,32 +1088,58 @@ class ChannelViewSet(viewsets.ModelViewSet):
             if not channel_id:
                 continue
 
-            try:
-                # Get the channel
-                channel = Channel.objects.get(id=channel_id)
+            channel_updates[channel_id] = epg_data_id
+            if epg_data_id:
+                unique_epg_ids.add(epg_data_id)
 
-                # Set the EPG data
-                channel.epg_data_id = epg_data_id
-                channel.save(update_fields=["epg_data"])
-                channels_updated += 1
+        # Batch fetch all channels (single query)
+        channels_dict = {
+            c.id: c for c in Channel.objects.filter(id__in=channel_updates.keys())
+        }
 
-                # Track unique EPG data IDs
-                if epg_data_id:
-                    unique_epg_ids.add(epg_data_id)
-
-            except Channel.DoesNotExist:
+        # Collect channels to update
+        channels_to_update = []
+        for channel_id, epg_data_id in channel_updates.items():
+            if channel_id not in channels_dict:
                 logger.error(f"Channel with ID {channel_id} not found")
-            except Exception as e:
-                logger.error(
-                    f"Error setting EPG data for channel {channel_id}: {str(e)}"
+                continue
+
+            channel = channels_dict[channel_id]
+            channel.epg_data_id = epg_data_id
+            channels_to_update.append(channel)
+
+        # Bulk update all channels (single query)
+        if channels_to_update:
+            with transaction.atomic():
+                Channel.objects.bulk_update(
+                    channels_to_update,
+                    fields=["epg_data_id"],
+                    batch_size=100
                 )
 
-        # Trigger program refresh for unique EPG data IDs
-        from apps.epg.tasks import parse_programs_for_tvg_id
+        channels_updated = len(channels_to_update)
 
+        # Trigger program refresh for unique EPG data IDs (skip dummy EPGs)
+        from apps.epg.tasks import parse_programs_for_tvg_id
+        from apps.epg.models import EPGData
+
+        # Batch fetch EPG data (single query)
+        epg_data_dict = {
+            epg.id: epg
+            for epg in EPGData.objects.filter(id__in=unique_epg_ids).select_related('epg_source')
+        }
+
+        programs_refreshed = 0
         for epg_id in unique_epg_ids:
-            parse_programs_for_tvg_id.delay(epg_id)
-            programs_refreshed += 1
+            epg_data = epg_data_dict.get(epg_id)
+            if not epg_data:
+                logger.error(f"EPGData with ID {epg_id} not found")
+                continue
+
+            # Only refresh non-dummy EPG sources
+            if epg_data.epg_source.source_type != 'dummy':
+                parse_programs_for_tvg_id.delay(epg_id)
+                programs_refreshed += 1
 
         return Response(
             {
@@ -1185,7 +1304,7 @@ class CleanupUnusedLogosAPIView(APIView):
             return [Authenticated()]
 
     @swagger_auto_schema(
-        operation_description="Delete all logos that are not used by any channels, movies, or series",
+        operation_description="Delete all channel logos that are not used by any channels",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             properties={
@@ -1199,24 +1318,11 @@ class CleanupUnusedLogosAPIView(APIView):
         responses={200: "Cleanup completed"},
     )
     def post(self, request):
-        """Delete all logos with no channel, movie, or series associations"""
+        """Delete all channel logos with no channel associations"""
         delete_files = request.data.get("delete_files", False)
 
-        # Find logos that are not used by channels, movies, or series
-        filter_conditions = Q(channels__isnull=True)
-
-        # Add VOD conditions if models are available
-        try:
-            filter_conditions &= Q(movie__isnull=True)
-        except:
-            pass
-
-        try:
-            filter_conditions &= Q(series__isnull=True)
-        except:
-            pass
-
-        unused_logos = Logo.objects.filter(filter_conditions)
+        # Find logos that are not used by any channels
+        unused_logos = Logo.objects.filter(channels__isnull=True)
         deleted_count = unused_logos.count()
         logo_names = list(unused_logos.values_list('name', flat=True))
         local_files_deleted = 0
@@ -1288,13 +1394,6 @@ class LogoViewSet(viewsets.ModelViewSet):
         # Start with basic prefetch for channels
         queryset = Logo.objects.prefetch_related('channels').order_by('name')
 
-        # Try to prefetch VOD relations if available
-        try:
-            queryset = queryset.prefetch_related('movie', 'series')
-        except:
-            # VOD app might not be available, continue without VOD prefetch
-            pass
-
         # Filter by specific IDs
         ids = self.request.query_params.getlist('ids')
         if ids:
@@ -1307,62 +1406,14 @@ class LogoViewSet(viewsets.ModelViewSet):
                 pass  # Invalid IDs, return empty queryset
                 queryset = Logo.objects.none()
 
-        # Filter by usage - now includes VOD content
+        # Filter by usage
         used_filter = self.request.query_params.get('used', None)
         if used_filter == 'true':
-            # Logo is used if it has any channels, movies, or series
-            filter_conditions = Q(channels__isnull=False)
-
-            # Add VOD conditions if models are available
-            try:
-                filter_conditions |= Q(movie__isnull=False)
-            except:
-                pass
-
-            try:
-                filter_conditions |= Q(series__isnull=False)
-            except:
-                pass
-
-            queryset = queryset.filter(filter_conditions).distinct()
-
+            # Logo is used if it has any channels
+            queryset = queryset.filter(channels__isnull=False).distinct()
         elif used_filter == 'false':
-            # Logo is unused if it has no channels, movies, or series
-            filter_conditions = Q(channels__isnull=True)
-
-            # Add VOD conditions if models are available
-            try:
-                filter_conditions &= Q(movie__isnull=True)
-            except:
-                pass
-
-            try:
-                filter_conditions &= Q(series__isnull=True)
-            except:
-                pass
-
-            queryset = queryset.filter(filter_conditions)
-
-        # Filter for channel assignment (unused + channel-used, exclude VOD-only)
-        channel_assignable = self.request.query_params.get('channel_assignable', None)
-        if channel_assignable == 'true':
-            # Include logos that are either:
-            # 1. Completely unused, OR
-            # 2. Used by channels (but may also be used by VOD)
-            # Exclude logos that are ONLY used by VOD content
-
-            unused_condition = Q(channels__isnull=True)
-            channel_used_condition = Q(channels__isnull=False)
-
-            # Add VOD conditions if models are available
-            try:
-                unused_condition &= Q(movie__isnull=True) & Q(series__isnull=True)
-            except:
-                pass
-
-            # Combine: unused OR used by channels
-            filter_conditions = unused_condition | channel_used_condition
-            queryset = queryset.filter(filter_conditions).distinct()
+            # Logo is unused if it has no channels
+            queryset = queryset.filter(channels__isnull=True)
 
         # Filter by name
         name_filter = self.request.query_params.get('name', None)
@@ -1653,6 +1704,41 @@ class BulkUpdateChannelMembershipAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class RecurringRecordingRuleViewSet(viewsets.ModelViewSet):
+    queryset = RecurringRecordingRule.objects.all().select_related("channel")
+    serializer_class = RecurringRecordingRuleSerializer
+
+    def get_permissions(self):
+        return [IsAdmin()]
+
+    def perform_create(self, serializer):
+        rule = serializer.save()
+        try:
+            sync_recurring_rule_impl(rule.id, drop_existing=True)
+        except Exception as err:
+            logger.warning(f"Failed to initialize recurring rule {rule.id}: {err}")
+        return rule
+
+    def perform_update(self, serializer):
+        rule = serializer.save()
+        try:
+            if rule.enabled:
+                sync_recurring_rule_impl(rule.id, drop_existing=True)
+            else:
+                purge_recurring_rule_impl(rule.id)
+        except Exception as err:
+            logger.warning(f"Failed to resync recurring rule {rule.id}: {err}")
+        return rule
+
+    def perform_destroy(self, instance):
+        rule_id = instance.id
+        super().perform_destroy(instance)
+        try:
+            purge_recurring_rule_impl(rule_id)
+        except Exception as err:
+            logger.warning(f"Failed to purge recordings for rule {rule_id}: {err}")
+
+
 class RecordingViewSet(viewsets.ModelViewSet):
     queryset = Recording.objects.all()
     serializer_class = RecordingSerializer
@@ -1830,6 +1916,49 @@ class RecordingViewSet(viewsets.ModelViewSet):
         _safe_remove(temp_ts_path)
 
         return response
+
+
+class ComskipConfigAPIView(APIView):
+    """Upload or inspect the custom comskip.ini used by DVR processing."""
+
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_permissions(self):
+        return [IsAdmin()]
+
+    def get(self, request):
+        path = CoreSettings.get_dvr_comskip_custom_path()
+        exists = bool(path and os.path.exists(path))
+        return Response({"path": path, "exists": exists})
+
+    def post(self, request):
+        uploaded = request.FILES.get("file") or request.FILES.get("comskip_ini")
+        if not uploaded:
+            return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        name = (uploaded.name or "").lower()
+        if not name.endswith(".ini"):
+            return Response({"error": "Only .ini files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if uploaded.size and uploaded.size > 1024 * 1024:
+            return Response({"error": "File too large (limit 1MB)"}, status=status.HTTP_400_BAD_REQUEST)
+
+        dest_dir = os.path.join(settings.MEDIA_ROOT, "comskip")
+        os.makedirs(dest_dir, exist_ok=True)
+        dest_path = os.path.join(dest_dir, "comskip.ini")
+
+        try:
+            with open(dest_path, "wb") as dest:
+                for chunk in uploaded.chunks():
+                    dest.write(chunk)
+        except Exception as e:
+            logger.error(f"Failed to save uploaded comskip.ini: {e}")
+            return Response({"error": "Unable to save file"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Persist path setting so DVR processing picks it up immediately
+        CoreSettings.set_dvr_comskip_custom_path(dest_path)
+
+        return Response({"success": True, "path": dest_path, "exists": os.path.exists(dest_path)})
 
 
 class BulkDeleteUpcomingRecordingsAPIView(APIView):

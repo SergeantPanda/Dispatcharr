@@ -7,6 +7,8 @@ import requests
 import time
 import json
 import subprocess
+import signal
+from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 import gc
 
@@ -27,6 +29,23 @@ import tempfile
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+# PostgreSQL btree index has a limit of ~2704 bytes (1/3 of 8KB page size)
+# We use 2000 as a safe maximum to account for multibyte characters
+def validate_logo_url(logo_url, max_length=2000):
+    """
+    Fast validation for logo URLs during bulk creation.
+    Returns None if URL is too long (would exceed PostgreSQL btree index limit),
+    original URL otherwise.
+
+    PostgreSQL btree indexes have a maximum size of ~2704 bytes. URLs longer than
+    this cannot be indexed and would cause database errors. These are typically
+    base64-encoded images embedded in URLs.
+    """
+    if logo_url and len(logo_url) > max_length:
+        logger.warning(f"Logo URL too long ({len(logo_url)} > {max_length}), skipping: {logo_url[:100]}...")
+        return None
+    return logo_url
 
 def send_epg_matching_progress(total_channels, matched_channels, current_channel_name="", stage="matching"):
     """
@@ -1115,6 +1134,148 @@ def reschedule_upcoming_recordings_for_offset_change():
     return reschedule_upcoming_recordings_for_offset_change_impl()
 
 
+def _notify_recordings_refresh():
+    try:
+        from core.utils import send_websocket_update
+        send_websocket_update('updates', 'update', {"success": True, "type": "recordings_refreshed"})
+    except Exception:
+        pass
+
+
+def purge_recurring_rule_impl(rule_id: int) -> int:
+    """Remove all future recordings created by a recurring rule."""
+    from django.utils import timezone
+    from .models import Recording
+
+    now = timezone.now()
+    try:
+        removed, _ = Recording.objects.filter(
+            start_time__gte=now,
+            custom_properties__rule__id=rule_id,
+        ).delete()
+    except Exception:
+        removed = 0
+    if removed:
+        _notify_recordings_refresh()
+    return removed
+
+
+def sync_recurring_rule_impl(rule_id: int, drop_existing: bool = True, horizon_days: int = 14) -> int:
+    """Ensure recordings exist for a recurring rule within the scheduling horizon."""
+    from django.utils import timezone
+    from .models import RecurringRecordingRule, Recording
+
+    rule = RecurringRecordingRule.objects.filter(pk=rule_id).select_related("channel").first()
+    now = timezone.now()
+    removed = 0
+    if drop_existing:
+        removed = purge_recurring_rule_impl(rule_id)
+
+    if not rule or not rule.enabled:
+        return 0
+
+    days = rule.cleaned_days()
+    if not days:
+        return 0
+
+    tz_name = CoreSettings.get_system_time_zone()
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        logger.warning("Invalid or unsupported time zone '%s'; falling back to Server default", tz_name)
+        tz = timezone.get_current_timezone()
+    start_limit = rule.start_date or now.date()
+    end_limit = rule.end_date
+    horizon = now + timedelta(days=horizon_days)
+    start_window = max(start_limit, now.date())
+    if drop_existing and end_limit:
+        end_window = end_limit
+    else:
+        end_window = horizon.date()
+        if end_limit and end_limit < end_window:
+            end_window = end_limit
+    if end_window < start_window:
+        return 0
+    total_created = 0
+
+    for offset in range((end_window - start_window).days + 1):
+        target_date = start_window + timedelta(days=offset)
+        if target_date.weekday() not in days:
+            continue
+        if end_limit and target_date > end_limit:
+            continue
+        try:
+            start_dt = timezone.make_aware(datetime.combine(target_date, rule.start_time), tz)
+            end_dt = timezone.make_aware(datetime.combine(target_date, rule.end_time), tz)
+        except Exception:
+            continue
+        if end_dt <= start_dt:
+            end_dt = end_dt + timedelta(days=1)
+        if start_dt <= now:
+            continue
+        exists = Recording.objects.filter(
+            channel=rule.channel,
+            start_time=start_dt,
+            custom_properties__rule__id=rule.id,
+        ).exists()
+        if exists:
+            continue
+        description = rule.name or f"Recurring recording for {rule.channel.name}"
+        cp = {
+            "rule": {
+                "type": "recurring",
+                "id": rule.id,
+                "days_of_week": days,
+                "name": rule.name or "",
+            },
+            "status": "scheduled",
+            "description": description,
+            "program": {
+                "title": rule.name or rule.channel.name,
+                "description": description,
+                "start_time": start_dt.isoformat(),
+                "end_time": end_dt.isoformat(),
+            },
+        }
+        try:
+            Recording.objects.create(
+                channel=rule.channel,
+                start_time=start_dt,
+                end_time=end_dt,
+                custom_properties=cp,
+            )
+            total_created += 1
+        except Exception as err:
+            logger.warning(f"Failed to create recurring recording for rule {rule.id}: {err}")
+
+    if removed or total_created:
+        _notify_recordings_refresh()
+
+    return total_created
+
+
+@shared_task
+def rebuild_recurring_rule(rule_id: int, horizon_days: int = 14):
+    return sync_recurring_rule_impl(rule_id, drop_existing=True, horizon_days=horizon_days)
+
+
+@shared_task
+def maintain_recurring_recordings():
+    from .models import RecurringRecordingRule
+
+    total = 0
+    for rule_id in RecurringRecordingRule.objects.filter(enabled=True).values_list("id", flat=True):
+        try:
+            total += sync_recurring_rule_impl(rule_id, drop_existing=False)
+        except Exception as err:
+            logger.warning(f"Recurring rule maintenance failed for {rule_id}: {err}")
+    return total
+
+
+@shared_task
+def purge_recurring_rule(rule_id: int):
+    return purge_recurring_rule_impl(rule_id)
+
 @shared_task
 def _safe_name(s):
     try:
@@ -1272,6 +1433,18 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     )
 
     logger.info(f"Starting recording for channel {channel.name}")
+
+    # Log system event for recording start
+    try:
+        from core.utils import log_system_event
+        log_system_event(
+            'recording_start',
+            channel_id=channel.uuid,
+            channel_name=channel.name,
+            recording_id=recording_id
+        )
+    except Exception as e:
+        logger.error(f"Could not log recording start event: {e}")
 
     # Try to resolve the Recording row up front
     recording_obj = None
@@ -1666,6 +1839,20 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         # After the loop, the file and response are closed automatically.
         logger.info(f"Finished recording for channel {channel.name}")
 
+        # Log system event for recording end
+        try:
+            from core.utils import log_system_event
+            log_system_event(
+                'recording_end',
+                channel_id=channel.uuid,
+                channel_name=channel.name,
+                recording_id=recording_id,
+                interrupted=interrupted,
+                bytes_written=bytes_written
+            )
+        except Exception as e:
+            logger.error(f"Could not log recording end event: {e}")
+
     # Remux TS to MKV container
     remux_success = False
     try:
@@ -1837,6 +2024,7 @@ def comskip_process_recording(recording_id: int):
     Safe to call even if comskip is not installed; stores status in custom_properties.comskip.
     """
     import shutil
+    from django.db import DatabaseError
     from .models import Recording
     # Helper to broadcast status over websocket
     def _ws(status: str, extra: dict | None = None):
@@ -1854,7 +2042,33 @@ def comskip_process_recording(recording_id: int):
     except Recording.DoesNotExist:
         return "not_found"
 
-    cp = rec.custom_properties or {}
+    cp = rec.custom_properties.copy() if isinstance(rec.custom_properties, dict) else {}
+
+    def _persist_custom_properties():
+        """Persist updated custom_properties without raising if the row disappeared."""
+        try:
+            updated = Recording.objects.filter(pk=recording_id).update(custom_properties=cp)
+            if not updated:
+                logger.warning(
+                    "Recording %s vanished before comskip status could be saved",
+                    recording_id,
+                )
+                return False
+        except DatabaseError as db_err:
+            logger.warning(
+                "Failed to persist comskip status for recording %s: %s",
+                recording_id,
+                db_err,
+            )
+            return False
+        except Exception as unexpected:
+            logger.warning(
+                "Unexpected error while saving comskip status for recording %s: %s",
+                recording_id,
+                unexpected,
+            )
+            return False
+        return True
     file_path = (cp or {}).get("file_path")
     if not file_path or not os.path.exists(file_path):
         return "no_file"
@@ -1865,8 +2079,7 @@ def comskip_process_recording(recording_id: int):
     comskip_bin = shutil.which("comskip")
     if not comskip_bin:
         cp["comskip"] = {"status": "skipped", "reason": "comskip_not_installed"}
-        rec.custom_properties = cp
-        rec.save(update_fields=["custom_properties"])
+        _persist_custom_properties()
         _ws('skipped', {"reason": "comskip_not_installed"})
         return "comskip_missing"
 
@@ -1878,24 +2091,59 @@ def comskip_process_recording(recording_id: int):
 
     try:
         cmd = [comskip_bin, "--output", os.path.dirname(file_path)]
-        # Prefer system ini if present to squelch warning and get sane defaults
-        for ini_path in ("/etc/comskip/comskip.ini", "/app/docker/comskip.ini"):
-            if os.path.exists(ini_path):
+        # Prefer user-specified INI, fall back to known defaults
+        ini_candidates = []
+        try:
+            custom_ini = CoreSettings.get_dvr_comskip_custom_path()
+            if custom_ini:
+                ini_candidates.append(custom_ini)
+        except Exception as ini_err:
+            logger.debug(f"Unable to load custom comskip.ini path: {ini_err}")
+        ini_candidates.extend(["/etc/comskip/comskip.ini", "/app/docker/comskip.ini"])
+        selected_ini = None
+        for ini_path in ini_candidates:
+            if ini_path and os.path.exists(ini_path):
+                selected_ini = ini_path
                 cmd.extend([f"--ini={ini_path}"])
                 break
         cmd.append(file_path)
-        subprocess.run(cmd, check=True)
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr_tail = (e.stderr or "").strip().splitlines()
+        stderr_tail = stderr_tail[-5:] if stderr_tail else []
+        detail = {
+            "status": "error",
+            "reason": "comskip_failed",
+            "returncode": e.returncode,
+        }
+        if e.returncode and e.returncode < 0:
+            try:
+                detail["signal"] = signal.Signals(-e.returncode).name
+            except Exception:
+                detail["signal"] = f"signal_{-e.returncode}"
+        if stderr_tail:
+            detail["stderr"] = "\n".join(stderr_tail)
+        if selected_ini:
+            detail["ini_path"] = selected_ini
+        cp["comskip"] = detail
+        _persist_custom_properties()
+        _ws('error', {"reason": "comskip_failed", "returncode": e.returncode})
+        return "comskip_failed"
     except Exception as e:
         cp["comskip"] = {"status": "error", "reason": f"comskip_failed: {e}"}
-        rec.custom_properties = cp
-        rec.save(update_fields=["custom_properties"])
+        _persist_custom_properties()
         _ws('error', {"reason": str(e)})
         return "comskip_failed"
 
     if not os.path.exists(edl_path):
         cp["comskip"] = {"status": "error", "reason": "edl_not_found"}
-        rec.custom_properties = cp
-        rec.save(update_fields=["custom_properties"])
+        _persist_custom_properties()
         _ws('error', {"reason": "edl_not_found"})
         return "no_edl"
 
@@ -1913,8 +2161,7 @@ def comskip_process_recording(recording_id: int):
     duration = _ffprobe_duration(file_path)
     if duration is None:
         cp["comskip"] = {"status": "error", "reason": "duration_unknown"}
-        rec.custom_properties = cp
-        rec.save(update_fields=["custom_properties"])
+        _persist_custom_properties()
         _ws('error', {"reason": "duration_unknown"})
         return "no_duration"
 
@@ -1943,9 +2190,14 @@ def comskip_process_recording(recording_id: int):
         keep.append((cur, duration))
 
     if not commercials or sum((e - s) for s, e in commercials) <= 0.5:
-        cp["comskip"] = {"status": "completed", "skipped": True, "edl": os.path.basename(edl_path)}
-        rec.custom_properties = cp
-        rec.save(update_fields=["custom_properties"])
+        cp["comskip"] = {
+            "status": "completed",
+            "skipped": True,
+            "edl": os.path.basename(edl_path),
+        }
+        if selected_ini:
+            cp["comskip"]["ini_path"] = selected_ini
+        _persist_custom_properties()
         _ws('skipped', {"reason": "no_commercials", "commercials": 0})
         return "no_commercials"
 
@@ -1969,7 +2221,8 @@ def comskip_process_recording(recording_id: int):
         list_path = os.path.join(workdir, "concat_list.txt")
         with open(list_path, "w") as lf:
             for pth in parts:
-                lf.write(f"file '{pth}'\n")
+                escaped = pth.replace("'", "'\\''")
+                lf.write(f"file '{escaped}'\n")
 
         output_path = os.path.join(workdir, f"{os.path.splitext(os.path.basename(file_path))[0]}.cut.mkv")
         subprocess.run([
@@ -1995,14 +2248,14 @@ def comskip_process_recording(recording_id: int):
             "segments_kept": len(parts),
             "commercials": len(commercials),
         }
-        rec.custom_properties = cp
-        rec.save(update_fields=["custom_properties"])
+        if selected_ini:
+            cp["comskip"]["ini_path"] = selected_ini
+        _persist_custom_properties()
         _ws('completed', {"commercials": len(commercials), "segments_kept": len(parts)})
         return "ok"
     except Exception as e:
         cp["comskip"] = {"status": "error", "reason": str(e)}
-        rec.custom_properties = cp
-        rec.save(update_fields=["custom_properties"])
+        _persist_custom_properties()
         _ws('error', {"reason": str(e)})
         return f"error:{e}"
 def _resolve_poster_for_program(channel_name, program):
@@ -2333,15 +2586,16 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                     # Store profile IDs for this channel
                     profile_map.append(channel_profile_ids)
 
-                    # Handle logo
-                    if stream.logo_url:
+                    # Handle logo - validate URL length to avoid PostgreSQL btree index errors
+                    validated_logo_url = validate_logo_url(stream.logo_url) if stream.logo_url else None
+                    if validated_logo_url:
                         logos_to_create.append(
                             Logo(
-                                url=stream.logo_url,
+                                url=validated_logo_url,
                                 name=stream.name or stream.tvg_id,
                             )
                         )
-                        logo_map.append(stream.logo_url)
+                        logo_map.append(validated_logo_url)
                     else:
                         logo_map.append(None)
 
@@ -2703,6 +2957,101 @@ def set_channels_logos_from_epg(self, channel_ids):
         logger.error(f"EPG logo setting task failed: {e}")
         send_websocket_update('updates', 'update', {
             'type': 'epg_logo_setting_progress',
+            'task_id': task_id,
+            'progress': 0,
+            'total': total_channels,
+            'status': 'failed',
+            'message': f'Task failed: {str(e)}',
+            'error': str(e)
+        })
+        raise
+
+
+@shared_task(bind=True)
+def set_channels_tvg_ids_from_epg(self, channel_ids):
+    """
+    Celery task to set channel TVG-IDs from EPG data for multiple channels
+    """
+    from core.utils import send_websocket_update
+
+    task_id = self.request.id
+    total_channels = len(channel_ids)
+    updated_count = 0
+    errors = []
+
+    try:
+        logger.info(f"Starting EPG TVG-ID setting task for {total_channels} channels")
+
+        # Send initial progress
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_tvg_id_setting_progress',
+            'task_id': task_id,
+            'progress': 0,
+            'total': total_channels,
+            'status': 'running',
+            'message': 'Starting EPG TVG-ID setting...'
+        })
+
+        batch_size = 100
+        for i in range(0, total_channels, batch_size):
+            batch_ids = channel_ids[i:i + batch_size]
+            batch_updates = []
+
+            # Get channels and their EPG data
+            channels = Channel.objects.filter(id__in=batch_ids).select_related('epg_data')
+
+            for channel in channels:
+                try:
+                    if channel.epg_data and channel.epg_data.tvg_id:
+                        if channel.tvg_id != channel.epg_data.tvg_id:
+                            channel.tvg_id = channel.epg_data.tvg_id
+                            batch_updates.append(channel)
+                            updated_count += 1
+                except Exception as e:
+                    errors.append(f"Channel {channel.id}: {str(e)}")
+                    logger.error(f"Error processing channel {channel.id}: {e}")
+
+            # Bulk update the batch
+            if batch_updates:
+                Channel.objects.bulk_update(batch_updates, ['tvg_id'])
+
+            # Send progress update
+            progress = min(i + batch_size, total_channels)
+            send_websocket_update('updates', 'update', {
+                'type': 'epg_tvg_id_setting_progress',
+                'task_id': task_id,
+                'progress': progress,
+                'total': total_channels,
+                'status': 'running',
+                'message': f'Updated {updated_count} channel TVG-IDs...',
+                'updated_count': updated_count
+            })
+
+        # Send completion notification
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_tvg_id_setting_progress',
+            'task_id': task_id,
+            'progress': total_channels,
+            'total': total_channels,
+            'status': 'completed',
+            'message': f'Successfully updated {updated_count} channel TVG-IDs from EPG data',
+            'updated_count': updated_count,
+            'error_count': len(errors),
+            'errors': errors
+        })
+
+        logger.info(f"EPG TVG-ID setting task completed. Updated {updated_count} channels")
+        return {
+            'status': 'completed',
+            'updated_count': updated_count,
+            'error_count': len(errors),
+            'errors': errors
+        }
+
+    except Exception as e:
+        logger.error(f"EPG TVG-ID setting task failed: {e}")
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_tvg_id_setting_progress',
             'task_id': task_id,
             'progress': 0,
             'total': total_channels,

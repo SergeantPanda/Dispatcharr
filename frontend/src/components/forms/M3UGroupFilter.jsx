@@ -55,6 +55,21 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [movieCategoryStates, setMovieCategoryStates] = useState([]);
   const [seriesCategoryStates, setSeriesCategoryStates] = useState([]);
+  const [autoEnableNewGroupsLive, setAutoEnableNewGroupsLive] = useState(true);
+  const [autoEnableNewGroupsVod, setAutoEnableNewGroupsVod] = useState(true);
+  const [autoEnableNewGroupsSeries, setAutoEnableNewGroupsSeries] =
+    useState(true);
+
+  useEffect(() => {
+    if (!playlist) return;
+
+    // Initialize account-level settings
+    setAutoEnableNewGroupsLive(playlist.auto_enable_new_groups_live ?? true);
+    setAutoEnableNewGroupsVod(playlist.auto_enable_new_groups_vod ?? true);
+    setAutoEnableNewGroupsSeries(
+      playlist.auto_enable_new_groups_series ?? true
+    );
+  }, [playlist]);
 
   useEffect(() => {
     if (Object.keys(channelGroups).length === 0) {
@@ -62,27 +77,29 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
     }
 
     setGroupStates(
-      playlist.channel_groups.map((group) => {
-        // Parse custom_properties if present
-        let customProps = {};
-        if (group.custom_properties) {
-          try {
-            customProps =
-              typeof group.custom_properties === 'string'
-                ? JSON.parse(group.custom_properties)
-                : group.custom_properties;
-          } catch (e) {
-            customProps = {};
+      playlist.channel_groups
+        .filter((group) => channelGroups[group.channel_group]) // Filter out groups that don't exist
+        .map((group) => {
+          // Parse custom_properties if present
+          let customProps = {};
+          if (group.custom_properties) {
+            try {
+              customProps =
+                typeof group.custom_properties === 'string'
+                  ? JSON.parse(group.custom_properties)
+                  : group.custom_properties;
+            } catch (e) {
+              customProps = {};
+            }
           }
-        }
-        return {
-          ...group,
-          name: channelGroups[group.channel_group].name,
-          auto_channel_sync: group.auto_channel_sync || false,
-          auto_sync_channel_start: group.auto_sync_channel_start || 1.0,
-          custom_properties: customProps,
-        };
-      })
+          return {
+            ...group,
+            name: channelGroups[group.channel_group].name,
+            auto_channel_sync: group.auto_channel_sync || false,
+            auto_sync_channel_start: group.auto_sync_channel_start || 1.0,
+            custom_properties: customProps,
+          };
+        })
     );
   }, [playlist, channelGroups]);
 
@@ -115,6 +132,14 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
           custom_properties: state.custom_properties || undefined,
         }))
         .filter((state) => state.enabled !== state.original_enabled);
+
+      // Update account-level settings via the proper account endpoint
+      await API.updatePlaylist({
+        id: playlist.id,
+        auto_enable_new_groups_live: autoEnableNewGroupsLive,
+        auto_enable_new_groups_vod: autoEnableNewGroupsVod,
+        auto_enable_new_groups_series: autoEnableNewGroupsSeries,
+      });
 
       // Update group settings via API endpoint
       await API.updateM3UGroupSettings(
@@ -161,6 +186,10 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
       title="M3U Group Filter & Auto Channel Sync"
       size={1000}
       styles={{ content: { '--mantine-color-body': '#27272A' } }}
+      scrollAreaComponent={Modal.NativeScrollArea}
+      lockScroll={false}
+      withinPortal={true}
+      yOffset="2vh"
     >
       <LoadingOverlay visible={isLoading} overlayBlur={2} />
       <Stack>
@@ -176,6 +205,8 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
               playlist={playlist}
               groupStates={groupStates}
               setGroupStates={setGroupStates}
+              autoEnableNewGroupsLive={autoEnableNewGroupsLive}
+              setAutoEnableNewGroupsLive={setAutoEnableNewGroupsLive}
             />
           </Tabs.Panel>
 
@@ -185,6 +216,8 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
               categoryStates={movieCategoryStates}
               setCategoryStates={setMovieCategoryStates}
               type="movie"
+              autoEnableNewGroups={autoEnableNewGroupsVod}
+              setAutoEnableNewGroups={setAutoEnableNewGroupsVod}
             />
           </Tabs.Panel>
 
@@ -194,6 +227,8 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
               categoryStates={seriesCategoryStates}
               setCategoryStates={setSeriesCategoryStates}
               type="series"
+              autoEnableNewGroups={autoEnableNewGroupsSeries}
+              setAutoEnableNewGroups={setAutoEnableNewGroupsSeries}
             />
           </Tabs.Panel>
         </Tabs>
