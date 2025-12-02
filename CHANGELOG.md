@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2025-12-02
+
 ### Added
 
 - `CHANGELOG.md` file following Keep a Changelog format to document all notable changes and project history
