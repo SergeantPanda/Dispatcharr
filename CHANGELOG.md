@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Episode URLs in series modal now use UUID instead of ID, fixing broken links
+- Episode URLs in series modal now use UUID instead of ID, fixing broken links (#684, #694)
 - Stream preview now respects selected M3U profile instead of always using default profile (#690)
 - Channel groups filter in M3UGroupFilter component now filters out non-existent groups (prevents blank webui when editing M3U after a group was removed)
 - Stream order now preserved in PATCH/PUT responses from ChannelSerializer, ensuring consistent ordering across all API operations - Thanks [@FiveBoroughs](https://github.com/FiveBoroughs) (#643)
