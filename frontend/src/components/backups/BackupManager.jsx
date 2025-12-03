@@ -3,7 +3,6 @@ import {
   ActionIcon,
   Box,
   Button,
-  Center,
   FileInput,
   Flex,
   Group,
@@ -32,6 +31,45 @@ import API from '../../api';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import { CustomTable, useTable } from '../tables/CustomTable';
+
+const RowActions = ({ row, handleDownload, handleRestoreClick, handleDeleteClick, downloading }) => {
+  return (
+    <Flex gap={4} wrap="nowrap">
+      <Tooltip label="Download">
+        <ActionIcon
+          variant="transparent"
+          size="sm"
+          color="blue.5"
+          onClick={() => handleDownload(row.original.name)}
+          loading={downloading === row.original.name}
+          disabled={downloading !== null}
+        >
+          <Download size={18} />
+        </ActionIcon>
+      </Tooltip>
+      <Tooltip label="Restore">
+        <ActionIcon
+          variant="transparent"
+          size="sm"
+          color="yellow.5"
+          onClick={() => handleRestoreClick(row.original)}
+        >
+          <RotateCcw size={18} />
+        </ActionIcon>
+      </Tooltip>
+      <Tooltip label="Delete">
+        <ActionIcon
+          variant="transparent"
+          size="sm"
+          color="red.9"
+          onClick={() => handleDeleteClick(row.original)}
+        >
+          <SquareMinus size={18} />
+        </ActionIcon>
+      </Tooltip>
+    </Flex>
+  );
+};
 
 // Convert 24h time string to 12h format with period
 function to12Hour(time24) {
@@ -94,6 +132,7 @@ export default function BackupManager() {
 
   // Read user's time format preference from settings
   const [timeFormat] = useLocalStorage('time-format', '12h');
+  const [tableSize] = useLocalStorage('table-size', 'default');
   const is12Hour = timeFormat === '12h';
 
   // Schedule state
@@ -117,17 +156,23 @@ export default function BackupManager() {
       {
         header: 'Filename',
         accessorKey: 'name',
-        size: 250,
+        grow: true,
         cell: ({ cell }) => (
-          <Text size="sm" fw={500}>
+          <div
+            style={{
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
             {cell.getValue()}
-          </Text>
+          </div>
         ),
       },
       {
         header: 'Size',
         accessorKey: 'size',
-        size: 100,
+        size: 80,
         cell: ({ cell }) => (
           <Text size="sm">{formatBytes(cell.getValue())}</Text>
         ),
@@ -135,7 +180,7 @@ export default function BackupManager() {
       {
         header: 'Created',
         accessorKey: 'created',
-        size: 175,
+        size: 160,
         cell: ({ cell }) => (
           <Text size="sm">{formatDate(cell.getValue())}</Text>
         ),
@@ -143,20 +188,13 @@ export default function BackupManager() {
       {
         id: 'actions',
         header: 'Actions',
-        size: 150,
+        size: tableSize === 'compact' ? 75 : 100,
       },
     ],
-    []
+    [tableSize]
   );
 
   const renderHeaderCell = (header) => {
-    if (header.id === 'actions') {
-      return (
-        <Center style={{ width: '100%' }}>
-          <Text size="sm">{header.column.columnDef.header}</Text>
-        </Center>
-      );
-    }
     return (
       <Text size="sm" name={header.id}>
         {header.column.columnDef.header}
@@ -165,42 +203,18 @@ export default function BackupManager() {
   };
 
   const renderBodyCell = ({ cell, row }) => {
-    if (cell.column.id === 'actions') {
-      return (
-        <Center style={{ width: '100%' }}>
-          <Tooltip label="Download">
-            <ActionIcon
-              variant="transparent"
-              color="blue.5"
-              onClick={() => handleDownload(row.original.name)}
-              loading={downloading === row.original.name}
-              disabled={downloading !== null}
-            >
-              <Download size={18} />
-            </ActionIcon>
-          </Tooltip>
-          <Tooltip label="Restore">
-            <ActionIcon
-              variant="transparent"
-              color="yellow.5"
-              onClick={() => handleRestoreClick(row.original)}
-            >
-              <RotateCcw size={18} />
-            </ActionIcon>
-          </Tooltip>
-          <Tooltip label="Delete">
-            <ActionIcon
-              variant="transparent"
-              color="red.9"
-              onClick={() => handleDeleteClick(row.original)}
-            >
-              <SquareMinus size={18} />
-            </ActionIcon>
-          </Tooltip>
-        </Center>
-      );
+    switch (cell.column.id) {
+      case 'actions':
+        return (
+          <RowActions
+            row={row}
+            handleDownload={handleDownload}
+            handleRestoreClick={handleRestoreClick}
+            handleDeleteClick={handleDeleteClick}
+            downloading={downloading}
+          />
+        );
     }
-    return null;
   };
 
   const table = useTable({
@@ -435,7 +449,7 @@ export default function BackupManager() {
           <Loader size="sm" />
         ) : (
           <>
-            <Group grow align="flex-start">
+            <Group grow align="flex-end">
               <Select
                 label="Frequency"
                 value={schedule.frequency}
@@ -446,6 +460,15 @@ export default function BackupManager() {
                 ]}
                 disabled={!schedule.enabled}
               />
+              {schedule.frequency === 'weekly' && (
+                <Select
+                  label="Day"
+                  value={String(schedule.day_of_week)}
+                  onChange={(value) => handleScheduleChange('day_of_week', parseInt(value, 10))}
+                  data={DAYS_OF_WEEK}
+                  disabled={!schedule.enabled}
+                />
+              )}
               {is12Hour ? (
                 <Group grow align="flex-end" gap="xs">
                   <TextInput
@@ -454,7 +477,6 @@ export default function BackupManager() {
                     onChange={(e) => handleTimeChange12h(e.currentTarget.value, null)}
                     placeholder="3:00"
                     disabled={!schedule.enabled}
-                    style={{ flex: 2 }}
                   />
                   <Select
                     value={timePeriod}
@@ -464,7 +486,6 @@ export default function BackupManager() {
                       { value: 'PM', label: 'PM' },
                     ]}
                     disabled={!schedule.enabled}
-                    style={{ flex: 1 }}
                   />
                 </Group>
               ) : (
@@ -476,24 +497,14 @@ export default function BackupManager() {
                   disabled={!schedule.enabled}
                 />
               )}
-              {schedule.frequency === 'weekly' && (
-                <Select
-                  label="Day of Week"
-                  value={String(schedule.day_of_week)}
-                  onChange={(value) => handleScheduleChange('day_of_week', parseInt(value, 10))}
-                  data={DAYS_OF_WEEK}
-                  disabled={!schedule.enabled}
-                />
-              )}
               <NumberInput
-                label="Retention (0 = all)"
+                label="Retention"
+                description="0 = keep all"
                 value={schedule.retention_count}
                 onChange={(value) => handleScheduleChange('retention_count', value || 0)}
                 min={0}
                 disabled={!schedule.enabled}
               />
-            </Group>
-            <Flex justify="flex-end">
               <Button
                 onClick={handleSaveSchedule}
                 loading={scheduleSaving}
@@ -502,7 +513,7 @@ export default function BackupManager() {
               >
                 Save
               </Button>
-            </Flex>
+            </Group>
           </>
         )}
       </Stack>
