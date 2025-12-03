@@ -20,12 +20,6 @@ def get_backup_dir() -> Path:
     return backup_dir
 
 
-def get_data_dirs() -> list[Path]:
-    """Get list of data directories to include in backups."""
-    dirs = getattr(settings, "BACKUP_DATA_DIRS", [])
-    return [Path(d) for d in dirs if d and Path(d).exists()]
-
-
 def _is_postgresql() -> bool:
     """Check if we're using PostgreSQL."""
     return settings.DATABASES["default"]["ENGINE"] == "django.db.backends.postgresql"
@@ -223,14 +217,6 @@ def create_backup() -> Path:
             }
             zip_file.writestr("metadata.json", json.dumps(metadata, indent=2))
 
-            # Add data directories
-            for data_dir in get_data_dirs():
-                logger.debug(f"Adding directory: {data_dir}")
-                for file_path in data_dir.rglob("*"):
-                    if file_path.is_file():
-                        arcname = f"data/{data_dir.name}/{file_path.relative_to(data_dir)}"
-                        zip_file.write(file_path, arcname)
-
     logger.info(f"Backup created successfully: {backup_file}")
     return backup_file
 
@@ -263,33 +249,6 @@ def restore_backup(backup_file: Path) -> None:
 
         # Restore database
         _restore_database(temp_path, metadata)
-
-        # Restore data directories
-        data_root = temp_path / "data"
-        if data_root.exists():
-            logger.info("Restoring data directories...")
-            for extracted_dir in data_root.iterdir():
-                if not extracted_dir.is_dir():
-                    continue
-
-                target_name = extracted_dir.name
-                data_dirs = get_data_dirs()
-                matching = [d for d in data_dirs if d.name == target_name]
-
-                if not matching:
-                    logger.warning(f"No configured directory for {target_name}, skipping")
-                    continue
-
-                target = matching[0]
-                logger.debug(f"Restoring {target_name} to {target}")
-
-                # Create parent directory if needed
-                target.parent.mkdir(parents=True, exist_ok=True)
-
-                # Remove existing and copy from backup
-                if target.exists():
-                    shutil.rmtree(target)
-                shutil.copytree(extracted_dir, target)
 
     logger.info("Restore completed successfully")
 

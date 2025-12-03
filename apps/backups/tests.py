@@ -20,14 +20,11 @@ class BackupServicesTestCase(TestCase):
 
     def setUp(self):
         self.temp_backup_dir = tempfile.mkdtemp()
-        self.temp_data_dir = tempfile.mkdtemp()
 
     def tearDown(self):
         import shutil
         if Path(self.temp_backup_dir).exists():
             shutil.rmtree(self.temp_backup_dir)
-        if Path(self.temp_data_dir).exists():
-            shutil.rmtree(self.temp_data_dir)
 
     @patch('apps.backups.services.settings')
     def test_get_backup_dir_creates_directory(self, mock_settings):
@@ -42,31 +39,12 @@ class BackupServicesTestCase(TestCase):
             services.get_backup_dir()
             mock_path_instance.mkdir.assert_called_once_with(parents=True, exist_ok=True)
 
-    @patch('apps.backups.services.settings')
-    def test_get_data_dirs_with_empty_config(self, mock_settings):
-        """Test that get_data_dirs returns empty list when no dirs configured"""
-        mock_settings.BACKUP_DATA_DIRS = []
-        result = services.get_data_dirs()
-        self.assertEqual(result, [])
-
-    @patch('apps.backups.services.settings')
-    def test_get_data_dirs_filters_nonexistent(self, mock_settings):
-        """Test that get_data_dirs filters out non-existent directories"""
-        nonexistent_dir = '/tmp/does-not-exist-12345'
-        mock_settings.BACKUP_DATA_DIRS = [self.temp_data_dir, nonexistent_dir]
-
-        result = services.get_data_dirs()
-        self.assertEqual(len(result), 1)
-        self.assertEqual(str(result[0]), self.temp_data_dir)
-
     @patch('apps.backups.services.get_backup_dir')
-    @patch('apps.backups.services.get_data_dirs')
     @patch('apps.backups.services._is_postgresql')
     @patch('apps.backups.services._dump_sqlite')
-    def test_create_backup_success_sqlite(self, mock_dump_sqlite, mock_is_pg, mock_get_data_dirs, mock_get_backup_dir):
+    def test_create_backup_success_sqlite(self, mock_dump_sqlite, mock_is_pg, mock_get_backup_dir):
         """Test successful backup creation with SQLite"""
         mock_get_backup_dir.return_value = Path(self.temp_backup_dir)
-        mock_get_data_dirs.return_value = []
         mock_is_pg.return_value = False
 
         # Mock SQLite dump to create a temp file
@@ -94,13 +72,11 @@ class BackupServicesTestCase(TestCase):
             self.assertEqual(metadata['database_type'], 'sqlite')
 
     @patch('apps.backups.services.get_backup_dir')
-    @patch('apps.backups.services.get_data_dirs')
     @patch('apps.backups.services._is_postgresql')
     @patch('apps.backups.services._dump_postgresql')
-    def test_create_backup_success_postgresql(self, mock_dump_pg, mock_is_pg, mock_get_data_dirs, mock_get_backup_dir):
+    def test_create_backup_success_postgresql(self, mock_dump_pg, mock_is_pg, mock_get_backup_dir):
         """Test successful backup creation with PostgreSQL"""
         mock_get_backup_dir.return_value = Path(self.temp_backup_dir)
-        mock_get_data_dirs.return_value = []
         mock_is_pg.return_value = True
 
         # Mock PostgreSQL dump to create a temp file
@@ -176,14 +152,12 @@ class BackupServicesTestCase(TestCase):
             services.delete_backup("nonexistent-backup.zip")
 
     @patch('apps.backups.services.get_backup_dir')
-    @patch('apps.backups.services.get_data_dirs')
     @patch('apps.backups.services._is_postgresql')
     @patch('apps.backups.services._restore_postgresql')
-    def test_restore_backup_postgresql(self, mock_restore_pg, mock_is_pg, mock_get_data_dirs, mock_get_backup_dir):
+    def test_restore_backup_postgresql(self, mock_restore_pg, mock_is_pg, mock_get_backup_dir):
         """Test successful restoration of PostgreSQL backup"""
         backup_dir = Path(self.temp_backup_dir)
         mock_get_backup_dir.return_value = backup_dir
-        mock_get_data_dirs.return_value = []
         mock_is_pg.return_value = True
 
         # Create PostgreSQL backup file
@@ -201,14 +175,12 @@ class BackupServicesTestCase(TestCase):
         mock_restore_pg.assert_called_once()
 
     @patch('apps.backups.services.get_backup_dir')
-    @patch('apps.backups.services.get_data_dirs')
     @patch('apps.backups.services._is_postgresql')
     @patch('apps.backups.services._restore_sqlite')
-    def test_restore_backup_sqlite(self, mock_restore_sqlite, mock_is_pg, mock_get_data_dirs, mock_get_backup_dir):
+    def test_restore_backup_sqlite(self, mock_restore_sqlite, mock_is_pg, mock_get_backup_dir):
         """Test successful restoration of SQLite backup"""
         backup_dir = Path(self.temp_backup_dir)
         mock_get_backup_dir.return_value = backup_dir
-        mock_get_data_dirs.return_value = []
         mock_is_pg.return_value = False
 
         # Create SQLite backup file
@@ -226,13 +198,11 @@ class BackupServicesTestCase(TestCase):
         mock_restore_sqlite.assert_called_once()
 
     @patch('apps.backups.services.get_backup_dir')
-    @patch('apps.backups.services.get_data_dirs')
     @patch('apps.backups.services._is_postgresql')
-    def test_restore_backup_database_type_mismatch(self, mock_is_pg, mock_get_data_dirs, mock_get_backup_dir):
+    def test_restore_backup_database_type_mismatch(self, mock_is_pg, mock_get_backup_dir):
         """Test restore fails when database type doesn't match"""
         backup_dir = Path(self.temp_backup_dir)
         mock_get_backup_dir.return_value = backup_dir
-        mock_get_data_dirs.return_value = []
         mock_is_pg.return_value = True  # Current system is PostgreSQL
 
         # Create SQLite backup file

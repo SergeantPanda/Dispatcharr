@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
 import {
-  Alert,
+  ActionIcon,
+  Box,
   Button,
-  Card,
-  Divider,
   FileInput,
+  Flex,
   Group,
   Loader,
   Modal,
   NumberInput,
+  Paper,
   Select,
   Stack,
   Switch,
@@ -19,12 +20,11 @@ import {
 } from '@mantine/core';
 import {
   Download,
-  PlayCircle,
   RefreshCcw,
+  RotateCcw,
+  SquareMinus,
+  SquarePlus,
   UploadCloud,
-  Trash2,
-  Clock,
-  Save,
 } from 'lucide-react';
 import { notifications } from '@mantine/notifications';
 
@@ -312,20 +312,11 @@ export default function BackupManager() {
   };
 
   return (
-    <Stack spacing="md">
-      <Alert color="blue" title="Backup Information">
-        Backups include your database and configured data directories. Use the
-        create button to generate a new backup, or upload an existing backup to
-        restore.
-      </Alert>
-
+    <Stack gap="md">
       {/* Schedule Settings */}
-      <Card withBorder>
-        <Group position="apart" mb="md">
-          <Group>
-            <Clock size={20} />
-            <Text weight={600}>Scheduled Backups</Text>
-          </Group>
+      <Stack gap="sm">
+        <Group justify="space-between">
+          <Text size="sm" fw={500}>Scheduled Backups</Text>
           <Switch
             checked={schedule.enabled}
             onChange={(e) => handleScheduleChange('enabled', e.currentTarget.checked)}
@@ -337,7 +328,7 @@ export default function BackupManager() {
           <Loader size="sm" />
         ) : (
           <>
-            <Group grow mb="md" align="flex-start">
+            <Group grow align="flex-start">
               <Select
                 label="Frequency"
                 value={schedule.frequency}
@@ -388,130 +379,174 @@ export default function BackupManager() {
                 />
               )}
               <NumberInput
-                label="Keep Last N Backups"
-                description="0 = keep all"
-                inputWrapperOrder={['label', 'input', 'description', 'error']}
+                label="Retention (0 = all)"
                 value={schedule.retention_count}
                 onChange={(value) => handleScheduleChange('retention_count', value || 0)}
                 min={0}
                 disabled={!schedule.enabled}
               />
             </Group>
-            <Group position="right">
+            <Flex justify="flex-end">
               <Button
-                leftIcon={<Save size={16} />}
                 onClick={handleSaveSchedule}
                 loading={scheduleSaving}
                 disabled={!scheduleChanged}
+                variant="default"
               >
-                Save Schedule
+                Save
               </Button>
-            </Group>
+            </Flex>
           </>
         )}
-      </Card>
+      </Stack>
 
-      <Divider />
+      {/* Backups List */}
+      <Stack gap={0}>
+        <Paper>
+          <Box
+            style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              padding: 10,
+            }}
+          >
+            <Flex gap={6}>
+              <Tooltip label="Upload existing backup">
+                <Button
+                  leftSection={<UploadCloud size={18} />}
+                  variant="light"
+                  size="xs"
+                  onClick={() => setUploadModalOpen(true)}
+                  p={5}
+                >
+                  Upload
+                </Button>
+              </Tooltip>
+              <Tooltip label="Refresh list">
+                <Button
+                  leftSection={<RefreshCcw size={18} />}
+                  variant="light"
+                  size="xs"
+                  onClick={loadBackups}
+                  loading={loading}
+                  p={5}
+                >
+                  Refresh
+                </Button>
+              </Tooltip>
+              <Tooltip label="Create new backup">
+                <Button
+                  leftSection={<SquarePlus size={18} />}
+                  variant="light"
+                  size="xs"
+                  onClick={handleCreateBackup}
+                  loading={creating}
+                  p={5}
+                  color="green"
+                  style={{
+                    borderWidth: '1px',
+                    borderColor: 'green',
+                    color: 'white',
+                  }}
+                >
+                  Create Backup
+                </Button>
+              </Tooltip>
+            </Flex>
+          </Box>
+        </Paper>
 
-      <Group position="apart">
-        <Text size="xl" weight={700}>
-          Backups
-        </Text>
-        <Group>
-          <Button
-            leftIcon={<UploadCloud size={16} />}
-            onClick={() => setUploadModalOpen(true)}
+        <Box
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            maxHeight: 300,
+            width: '100%',
+            overflow: 'hidden',
+          }}
+        >
+          <Box
+            style={{
+              flex: 1,
+              overflowY: 'auto',
+              overflowX: 'auto',
+              border: 'solid 1px rgb(68,68,68)',
+              borderRadius: 'var(--mantine-radius-default)',
+            }}
           >
-            Upload Backup
-          </Button>
-          <Button
-            leftIcon={<RefreshCcw size={16} />}
-            onClick={loadBackups}
-            loading={loading}
-            variant="light"
-          >
-            Refresh
-          </Button>
-          <Button
-            leftIcon={<PlayCircle size={16} />}
-            onClick={handleCreateBackup}
-            loading={creating}
-          >
-            Create Backup
-          </Button>
-        </Group>
-      </Group>
-
-      {loading ? (
-        <Group position="center" p="xl">
-          <Loader />
-        </Group>
-      ) : backups.length === 0 ? (
-        <Alert color="gray">No backups found. Create one to get started!</Alert>
-      ) : (
-        <Table striped highlightOnHover>
-          <thead>
-            <tr>
-              <th>Filename</th>
-              <th>Size</th>
-              <th>Created</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {backups.map((backup) => (
-              <tr key={backup.name}>
-                <td>
-                  <Text size="sm" weight={500}>
-                    {backup.name}
-                  </Text>
-                </td>
-                <td>
-                  <Text size="sm">{formatBytes(backup.size)}</Text>
-                </td>
-                <td>
-                  <Text size="sm">{formatDate(backup.created)}</Text>
-                </td>
-                <td>
-                  <Group spacing="xs">
-                    <Tooltip label="Download">
-                      <Button
-                        size="xs"
-                        variant="light"
-                        onClick={() => handleDownload(backup.name)}
-                        loading={downloading === backup.name}
-                        disabled={downloading !== null}
-                      >
-                        <Download size={16} />
-                      </Button>
-                    </Tooltip>
-                    <Tooltip label="Restore">
-                      <Button
-                        size="xs"
-                        variant="light"
-                        color="orange"
-                        onClick={() => handleRestoreClick(backup)}
-                      >
-                        <PlayCircle size={16} />
-                      </Button>
-                    </Tooltip>
-                    <Tooltip label="Delete">
-                      <Button
-                        size="xs"
-                        variant="light"
-                        color="red"
-                        onClick={() => handleDeleteClick(backup)}
-                      >
-                        <Trash2 size={16} />
-                      </Button>
-                    </Tooltip>
-                  </Group>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </Table>
-      )}
+            {loading ? (
+              <Box p="xl" style={{ display: 'flex', justifyContent: 'center' }}>
+                <Loader />
+              </Box>
+            ) : backups.length === 0 ? (
+              <Text size="sm" c="dimmed" p="md" ta="center">
+                No backups found. Create one to get started.
+              </Text>
+            ) : (
+              <Table striped highlightOnHover>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>Filename</Table.Th>
+                    <Table.Th>Size</Table.Th>
+                    <Table.Th>Created</Table.Th>
+                    <Table.Th>Actions</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {backups.map((backup) => (
+                    <Table.Tr key={backup.name}>
+                      <Table.Td>
+                        <Text size="sm" fw={500}>
+                          {backup.name}
+                        </Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Text size="sm">{formatBytes(backup.size)}</Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Text size="sm">{formatDate(backup.created)}</Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Group gap="xs">
+                          <Tooltip label="Download">
+                            <ActionIcon
+                              variant="transparent"
+                              color="blue.5"
+                              onClick={() => handleDownload(backup.name)}
+                              loading={downloading === backup.name}
+                              disabled={downloading !== null}
+                            >
+                              <Download size={18} />
+                            </ActionIcon>
+                          </Tooltip>
+                          <Tooltip label="Restore">
+                            <ActionIcon
+                              variant="transparent"
+                              color="yellow.5"
+                              onClick={() => handleRestoreClick(backup)}
+                            >
+                              <RotateCcw size={18} />
+                            </ActionIcon>
+                          </Tooltip>
+                          <Tooltip label="Delete">
+                            <ActionIcon
+                              variant="transparent"
+                              color="red.9"
+                              onClick={() => handleDeleteClick(backup)}
+                            >
+                              <SquareMinus size={18} />
+                            </ActionIcon>
+                          </Tooltip>
+                        </Group>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            )}
+          </Box>
+        </Box>
+      </Stack>
 
       <Modal
         opened={uploadModalOpen}
@@ -529,9 +564,9 @@ export default function BackupManager() {
             value={uploadFile}
             onChange={setUploadFile}
           />
-          <Group position="right">
+          <Group justify="flex-end">
             <Button
-              variant="light"
+              variant="outline"
               onClick={() => {
                 setUploadModalOpen(false);
                 setUploadFile(null);
@@ -539,7 +574,7 @@ export default function BackupManager() {
             >
               Cancel
             </Button>
-            <Button onClick={handleUploadSubmit} disabled={!uploadFile}>
+            <Button onClick={handleUploadSubmit} disabled={!uploadFile} variant="default">
               Upload
             </Button>
           </Group>
@@ -557,7 +592,6 @@ export default function BackupManager() {
         message={`Are you sure you want to restore from "${selectedBackup?.name}"? This will replace all current data with the backup data. This action cannot be undone.`}
         confirmLabel="Restore"
         cancelLabel="Cancel"
-        color="orange"
       />
 
       <ConfirmationDialog
@@ -571,7 +605,6 @@ export default function BackupManager() {
         message={`Are you sure you want to delete "${selectedBackup?.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
         cancelLabel="Cancel"
-        color="red"
       />
     </Stack>
   );
