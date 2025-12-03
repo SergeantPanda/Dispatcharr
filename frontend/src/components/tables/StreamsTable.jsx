@@ -736,7 +736,7 @@ const StreamsTable = () => {
     switch (header.id) {
       case 'name':
         return (
-          <Flex gap="sm">
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
             <TextInput
               name="name"
               placeholder="Name"
@@ -747,68 +747,76 @@ const StreamsTable = () => {
               variant="unstyled"
               className="table-input-header"
               leftSection={<Search size={14} opacity={0.5} />}
-            />
-            <Center>
-              {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('name'),
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('name');
+                },
                 size: 14,
+                style: { cursor: 'pointer' },
               })}
-            </Center>
+            />
           </Flex>
         );
 
       case 'group':
         return (
-          <Flex gap="sm" style={{ width: '100%' }}>
-            <Box style={{ flex: 1, minWidth: 0 }}>
-              <MultiSelect
-                placeholder="Group"
-                searchable
-                size="xs"
-                nothingFoundMessage="No options"
-                onClick={handleSelectClick}
-                onChange={handleGroupChange}
-                data={groupOptions}
-                variant="unstyled"
-                className="table-input-header custom-multiselect"
-                clearable
-              />
-            </Box>
-            <Center style={{ flexShrink: 0 }}>
-              {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('group'),
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
+            <MultiSelect
+              placeholder="Group"
+              searchable
+              size="xs"
+              nothingFoundMessage="No options"
+              onClick={handleSelectClick}
+              onChange={handleGroupChange}
+              data={groupOptions}
+              variant="unstyled"
+              className="table-input-header custom-multiselect"
+              clearable
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('group');
+                },
                 size: 14,
+                style: { cursor: 'pointer' },
               })}
-            </Center>
+            />
           </Flex>
         );
 
       case 'm3u':
         return (
-          <Flex gap="sm" style={{ width: '100%' }}>
-            <Box style={{ flex: 1, minWidth: 0 }}>
-              <Select
-                placeholder="M3U"
-                searchable
-                clearable
-                size="xs"
-                nothingFoundMessage="No options"
-                onClick={handleSelectClick}
-                onChange={handleM3UChange}
-                data={playlists.map((playlist) => ({
-                  label: playlist.name,
-                  value: `${playlist.id}`,
-                }))}
-                variant="unstyled"
-                className="table-input-header"
-              />
-            </Box>
-            <Center style={{ flexShrink: 0 }}>
-              {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('m3u'),
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
+            <Select
+              placeholder="M3U"
+              searchable
+              clearable
+              size="xs"
+              nothingFoundMessage="No options"
+              onClick={handleSelectClick}
+              onChange={handleM3UChange}
+              data={playlists.map((playlist) => ({
+                label: playlist.name,
+                value: `${playlist.id}`,
+              }))}
+              variant="unstyled"
+              className="table-input-header"
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('m3u');
+                },
                 size: 14,
+                style: { cursor: 'pointer' },
               })}
-            </Center>
+            />
           </Flex>
         );
     }
