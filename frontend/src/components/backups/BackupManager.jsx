@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActionIcon,
   Box,
   Button,
+  Center,
   FileInput,
   Flex,
   Group,
@@ -13,7 +14,6 @@ import {
   Select,
   Stack,
   Switch,
-  Table,
   Text,
   TextInput,
   Tooltip,
@@ -31,6 +31,7 @@ import { notifications } from '@mantine/notifications';
 import API from '../../api';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import { CustomTable, useTable } from '../tables/CustomTable';
 
 // Convert 24h time string to 12h format with period
 function to12Hour(time24) {
@@ -110,6 +111,112 @@ export default function BackupManager() {
   // For 12-hour display mode
   const [displayTime, setDisplayTime] = useState('3:00');
   const [timePeriod, setTimePeriod] = useState('AM');
+
+  const columns = useMemo(
+    () => [
+      {
+        header: 'Filename',
+        accessorKey: 'name',
+        size: 250,
+        cell: ({ cell }) => (
+          <Text size="sm" fw={500}>
+            {cell.getValue()}
+          </Text>
+        ),
+      },
+      {
+        header: 'Size',
+        accessorKey: 'size',
+        size: 100,
+        cell: ({ cell }) => (
+          <Text size="sm">{formatBytes(cell.getValue())}</Text>
+        ),
+      },
+      {
+        header: 'Created',
+        accessorKey: 'created',
+        size: 175,
+        cell: ({ cell }) => (
+          <Text size="sm">{formatDate(cell.getValue())}</Text>
+        ),
+      },
+      {
+        id: 'actions',
+        header: 'Actions',
+        size: 150,
+      },
+    ],
+    []
+  );
+
+  const renderHeaderCell = (header) => {
+    if (header.id === 'actions') {
+      return (
+        <Center style={{ width: '100%' }}>
+          <Text size="sm">{header.column.columnDef.header}</Text>
+        </Center>
+      );
+    }
+    return (
+      <Text size="sm" name={header.id}>
+        {header.column.columnDef.header}
+      </Text>
+    );
+  };
+
+  const renderBodyCell = ({ cell, row }) => {
+    if (cell.column.id === 'actions') {
+      return (
+        <Center style={{ width: '100%' }}>
+          <Tooltip label="Download">
+            <ActionIcon
+              variant="transparent"
+              color="blue.5"
+              onClick={() => handleDownload(row.original.name)}
+              loading={downloading === row.original.name}
+              disabled={downloading !== null}
+            >
+              <Download size={18} />
+            </ActionIcon>
+          </Tooltip>
+          <Tooltip label="Restore">
+            <ActionIcon
+              variant="transparent"
+              color="yellow.5"
+              onClick={() => handleRestoreClick(row.original)}
+            >
+              <RotateCcw size={18} />
+            </ActionIcon>
+          </Tooltip>
+          <Tooltip label="Delete">
+            <ActionIcon
+              variant="transparent"
+              color="red.9"
+              onClick={() => handleDeleteClick(row.original)}
+            >
+              <SquareMinus size={18} />
+            </ActionIcon>
+          </Tooltip>
+        </Center>
+      );
+    }
+    return null;
+  };
+
+  const table = useTable({
+    columns,
+    data: backups,
+    allRowIds: backups.map((b) => b.name),
+    bodyCellRenderFns: {
+      actions: renderBodyCell,
+    },
+    headerCellRenderFns: {
+      name: renderHeaderCell,
+      size: renderHeaderCell,
+      created: renderHeaderCell,
+      actions: renderHeaderCell,
+    },
+  });
 
   const loadBackups = async () => {
     setLoading(true);
@@ -483,66 +590,9 @@ export default function BackupManager() {
                 No backups found. Create one to get started.
               </Text>
             ) : (
-              <Table striped highlightOnHover>
-                <Table.Thead>
-                  <Table.Tr>
-                    <Table.Th>Filename</Table.Th>
-                    <Table.Th>Size</Table.Th>
-                    <Table.Th>Created</Table.Th>
-                    <Table.Th>Actions</Table.Th>
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {backups.map((backup) => (
-                    <Table.Tr key={backup.name}>
-                      <Table.Td>
-                        <Text size="sm" fw={500}>
-                          {backup.name}
-                        </Text>
-                      </Table.Td>
-                      <Table.Td>
-                        <Text size="sm">{formatBytes(backup.size)}</Text>
-                      </Table.Td>
-                      <Table.Td>
-                        <Text size="sm">{formatDate(backup.created)}</Text>
-                      </Table.Td>
-                      <Table.Td>
-                        <Group gap="xs">
-                          <Tooltip label="Download">
-                            <ActionIcon
-                              variant="transparent"
-                              color="blue.5"
-                              onClick={() => handleDownload(backup.name)}
-                              loading={downloading === backup.name}
-                              disabled={downloading !== null}
-                            >
-                              <Download size={18} />
-                            </ActionIcon>
-                          </Tooltip>
-                          <Tooltip label="Restore">
-                            <ActionIcon
-                              variant="transparent"
-                              color="yellow.5"
-                              onClick={() => handleRestoreClick(backup)}
-                            >
-                              <RotateCcw size={18} />
-                            </ActionIcon>
-                          </Tooltip>
-                          <Tooltip label="Delete">
-                            <ActionIcon
-                              variant="transparent"
-                              color="red.9"
-                              onClick={() => handleDeleteClick(backup)}
-                            >
-                              <SquareMinus size={18} />
-                            </ActionIcon>
-                          </Tooltip>
-                        </Group>
-                      </Table.Td>
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
+              <div style={{ minWidth: 500 }}>
+                <CustomTable table={table} />
+              </div>
             )}
           </Box>
         </Box>
