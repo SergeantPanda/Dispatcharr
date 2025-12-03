@@ -183,7 +183,7 @@ const StreamsTable = () => {
   const [pageCount, setPageCount] = useState(0);
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [sorting, setSorting] = useState([{ id: 'name', desc: true }]);
+  const [sorting, setSorting] = useState([{ id: 'name', desc: false }]);
   const [selectedStreamIds, setSelectedStreamIds] = useState([]);
 
   // Channel numbering modal state
@@ -710,8 +710,8 @@ const StreamsTable = () => {
           },
         ]);
       } else {
-        // Reset to default sort (name descending) instead of clearing
-        setSorting([{ id: 'name', desc: true }]);
+        // Reset to default sort (name ascending) instead of clearing
+        setSorting([{ id: 'name', desc: false }]);
       }
     } else {
       setSorting([
