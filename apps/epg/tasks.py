@@ -1502,6 +1502,17 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
         logger.info(f"Deleted {deleted_count} existing programs")
 
+        # Clean up orphaned programs for unmapped EPG entries
+        # These accumulate if a channel is unmapped after being mapped
+        unmapped_epg_ids = EPGData.objects.filter(
+            epg_source=epg_source
+        ).exclude(id__in=mapped_epg_ids).values_list('id', flat=True)
+
+        if unmapped_epg_ids:
+            orphaned_count = ProgramData.objects.filter(epg_id__in=unmapped_epg_ids).delete()[0]
+            if orphaned_count > 0:
+                logger.info(f"Cleaned up {orphaned_count} orphaned programs for {len(unmapped_epg_ids)} unmapped EPG entries")
+
         # SINGLE PASS PARSING: Parse the XML file once and process all mapped channels
         programs_to_create = []
         programs_by_channel = {tvg_id: 0 for tvg_id in mapped_tvg_ids}  # Track count per channel
