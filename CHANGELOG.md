@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - EPG table "Updated" column now updates in real-time via WebSocket using the actual backend timestamp instead of requiring a page refresh
 - Bulk channel editor confirmation dialog now displays the correct stream profile name that will be applied to the selected channels.
 
+## [0.13.1] - 2025-12-06
+
+### Fixed
+
 ## [0.13.0] - 2025-12-02
 
 ### Added
