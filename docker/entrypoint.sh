@@ -52,9 +52,6 @@ PY
   mv -f "$tmpfile" "$SECRET_FILE" || { echo "move failed"; rm -f "$tmpfile"; exit 1; }
 fi
 
-chown $PUID:$PGID "$SECRET_FILE" || true
-chmod 600 "$SECRET_FILE" || true
-
 export DJANGO_SECRET_KEY="$(cat "$SECRET_FILE")"
 
 # Process priority configuration
