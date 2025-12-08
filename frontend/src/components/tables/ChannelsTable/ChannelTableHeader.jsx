@@ -26,6 +26,8 @@ import {
   SquarePen,
   SquarePlus,
   Settings,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import API from '../../../api';
 import { notifications } from '@mantine/notifications';
@@ -102,6 +104,8 @@ const ChannelTableHeader = ({
   editChannel,
   deleteChannels,
   selectedTableIds,
+  showDisabled,
+  setShowDisabled,
 }) => {
   const theme = useMantineTheme();
 
@@ -208,6 +212,10 @@ const ChannelTableHeader = ({
     );
   };
 
+  const toggleShowDisabled = () => {
+    setShowDisabled(!showDisabled);
+  };
+
   return (
     <Group justify="space-between">
       <Group gap={5} style={{ paddingLeft: 10 }}>
@@ -225,6 +233,12 @@ const ChannelTableHeader = ({
 
         <Tooltip label="Create Profile">
           <CreateProfilePopover />
+        </Tooltip>
+
+        <Tooltip label={showDisabled ? 'Hide Disabled' : 'Show Disabled'}>
+          <Button size="xs" variant="default" onClick={toggleShowDisabled}>
+            {showDisabled ? <Eye size={18} /> : <EyeOff size={18} />}
+          </Button>
         </Tooltip>
       </Group>
 

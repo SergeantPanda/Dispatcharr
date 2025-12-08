@@ -419,6 +419,27 @@ class ChannelViewSet(viewsets.ModelViewSet):
             group_names = channel_group.split(",")
             qs = qs.filter(channel_group__name__in=group_names)
 
+        channel_profile_id = self.request.query_params.get("channel_profile_id")
+        show_disabled_param = self.request.query_params.get("show_disabled", None)
+
+        if channel_profile_id:
+            try:
+                profile_id_int = int(channel_profile_id)
+                # If show_disabled is present, include all memberships for that profile.
+                # If absent, restrict to enabled=True.
+                if show_disabled_param is None:
+                    qs = qs.filter(
+                        channelprofilemembership__channel_profile_id=profile_id_int,
+                        channelprofilemembership__enabled=True,
+                    )
+                else:
+                    qs = qs.filter(
+                        channelprofilemembership__channel_profile_id=profile_id_int
+                    )
+            except (ValueError, TypeError):
+                # Ignore invalid profile id values
+                pass
+
         if self.request.user.user_level < 10:
             qs = qs.filter(user_level__lte=self.request.user.user_level)
 
