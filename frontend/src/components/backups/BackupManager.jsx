@@ -188,10 +188,12 @@ export default function BackupManager() {
     time: '03:00',
     day_of_week: 0,
     retention_count: 0,
+    cron_expression: '',
   });
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleChanged, setScheduleChanged] = useState(false);
+  const [advancedMode, setAdvancedMode] = useState(false);
 
   // For 12-hour display mode
   const [displayTime, setDisplayTime] = useState('3:00');
@@ -299,17 +301,24 @@ export default function BackupManager() {
     try {
       const settings = await API.getBackupSchedule();
 
-      // Convert UTC time from backend to local time
-      const localTime = utcToLocal(settings.time);
+      // Check if using cron expression (advanced mode)
+      if (settings.cron_expression) {
+        setAdvancedMode(true);
+        setSchedule(settings);
+      } else {
+        // Convert UTC time from backend to local time
+        const localTime = utcToLocal(settings.time);
 
-      // Store with local time for display
-      setSchedule({ ...settings, time: localTime });
+        // Store with local time for display
+        setSchedule({ ...settings, time: localTime });
+
+        // Initialize 12-hour display values from the local time
+        const { time, period } = to12Hour(localTime);
+        setDisplayTime(time);
+        setTimePeriod(period);
+      }
+
       setScheduleChanged(false);
-
-      // Initialize 12-hour display values from the local time
-      const { time, period } = to12Hour(localTime);
-      setDisplayTime(time);
-      setTimePeriod(period);
     } catch (error) {
       // Ignore errors on initial load - settings may not exist yet
     } finally {
@@ -350,15 +359,27 @@ export default function BackupManager() {
   const handleSaveSchedule = async () => {
     setScheduleSaving(true);
     try {
-      // Convert local time to UTC before sending to backend
-      const utcTime = localToUtc(schedule.time);
-      const scheduleToSave = { ...schedule, time: utcTime };
+      let scheduleToSave;
+
+      if (advancedMode) {
+        // In advanced mode, send cron expression as-is
+        scheduleToSave = schedule;
+      } else {
+        // Convert local time to UTC before sending to backend
+        const utcTime = localToUtc(schedule.time);
+        scheduleToSave = { ...schedule, time: utcTime, cron_expression: '' };
+      }
 
       const updated = await API.updateBackupSchedule(scheduleToSave);
 
-      // Convert UTC time from backend response back to local time
-      const localTime = utcToLocal(updated.time);
-      setSchedule({ ...updated, time: localTime });
+      if (advancedMode) {
+        setSchedule(updated);
+      } else {
+        // Convert UTC time from backend response back to local time
+        const localTime = utcToLocal(updated.time);
+        setSchedule({ ...updated, time: localTime });
+      }
+
       setScheduleChanged(false);
 
       notifications.show({
@@ -509,17 +530,65 @@ export default function BackupManager() {
           <Loader size="sm" />
         ) : (
           <>
-            <Group grow align="flex-end">
-              <Select
-                label="Frequency"
-                value={schedule.frequency}
-                onChange={(value) => handleScheduleChange('frequency', value)}
-                data={[
-                  { value: 'daily', label: 'Daily' },
-                  { value: 'weekly', label: 'Weekly' },
-                ]}
-                disabled={!schedule.enabled}
-              />
+            <Switch
+              checked={advancedMode}
+              onChange={(e) => setAdvancedMode(e.currentTarget.checked)}
+              label="Advanced (Cron Expression)"
+              disabled={!schedule.enabled}
+              size="sm"
+              mb="xs"
+            />
+
+            {advancedMode ? (
+              <>
+                <Stack gap="sm">
+                  <TextInput
+                    label="Cron Expression"
+                    value={schedule.cron_expression}
+                    onChange={(e) => handleScheduleChange('cron_expression', e.currentTarget.value)}
+                    placeholder="0 3 * * *"
+                    description="Format: minute hour day month weekday (e.g., '0 3 * * *' = 3:00 AM daily)"
+                    disabled={!schedule.enabled}
+                  />
+                  <Text size="xs" c="dimmed">
+                    Examples: <br />
+                    • <code>0 3 * * *</code> - Every day at 3:00 AM<br />
+                    • <code>0 2 * * 0</code> - Every Sunday at 2:00 AM<br />
+                    • <code>0 */6 * * *</code> - Every 6 hours<br />
+                    • <code>30 14 1 * *</code> - 1st of every month at 2:30 PM
+                  </Text>
+                </Stack>
+                <Group grow align="flex-end">
+                  <NumberInput
+                    label="Retention"
+                    description="0 = keep all"
+                    value={schedule.retention_count}
+                    onChange={(value) => handleScheduleChange('retention_count', value || 0)}
+                    min={0}
+                    disabled={!schedule.enabled}
+                  />
+                  <Button
+                    onClick={handleSaveSchedule}
+                    loading={scheduleSaving}
+                    disabled={!scheduleChanged}
+                    variant="default"
+                  >
+                    Save
+                  </Button>
+                </Group>
+              </>
+            ) : (
+              <Group grow align="flex-end">
+                <Select
+                  label="Frequency"
+                  value={schedule.frequency}
+                  onChange={(value) => handleScheduleChange('frequency', value)}
+                  data={[
+                    { value: 'daily', label: 'Daily' },
+                    { value: 'weekly', label: 'Weekly' },
+                  ]}
+                  disabled={!schedule.enabled}
+                />
               {schedule.frequency === 'weekly' && (
                 <Select
                   label="Day"
@@ -557,24 +626,27 @@ export default function BackupManager() {
                   disabled={!schedule.enabled}
                 />
               )}
-              <NumberInput
-                label="Retention"
-                description="0 = keep all"
-                value={schedule.retention_count}
-                onChange={(value) => handleScheduleChange('retention_count', value || 0)}
-                min={0}
-                disabled={!schedule.enabled}
-              />
-              <Button
-                onClick={handleSaveSchedule}
-                loading={scheduleSaving}
-                disabled={!scheduleChanged}
-                variant="default"
-              >
-                Save
-              </Button>
-            </Group>
-            {schedule.enabled && schedule.time && (
+                <NumberInput
+                  label="Retention"
+                  description="0 = keep all"
+                  value={schedule.retention_count}
+                  onChange={(value) => handleScheduleChange('retention_count', value || 0)}
+                  min={0}
+                  disabled={!schedule.enabled}
+                />
+                <Button
+                  onClick={handleSaveSchedule}
+                  loading={scheduleSaving}
+                  disabled={!scheduleChanged}
+                  variant="default"
+                >
+                  Save
+                </Button>
+              </Group>
+            )}
+
+            {/* Timezone info - only show in simple mode */}
+            {!advancedMode && schedule.enabled && schedule.time && (
               <Text size="xs" c="dimmed" mt="xs">
                 Timezone: {userTimezone} • Backup will run at {schedule.time}
               </Text>

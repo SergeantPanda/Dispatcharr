@@ -15,6 +15,7 @@ SETTING_KEYS = {
     "time": "backup_schedule_time",
     "day_of_week": "backup_schedule_day_of_week",
     "retention_count": "backup_retention_count",
+    "cron_expression": "backup_schedule_cron_expression",
 }
 
 DEFAULTS = {
@@ -23,6 +24,7 @@ DEFAULTS = {
     "time": "03:00",
     "day_of_week": 0,  # Sunday
     "retention_count": 0,
+    "cron_expression": "",
 }
 
 
@@ -60,6 +62,7 @@ def get_schedule_settings() -> dict:
         "time": _get_setting("time"),
         "day_of_week": _get_setting("day_of_week"),
         "retention_count": _get_setting("retention_count"),
+        "cron_expression": _get_setting("cron_expression"),
     }
 
 
@@ -88,7 +91,7 @@ def update_schedule_settings(data: dict) -> dict:
             raise ValueError("retention_count must be >= 0")
 
     # Update settings
-    for key in ("enabled", "frequency", "time", "day_of_week", "retention_count"):
+    for key in ("enabled", "frequency", "time", "day_of_week", "retention_count", "cron_expression"):
         if key in data:
             _set_setting(key, data[key])
 
@@ -108,26 +111,48 @@ def _sync_periodic_task() -> None:
         logger.info("Backup schedule disabled, removed periodic task")
         return
 
-    # Parse time
-    hour, minute = settings["time"].split(":")
+    # Check if using cron expression (advanced mode)
+    if settings["cron_expression"]:
+        # Parse cron expression: "minute hour day month weekday"
+        try:
+            parts = settings["cron_expression"].split()
+            if len(parts) != 5:
+                raise ValueError("Cron expression must have 5 parts: minute hour day month weekday")
 
-    # Build crontab based on frequency
-    if settings["frequency"] == "daily":
-        crontab, _ = CrontabSchedule.objects.get_or_create(
-            minute=minute,
-            hour=hour,
-            day_of_week="*",
-            day_of_month="*",
-            month_of_year="*",
-        )
-    else:  # weekly
-        crontab, _ = CrontabSchedule.objects.get_or_create(
-            minute=minute,
-            hour=hour,
-            day_of_week=str(settings["day_of_week"]),
-            day_of_month="*",
-            month_of_year="*",
-        )
+            minute, hour, day_of_month, month_of_year, day_of_week = parts
+
+            crontab, _ = CrontabSchedule.objects.get_or_create(
+                minute=minute,
+                hour=hour,
+                day_of_week=day_of_week,
+                day_of_month=day_of_month,
+                month_of_year=month_of_year,
+            )
+        except Exception as e:
+            logger.error(f"Invalid cron expression '{settings['cron_expression']}': {e}")
+            raise ValueError(f"Invalid cron expression: {e}")
+    else:
+        # Use simple frequency-based scheduling
+        # Parse time
+        hour, minute = settings["time"].split(":")
+
+        # Build crontab based on frequency
+        if settings["frequency"] == "daily":
+            crontab, _ = CrontabSchedule.objects.get_or_create(
+                minute=minute,
+                hour=hour,
+                day_of_week="*",
+                day_of_month="*",
+                month_of_year="*",
+            )
+        else:  # weekly
+            crontab, _ = CrontabSchedule.objects.get_or_create(
+                minute=minute,
+                hour=hour,
+                day_of_week=str(settings["day_of_week"]),
+                day_of_month="*",
+                month_of_year="*",
+            )
 
     # Create or update the periodic task
     task, created = PeriodicTask.objects.update_or_create(
