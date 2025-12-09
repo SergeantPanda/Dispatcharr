@@ -612,11 +612,11 @@ export default function BackupManager() {
           />
         </Group>
 
-        <Group justify="flex-start">
+        <Group justify="space-between">
+          <Text size="sm" fw={500}>Advanced (Cron Expression)</Text>
           <Switch
             checked={advancedMode}
             onChange={(e) => setAdvancedMode(e.currentTarget.checked)}
-            label="Advanced (Cron Expression)"
             disabled={!schedule.enabled}
             size="sm"
           />
