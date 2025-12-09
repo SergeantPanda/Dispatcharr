@@ -7,8 +7,10 @@ import tempfile
 from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED
 import logging
+import pytz
 
 from django.conf import settings
+from core.models import CoreSettings
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +185,17 @@ def create_backup() -> Path:
     Returns the path to the created backup file.
     """
     backup_dir = get_backup_dir()
-    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y.%m.%d.%H.%M.%S")
+
+    # Use system timezone for filename (user-friendly), but keep internal timestamps as UTC
+    system_tz_name = CoreSettings.get_system_time_zone()
+    try:
+        system_tz = pytz.timezone(system_tz_name)
+        now_local = datetime.datetime.now(datetime.UTC).astimezone(system_tz)
+        timestamp = now_local.strftime("%Y.%m.%d.%H.%M.%S")
+    except Exception as e:
+        logger.warning(f"Failed to use system timezone {system_tz_name}: {e}, falling back to UTC")
+        timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y.%m.%d.%H.%M.%S")
+
     backup_name = f"dispatcharr-backup-{timestamp}.zip"
     backup_file = backup_dir / backup_name
 
