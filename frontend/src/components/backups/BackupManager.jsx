@@ -138,6 +138,69 @@ function getDefaultTimeZone() {
   }
 }
 
+// Validate cron expression
+function validateCronExpression(expression) {
+  if (!expression || expression.trim() === '') {
+    return { valid: false, error: 'Cron expression is required' };
+  }
+
+  const parts = expression.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    return { valid: false, error: 'Cron expression must have exactly 5 parts: minute hour day month weekday' };
+  }
+
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+
+  // Validate each part (allowing *, ranges, lists, steps)
+  const cronPartRegex = /^(\*|(\d+(-\d+)?(,\d+(-\d+)?)*)(\/\d+)?)$/;
+
+  if (!cronPartRegex.test(minute)) {
+    return { valid: false, error: 'Invalid minute field (0-59, *, or cron syntax)' };
+  }
+  if (!cronPartRegex.test(hour)) {
+    return { valid: false, error: 'Invalid hour field (0-23, *, or cron syntax)' };
+  }
+  if (!cronPartRegex.test(dayOfMonth)) {
+    return { valid: false, error: 'Invalid day field (1-31, *, or cron syntax)' };
+  }
+  if (!cronPartRegex.test(month)) {
+    return { valid: false, error: 'Invalid month field (1-12, *, or cron syntax)' };
+  }
+  if (!cronPartRegex.test(dayOfWeek)) {
+    return { valid: false, error: 'Invalid weekday field (0-6, *, or cron syntax)' };
+  }
+
+  // Additional range validation for numeric values
+  const validateRange = (value, min, max, name) => {
+    // Skip if it's * or contains special characters
+    if (value === '*' || value.includes('/') || value.includes('-') || value.includes(',')) {
+      return null;
+    }
+    const num = parseInt(value, 10);
+    if (isNaN(num) || num < min || num > max) {
+      return `${name} must be between ${min} and ${max}`;
+    }
+    return null;
+  };
+
+  const minuteError = validateRange(minute, 0, 59, 'Minute');
+  if (minuteError) return { valid: false, error: minuteError };
+
+  const hourError = validateRange(hour, 0, 23, 'Hour');
+  if (hourError) return { valid: false, error: hourError };
+
+  const dayError = validateRange(dayOfMonth, 1, 31, 'Day');
+  if (dayError) return { valid: false, error: dayError };
+
+  const monthError = validateRange(month, 1, 12, 'Month');
+  if (monthError) return { valid: false, error: monthError };
+
+  const weekdayError = validateRange(dayOfWeek, 0, 6, 'Weekday');
+  if (weekdayError) return { valid: false, error: weekdayError };
+
+  return { valid: true, error: null };
+}
+
 const DAYS_OF_WEEK = [
   { value: '0', label: 'Sunday' },
   { value: '1', label: 'Monday' },
@@ -194,6 +257,7 @@ export default function BackupManager() {
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleChanged, setScheduleChanged] = useState(false);
   const [advancedMode, setAdvancedMode] = useState(false);
+  const [cronError, setCronError] = useState(null);
 
   // For 12-hour display mode
   const [displayTime, setDisplayTime] = useState('3:00');
@@ -331,9 +395,25 @@ export default function BackupManager() {
     loadSchedule();
   }, []);
 
+  // Validate cron expression when switching to advanced mode
+  useEffect(() => {
+    if (advancedMode && schedule.cron_expression) {
+      const validation = validateCronExpression(schedule.cron_expression);
+      setCronError(validation.valid ? null : validation.error);
+    } else {
+      setCronError(null);
+    }
+  }, [advancedMode, schedule.cron_expression]);
+
   const handleScheduleChange = (field, value) => {
     setSchedule((prev) => ({ ...prev, [field]: value }));
     setScheduleChanged(true);
+
+    // Validate cron expression if in advanced mode
+    if (field === 'cron_expression' && advancedMode) {
+      const validation = validateCronExpression(value);
+      setCronError(validation.valid ? null : validation.error);
+    }
   };
 
   // Handle time changes in 12-hour mode
@@ -549,6 +629,7 @@ export default function BackupManager() {
                     placeholder="0 3 * * *"
                     description="Format: minute hour day month weekday (e.g., '0 3 * * *' = 3:00 AM daily)"
                     disabled={!schedule.enabled}
+                    error={cronError}
                   />
                   <Text size="xs" c="dimmed">
                     Examples: <br />
@@ -570,7 +651,7 @@ export default function BackupManager() {
                   <Button
                     onClick={handleSaveSchedule}
                     loading={scheduleSaving}
-                    disabled={!scheduleChanged}
+                    disabled={!scheduleChanged || (advancedMode && cronError)}
                     variant="default"
                   >
                     Save
