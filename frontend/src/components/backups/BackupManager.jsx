@@ -151,8 +151,9 @@ function validateCronExpression(expression) {
 
   const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
 
-  // Validate each part (allowing *, ranges, lists, steps)
-  const cronPartRegex = /^(\*|(\d+(-\d+)?(,\d+(-\d+)?)*)(\/\d+)?)$/;
+  // Validate each part (allowing *, */N steps, ranges, lists, steps)
+  // Supports: *, */2, 5, 1-5, 1-5/2, 1,3,5, etc.
+  const cronPartRegex = /^(\*\/\d+|\*|\d+(-\d+)?(\/\d+)?(,\d+(-\d+)?(\/\d+)?)*)$/;
 
   if (!cronPartRegex.test(minute)) {
     return { valid: false, error: 'Invalid minute field (0-59, *, or cron syntax)' };
