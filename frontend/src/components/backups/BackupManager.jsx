@@ -612,19 +612,20 @@ export default function BackupManager() {
           />
         </Group>
 
+        <Group justify="flex-start">
+          <Switch
+            checked={advancedMode}
+            onChange={(e) => setAdvancedMode(e.currentTarget.checked)}
+            label="Advanced (Cron Expression)"
+            disabled={!schedule.enabled}
+            size="sm"
+          />
+        </Group>
+
         {scheduleLoading ? (
           <Loader size="sm" />
         ) : (
           <>
-            <Switch
-              checked={advancedMode}
-              onChange={(e) => setAdvancedMode(e.currentTarget.checked)}
-              label="Advanced (Cron Expression)"
-              disabled={!schedule.enabled}
-              size="sm"
-              mb="xs"
-            />
-
             {advancedMode ? (
               <>
                 <Stack gap="sm">
