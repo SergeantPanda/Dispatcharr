@@ -30,6 +30,7 @@ import { notifications } from '@mantine/notifications';
 import API from '../../api';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from '../tables/CustomTable';
 
 const RowActions = ({ row, handleDownload, handleRestoreClick, handleDeleteClick, downloading }) => {
@@ -134,6 +135,9 @@ export default function BackupManager() {
   const [timeFormat] = useLocalStorage('time-format', '12h');
   const [tableSize] = useLocalStorage('table-size', 'default');
   const is12Hour = timeFormat === '12h';
+
+  // Warning suppression for confirmation dialogs
+  const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
   // Schedule state
   const [schedule, setSchedule] = useState({
@@ -653,6 +657,8 @@ export default function BackupManager() {
         message={`Are you sure you want to restore from "${selectedBackup?.name}"? This will replace all current data with the backup data. This action cannot be undone.`}
         confirmLabel="Restore"
         cancelLabel="Cancel"
+        actionKey="restore-backup"
+        onSuppressChange={suppressWarning}
       />
 
       <ConfirmationDialog
@@ -666,6 +672,8 @@ export default function BackupManager() {
         message={`Are you sure you want to delete "${selectedBackup?.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
         cancelLabel="Cancel"
+        actionKey="delete-backup"
+        onSuppressChange={suppressWarning}
       />
     </Stack>
   );
