@@ -617,6 +617,7 @@ export default function BackupManager() {
           <Switch
             checked={advancedMode}
             onChange={(e) => setAdvancedMode(e.currentTarget.checked)}
+            label={advancedMode ? 'Enabled' : 'Disabled'}
             disabled={!schedule.enabled}
             size="sm"
           />
