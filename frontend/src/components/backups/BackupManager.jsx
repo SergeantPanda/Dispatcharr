@@ -97,6 +97,47 @@ function to24Hour(time12, period) {
   return `${String(hours24).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
+// Convert UTC time (HH:MM) to local time (HH:MM)
+function utcToLocal(utcTime) {
+  if (!utcTime) return '00:00';
+  const [hours, minutes] = utcTime.split(':').map(Number);
+
+  // Create a date in UTC
+  const date = new Date();
+  date.setUTCHours(hours, minutes, 0, 0);
+
+  // Get local time components
+  const localHours = date.getHours();
+  const localMinutes = date.getMinutes();
+
+  return `${String(localHours).padStart(2, '0')}:${String(localMinutes).padStart(2, '0')}`;
+}
+
+// Convert local time (HH:MM) to UTC time (HH:MM)
+function localToUtc(localTime) {
+  if (!localTime) return '00:00';
+  const [hours, minutes] = localTime.split(':').map(Number);
+
+  // Create a date in local time
+  const date = new Date();
+  date.setHours(hours, minutes, 0, 0);
+
+  // Get UTC time components
+  const utcHours = date.getUTCHours();
+  const utcMinutes = date.getUTCMinutes();
+
+  return `${String(utcHours).padStart(2, '0')}:${String(utcMinutes).padStart(2, '0')}`;
+}
+
+// Get default timezone (same as Settings page)
+function getDefaultTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
 const DAYS_OF_WEEK = [
   { value: '0', label: 'Sunday' },
   { value: '1', label: 'Monday' },
@@ -131,9 +172,10 @@ export default function BackupManager() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [selectedBackup, setSelectedBackup] = useState(null);
 
-  // Read user's time format preference from settings
+  // Read user's preferences from settings
   const [timeFormat] = useLocalStorage('time-format', '12h');
   const [tableSize] = useLocalStorage('table-size', 'default');
+  const [userTimezone] = useLocalStorage('time-zone', getDefaultTimeZone());
   const is12Hour = timeFormat === '12h';
 
   // Warning suppression for confirmation dialogs
@@ -256,10 +298,16 @@ export default function BackupManager() {
     setScheduleLoading(true);
     try {
       const settings = await API.getBackupSchedule();
-      setSchedule(settings);
+
+      // Convert UTC time from backend to local time
+      const localTime = utcToLocal(settings.time);
+
+      // Store with local time for display
+      setSchedule({ ...settings, time: localTime });
       setScheduleChanged(false);
-      // Initialize 12-hour display values from the loaded time
-      const { time, period } = to12Hour(settings.time);
+
+      // Initialize 12-hour display values from the local time
+      const { time, period } = to12Hour(localTime);
       setDisplayTime(time);
       setTimePeriod(period);
     } catch (error) {
@@ -302,9 +350,17 @@ export default function BackupManager() {
   const handleSaveSchedule = async () => {
     setScheduleSaving(true);
     try {
-      const updated = await API.updateBackupSchedule(schedule);
-      setSchedule(updated);
+      // Convert local time to UTC before sending to backend
+      const utcTime = localToUtc(schedule.time);
+      const scheduleToSave = { ...schedule, time: utcTime };
+
+      const updated = await API.updateBackupSchedule(scheduleToSave);
+
+      // Convert UTC time from backend response back to local time
+      const localTime = utcToLocal(updated.time);
+      setSchedule({ ...updated, time: localTime });
       setScheduleChanged(false);
+
       notifications.show({
         title: 'Success',
         message: 'Backup schedule saved',
@@ -518,6 +574,11 @@ export default function BackupManager() {
                 Save
               </Button>
             </Group>
+            {schedule.enabled && schedule.time && (
+              <Text size="xs" c="dimmed" mt="xs">
+                Timezone: {userTimezone} • Backup will run at {schedule.time}
+              </Text>
+            )}
           </>
         )}
       </Stack>
