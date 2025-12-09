@@ -298,9 +298,11 @@ export default function BackupManager() {
       {
         header: 'Created',
         accessorKey: 'created',
-        size: 160,
+        minSize: 180,
         cell: ({ cell }) => (
-          <Text size="sm">{formatDate(cell.getValue())}</Text>
+          <Text size="sm" style={{ whiteSpace: 'nowrap' }}>
+            {formatDate(cell.getValue())}
+          </Text>
         ),
       },
       {
