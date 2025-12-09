@@ -26,6 +26,7 @@ import {
   UploadCloud,
 } from 'lucide-react';
 import { notifications } from '@mantine/notifications';
+import dayjs from 'dayjs';
 
 import API from '../../api';
 import ConfirmationDialog from '../ConfirmationDialog';
@@ -220,11 +221,6 @@ function formatBytes(bytes) {
   return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
 }
 
-function formatDate(dateString) {
-  const date = new Date(dateString);
-  return date.toLocaleString();
-}
-
 export default function BackupManager() {
   const [backups, setBackups] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -238,9 +234,18 @@ export default function BackupManager() {
 
   // Read user's preferences from settings
   const [timeFormat] = useLocalStorage('time-format', '12h');
+  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
   const [tableSize] = useLocalStorage('table-size', 'default');
   const [userTimezone] = useLocalStorage('time-zone', getDefaultTimeZone());
   const is12Hour = timeFormat === '12h';
+
+  // Format date according to user preferences
+  const formatDate = (dateString) => {
+    const date = dayjs(dateString);
+    const datePart = dateFormatSetting === 'mdy' ? 'MM/DD/YYYY' : 'DD/MM/YYYY';
+    const timePart = is12Hour ? 'h:mm:ss A' : 'HH:mm:ss';
+    return date.format(`${datePart}, ${timePart}`);
+  };
 
   // Warning suppression for confirmation dialogs
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
