@@ -282,10 +282,12 @@ def list_backups() -> list[dict]:
     backups = []
 
     for backup_file in sorted(backup_dir.glob("dispatcharr-backup-*.zip"), reverse=True):
+        # Use UTC timezone so frontend can convert to user's local time
+        created_time = datetime.datetime.fromtimestamp(backup_file.stat().st_mtime, datetime.UTC)
         backups.append({
             "name": backup_file.name,
             "size": backup_file.stat().st_size,
-            "created": datetime.datetime.fromtimestamp(backup_file.stat().st_mtime).isoformat(),
+            "created": created_time.isoformat(),
         })
 
     return backups
