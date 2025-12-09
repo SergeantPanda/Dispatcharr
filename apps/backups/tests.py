@@ -660,6 +660,7 @@ class BackupAPITestCase(TestCase):
             'time': '03:00',
             'day_of_week': 0,
             'retention_count': 5,
+            'cron_expression': '',
         }
 
         auth_header = self.get_auth_header(self.admin_user)
@@ -698,6 +699,7 @@ class BackupAPITestCase(TestCase):
             'time': '02:00',
             'day_of_week': 1,
             'retention_count': 10,
+            'cron_expression': '',
         }
 
         auth_header = self.get_auth_header(self.admin_user)
@@ -758,6 +760,7 @@ class BackupSchedulerTestCase(TestCase):
         self.assertEqual(settings['time'], '03:00')
         self.assertEqual(settings['day_of_week'], 0)
         self.assertEqual(settings['retention_count'], 0)
+        self.assertEqual(settings['cron_expression'], '')
 
     def test_update_schedule_settings_stores_values(self):
         """Test that update_schedule_settings stores values correctly"""
@@ -867,6 +870,84 @@ class BackupSchedulerTestCase(TestCase):
 
         task = PeriodicTask.objects.get(name='backup-scheduled-task')
         self.assertEqual(task.crontab.day_of_week, '3')
+
+    def test_cron_expression_stores_value(self):
+        """Test that cron_expression is stored and retrieved correctly"""
+        from . import scheduler
+
+        result = scheduler.update_schedule_settings({
+            'enabled': True,
+            'cron_expression': '*/5 * * * *',
+        })
+
+        self.assertEqual(result['cron_expression'], '*/5 * * * *')
+
+        # Verify persistence
+        settings = scheduler.get_schedule_settings()
+        self.assertEqual(settings['cron_expression'], '*/5 * * * *')
+
+    def test_cron_expression_creates_correct_schedule(self):
+        """Test that cron expression creates correct CrontabSchedule"""
+        from . import scheduler
+        from django_celery_beat.models import PeriodicTask
+
+        scheduler.update_schedule_settings({
+            'enabled': True,
+            'cron_expression': '*/15 2 * * 1-5',  # Every 15 mins during 2 AM hour on weekdays
+        })
+
+        task = PeriodicTask.objects.get(name='backup-scheduled-task')
+        self.assertEqual(task.crontab.minute, '*/15')
+        self.assertEqual(task.crontab.hour, '2')
+        self.assertEqual(task.crontab.day_of_month, '*')
+        self.assertEqual(task.crontab.month_of_year, '*')
+        self.assertEqual(task.crontab.day_of_week, '1-5')
+
+    def test_cron_expression_invalid_format(self):
+        """Test that invalid cron expression raises ValueError"""
+        from . import scheduler
+
+        # Too few parts
+        with self.assertRaises(ValueError) as context:
+            scheduler.update_schedule_settings({
+                'enabled': True,
+                'cron_expression': '0 3 *',
+            })
+        self.assertIn('5 parts', str(context.exception))
+
+    def test_cron_expression_empty_uses_simple_mode(self):
+        """Test that empty cron_expression falls back to simple frequency mode"""
+        from . import scheduler
+        from django_celery_beat.models import PeriodicTask
+
+        scheduler.update_schedule_settings({
+            'enabled': True,
+            'frequency': 'daily',
+            'time': '04:00',
+            'cron_expression': '',  # Empty, should use simple mode
+        })
+
+        task = PeriodicTask.objects.get(name='backup-scheduled-task')
+        self.assertEqual(task.crontab.minute, '00')
+        self.assertEqual(task.crontab.hour, '04')
+        self.assertEqual(task.crontab.day_of_week, '*')
+
+    def test_cron_expression_overrides_simple_settings(self):
+        """Test that cron_expression takes precedence over frequency/time"""
+        from . import scheduler
+        from django_celery_beat.models import PeriodicTask
+
+        scheduler.update_schedule_settings({
+            'enabled': True,
+            'frequency': 'daily',
+            'time': '03:00',
+            'cron_expression': '0 */6 * * *',  # Every 6 hours (should override daily at 3 AM)
+        })
+
+        task = PeriodicTask.objects.get(name='backup-scheduled-task')
+        self.assertEqual(task.crontab.minute, '0')
+        self.assertEqual(task.crontab.hour, '*/6')
+        self.assertEqual(task.crontab.day_of_week, '*')
 
 
 class BackupTasksTestCase(TestCase):
