@@ -1,14 +1,17 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import ChannelsTable from '../components/tables/ChannelsTable';
-import StreamsTable from '../components/tables/StreamsTable';
-import { Box } from '@mantine/core';
+const StreamsTable = lazy(() => import('../components/tables/StreamsTable'));
+import { Box, Text } from '@mantine/core';
 import { Allotment } from 'allotment';
 import { USER_LEVELS } from '../constants';
 import useAuthStore from '../store/auth';
 import useLocalStorage from '../hooks/useLocalStorage';
+import ErrorBoundary from '../components/ErrorBoundary';
 
-const ChannelsPage = () => {
+const PageContent = () => {
   const authUser = useAuthStore((s) => s.user);
+  if (!authUser.id) throw new Error()
+
   const [allotmentSizes, setAllotmentSizes] = useLocalStorage(
     'channels-splitter-sizes',
     [50, 50]
@@ -22,9 +25,6 @@ const ChannelsPage = () => {
     setAllotmentSizes(sizes);
   };
 
-  if (!authUser.id) {
-    return <></>;
-  }
   if (authUser.user_level <= USER_LEVELS.STANDARD) {
     return (
       <Box style={{ padding: 10 }}>
@@ -34,34 +34,41 @@ const ChannelsPage = () => {
   }
 
   return (
-    <div
-      style={{
-        height: '100vh',
-        width: '100%',
-        display: 'flex',
-        overflowX: 'auto',
-      }}
+    <Box h={'100vh'} w={'100%'} display={'flex'}
+         style={{ overflowX: 'auto' }}
     >
       <Allotment
         defaultSizes={allotmentSizes}
-        style={{ height: '100%', width: '100%', minWidth: '600px' }}
+        h={'100%'} w={'100%'} miw={'600px'}
         className="custom-allotment"
         minSize={100}
         onChange={handleSplitChange}
         onResize={handleResize}
       >
-        <div style={{ padding: 10, overflowX: 'auto', minWidth: '100px' }}>
-          <div style={{ minWidth: '600px' }}>
+        <Box p={10} miw={'100px'} style={{ overflowX: 'auto' }}>
+          <Box miw={'600px'}>
             <ChannelsTable />
-          </div>
-        </div>
-        <div style={{ padding: 10, overflowX: 'auto', minWidth: '100px' }}>
-          <div style={{ minWidth: '600px' }}>
-            <StreamsTable />
-          </div>
-        </div>
+          </Box>
+        </Box>
+        <Box p={10} miw={'100px'} style={{ overflowX: 'auto' }}>
+          <Box miw={'600px'}>
+            <ErrorBoundary>
+              <Suspense fallback={<Text>Loading...</Text>}>
+                <StreamsTable />
+              </Suspense>
+            </ErrorBoundary>
+          </Box>
+        </Box>
       </Allotment>
-    </div>
+    </Box>
+  );
+};
+
+const ChannelsPage = () => {
+  return (
+    <ErrorBoundary>
+      <PageContent/>
+    </ErrorBoundary>
   );
 };
 
