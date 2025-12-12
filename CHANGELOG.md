@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Removed unreachable code path in m3u output - Thanks [@DawtCom](https://github.com/DawtCom)
+
 ### Fixed
 
 - nginx now gracefully handles hosts without IPv6 support by automatically disabling IPv6 binding at startup
