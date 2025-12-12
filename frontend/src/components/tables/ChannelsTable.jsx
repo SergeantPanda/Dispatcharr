@@ -68,7 +68,7 @@ const epgUrlBase = `${window.location.protocol}//${window.location.host}/output/
 const hdhrUrlBase = `${window.location.protocol}//${window.location.host}/hdhr`;
 
 const ChannelEnabledSwitch = React.memo(
-  ({ rowId, selectedProfileId, selectedTableIds, setSelectedTableIds }) => {
+  ({ rowId, selectedProfileId, selectedTableIds }) => {
     // Directly extract the channels set once to avoid re-renders on every change.
     const isEnabled = useChannelsStore(
       useCallback(
@@ -79,20 +79,16 @@ const ChannelEnabledSwitch = React.memo(
       )
     );
 
-    const handleToggle = async () => {
+    const handleToggle = () => {
       if (selectedTableIds.length > 1) {
-        await API.updateProfileChannels(
+        API.updateProfileChannels(
           selectedTableIds,
           selectedProfileId,
           !isEnabled
         );
       } else {
-        await API.updateProfileChannel(rowId, selectedProfileId, !isEnabled);
+        API.updateProfileChannel(rowId, selectedProfileId, !isEnabled);
       }
-
-      setSelectedTableIds([]);
-
-      return API.requeryChannels();
     };
 
     return (
@@ -293,9 +289,6 @@ const ChannelsTable = ({}) => {
   const [selectedProfile, setSelectedProfile] = useState(
     profiles[selectedProfileId]
   );
-  const [showDisabled, setShowDisabled] = useState(true);
-  const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
-    useState(false);
 
   const [paginationString, setPaginationString] = useState('');
   const [filters, setFilters] = useState({
@@ -376,15 +369,6 @@ const ChannelsTable = ({}) => {
     params.append('page', pagination.pageIndex + 1);
     params.append('page_size', pagination.pageSize);
     params.append('include_streams', 'true');
-    if (selectedProfileId !== '0') {
-      params.append('channel_profile_id', selectedProfileId);
-    }
-    if (showDisabled === true) {
-      params.append('show_disabled', true);
-    }
-    if (showOnlyStreamlessChannels === true) {
-      params.append('only_streamless', true);
-    }
 
     // Apply sorting
     if (sorting.length > 0) {
@@ -417,14 +401,7 @@ const ChannelsTable = ({}) => {
       pageSize: pagination.pageSize,
     });
     setAllRowIds(ids);
-  }, [
-    pagination,
-    sorting,
-    debouncedFilters,
-    showDisabled,
-    selectedProfileId,
-    showOnlyStreamlessChannels,
-  ]);
+  }, [pagination, sorting, debouncedFilters]);
 
   const stopPropagation = useCallback((e) => {
     e.stopPropagation();
@@ -751,7 +728,6 @@ const ChannelsTable = ({}) => {
               rowId={row.original.id}
               selectedProfileId={selectedProfileId}
               selectedTableIds={table.getState().selectedTableIds}
-              setSelectedTableIds={table.setSelectedTableIds}
             />
           );
         },
@@ -1350,10 +1326,6 @@ const ChannelsTable = ({}) => {
             deleteChannels={deleteChannels}
             selectedTableIds={table.selectedTableIds}
             table={table}
-            showDisabled={showDisabled}
-            setShowDisabled={setShowDisabled}
-            showOnlyStreamlessChannels={showOnlyStreamlessChannels}
-            setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
           />
 
           {/* Table or ghost empty state inside Paper */}
