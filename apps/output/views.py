@@ -2303,11 +2303,11 @@ def xc_get_epg(request, user, short=False):
         program_output = {
             "id": f"{id}",
             "epg_id": f"{epg_id}",
-            "title": base64.b64encode(title.encode()).decode(),
+            "title": base64.b64encode((title or "").encode()).decode(),
             "lang": "",
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
             "end": end.strftime("%Y-%m-%d %H:%M:%S"),
-            "description": base64.b64encode(description.encode()).decode(),
+            "description": base64.b64encode((description or "").encode()).decode(),
             "channel_id": str(channel_num_int),
             "start_timestamp": str(int(start.timestamp())),
             "stop_timestamp": str(int(end.timestamp())),
