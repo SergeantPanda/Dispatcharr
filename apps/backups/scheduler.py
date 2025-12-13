@@ -127,6 +127,7 @@ def _sync_periodic_task() -> None:
                 day_of_week=day_of_week,
                 day_of_month=day_of_month,
                 month_of_year=month_of_year,
+                timezone=CoreSettings.get_system_time_zone(),
             )
         except Exception as e:
             logger.error(f"Invalid cron expression '{settings['cron_expression']}': {e}")
@@ -137,6 +138,7 @@ def _sync_periodic_task() -> None:
         hour, minute = settings["time"].split(":")
 
         # Build crontab based on frequency
+        system_tz = CoreSettings.get_system_time_zone()
         if settings["frequency"] == "daily":
             crontab, _ = CrontabSchedule.objects.get_or_create(
                 minute=minute,
@@ -144,6 +146,7 @@ def _sync_periodic_task() -> None:
                 day_of_week="*",
                 day_of_month="*",
                 month_of_year="*",
+                timezone=system_tz,
             )
         else:  # weekly
             crontab, _ = CrontabSchedule.objects.get_or_create(
@@ -152,6 +155,7 @@ def _sync_periodic_task() -> None:
                 day_of_week=str(settings["day_of_week"]),
                 day_of_month="*",
                 month_of_year="*",
+                timezone=system_tz,
             )
 
     # Create or update the periodic task

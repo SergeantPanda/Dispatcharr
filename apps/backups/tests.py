@@ -738,6 +738,16 @@ class BackupAPITestCase(TestCase):
 class BackupSchedulerTestCase(TestCase):
     """Test cases for backup scheduler"""
 
+    databases = {'default'}
+
+    @classmethod
+    def setUpClass(cls):
+        pass
+
+    @classmethod
+    def tearDownClass(cls):
+        pass
+
     def setUp(self):
         from core.models import CoreSettings
         # Clean up any existing settings
@@ -948,6 +958,63 @@ class BackupSchedulerTestCase(TestCase):
         self.assertEqual(task.crontab.minute, '0')
         self.assertEqual(task.crontab.hour, '*/6')
         self.assertEqual(task.crontab.day_of_week, '*')
+
+    def test_periodic_task_uses_system_timezone(self):
+        """Test that CrontabSchedule is created with the system timezone"""
+        from . import scheduler
+        from django_celery_beat.models import PeriodicTask
+        from core.models import CoreSettings
+
+        original_tz = CoreSettings.get_system_time_zone()
+
+        try:
+            # Set a non-UTC timezone
+            CoreSettings.set_system_time_zone('America/New_York')
+
+            scheduler.update_schedule_settings({
+                'enabled': True,
+                'frequency': 'daily',
+                'time': '03:00',
+            })
+
+            task = PeriodicTask.objects.get(name='backup-scheduled-task')
+            self.assertEqual(str(task.crontab.timezone), 'America/New_York')
+        finally:
+            scheduler.update_schedule_settings({'enabled': False})
+            CoreSettings.set_system_time_zone(original_tz)
+
+    def test_periodic_task_timezone_updates_with_schedule(self):
+        """Test that CrontabSchedule timezone is updated when schedule is modified"""
+        from . import scheduler
+        from django_celery_beat.models import PeriodicTask
+        from core.models import CoreSettings
+
+        original_tz = CoreSettings.get_system_time_zone()
+
+        try:
+            # Create initial schedule with one timezone
+            CoreSettings.set_system_time_zone('America/Los_Angeles')
+            scheduler.update_schedule_settings({
+                'enabled': True,
+                'frequency': 'daily',
+                'time': '02:00',
+            })
+
+            task = PeriodicTask.objects.get(name='backup-scheduled-task')
+            self.assertEqual(str(task.crontab.timezone), 'America/Los_Angeles')
+
+            # Change system timezone and update schedule
+            CoreSettings.set_system_time_zone('Europe/London')
+            scheduler.update_schedule_settings({
+                'enabled': True,
+                'time': '04:00',
+            })
+
+            task.refresh_from_db()
+            self.assertEqual(str(task.crontab.timezone), 'Europe/London')
+        finally:
+            scheduler.update_schedule_settings({'enabled': False})
+            CoreSettings.set_system_time_zone(original_tz)
 
 
 class BackupTasksTestCase(TestCase):

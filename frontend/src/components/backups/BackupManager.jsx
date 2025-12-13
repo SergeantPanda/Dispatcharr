@@ -98,37 +98,6 @@ function to24Hour(time12, period) {
   return `${String(hours24).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
-// Convert UTC time (HH:MM) to local time (HH:MM)
-function utcToLocal(utcTime) {
-  if (!utcTime) return '00:00';
-  const [hours, minutes] = utcTime.split(':').map(Number);
-
-  // Create a date in UTC
-  const date = new Date();
-  date.setUTCHours(hours, minutes, 0, 0);
-
-  // Get local time components
-  const localHours = date.getHours();
-  const localMinutes = date.getMinutes();
-
-  return `${String(localHours).padStart(2, '0')}:${String(localMinutes).padStart(2, '0')}`;
-}
-
-// Convert local time (HH:MM) to UTC time (HH:MM)
-function localToUtc(localTime) {
-  if (!localTime) return '00:00';
-  const [hours, minutes] = localTime.split(':').map(Number);
-
-  // Create a date in local time
-  const date = new Date();
-  date.setHours(hours, minutes, 0, 0);
-
-  // Get UTC time components
-  const utcHours = date.getUTCHours();
-  const utcMinutes = date.getUTCMinutes();
-
-  return `${String(utcHours).padStart(2, '0')}:${String(utcMinutes).padStart(2, '0')}`;
-}
 
 // Get default timezone (same as Settings page)
 function getDefaultTimeZone() {
@@ -376,19 +345,14 @@ export default function BackupManager() {
       // Check if using cron expression (advanced mode)
       if (settings.cron_expression) {
         setAdvancedMode(true);
-        setSchedule(settings);
-      } else {
-        // Convert UTC time from backend to local time
-        const localTime = utcToLocal(settings.time);
-
-        // Store with local time for display
-        setSchedule({ ...settings, time: localTime });
-
-        // Initialize 12-hour display values from the local time
-        const { time, period } = to12Hour(localTime);
-        setDisplayTime(time);
-        setTimePeriod(period);
       }
+
+      setSchedule(settings);
+
+      // Initialize 12-hour display values
+      const { time, period } = to12Hour(settings.time);
+      setDisplayTime(time);
+      setTimePeriod(period);
 
       setScheduleChanged(false);
     } catch (error) {
@@ -447,27 +411,12 @@ export default function BackupManager() {
   const handleSaveSchedule = async () => {
     setScheduleSaving(true);
     try {
-      let scheduleToSave;
-
-      if (advancedMode) {
-        // In advanced mode, send cron expression as-is
-        scheduleToSave = schedule;
-      } else {
-        // Convert local time to UTC before sending to backend
-        const utcTime = localToUtc(schedule.time);
-        scheduleToSave = { ...schedule, time: utcTime, cron_expression: '' };
-      }
+      const scheduleToSave = advancedMode
+        ? schedule
+        : { ...schedule, cron_expression: '' };
 
       const updated = await API.updateBackupSchedule(scheduleToSave);
-
-      if (advancedMode) {
-        setSchedule(updated);
-      } else {
-        // Convert UTC time from backend response back to local time
-        const localTime = utcToLocal(updated.time);
-        setSchedule({ ...updated, time: localTime });
-      }
-
+      setSchedule(updated);
       setScheduleChanged(false);
 
       notifications.show({
@@ -691,14 +640,36 @@ export default function BackupManager() {
               )}
               {is12Hour ? (
                 <Group grow align="flex-end" gap="xs">
-                  <TextInput
-                    label="Time"
-                    value={displayTime}
-                    onChange={(e) => handleTimeChange12h(e.currentTarget.value, null)}
-                    placeholder="3:00"
+                  <Select
+                    label="Hour"
+                    value={displayTime ? displayTime.split(':')[0] : '12'}
+                    onChange={(value) => {
+                      const minute = displayTime ? displayTime.split(':')[1] : '00';
+                      handleTimeChange12h(`${value}:${minute}`, null);
+                    }}
+                    data={Array.from({ length: 12 }, (_, i) => ({
+                      value: String(i + 1),
+                      label: String(i + 1),
+                    }))}
                     disabled={!schedule.enabled}
+                    searchable
                   />
                   <Select
+                    label="Minute"
+                    value={displayTime ? displayTime.split(':')[1] : '00'}
+                    onChange={(value) => {
+                      const hour = displayTime ? displayTime.split(':')[0] : '12';
+                      handleTimeChange12h(`${hour}:${value}`, null);
+                    }}
+                    data={Array.from({ length: 60 }, (_, i) => ({
+                      value: String(i).padStart(2, '0'),
+                      label: String(i).padStart(2, '0'),
+                    }))}
+                    disabled={!schedule.enabled}
+                    searchable
+                  />
+                  <Select
+                    label="Period"
                     value={timePeriod}
                     onChange={(value) => handleTimeChange12h(null, value)}
                     data={[
@@ -709,13 +680,36 @@ export default function BackupManager() {
                   />
                 </Group>
               ) : (
-                <TextInput
-                  label="Time"
-                  value={schedule.time}
-                  onChange={(e) => handleTimeChange24h(e.currentTarget.value)}
-                  placeholder="03:00"
-                  disabled={!schedule.enabled}
-                />
+                <Group grow align="flex-end" gap="xs">
+                  <Select
+                    label="Hour"
+                    value={schedule.time ? schedule.time.split(':')[0] : '00'}
+                    onChange={(value) => {
+                      const minute = schedule.time ? schedule.time.split(':')[1] : '00';
+                      handleTimeChange24h(`${value}:${minute}`);
+                    }}
+                    data={Array.from({ length: 24 }, (_, i) => ({
+                      value: String(i).padStart(2, '0'),
+                      label: String(i).padStart(2, '0'),
+                    }))}
+                    disabled={!schedule.enabled}
+                    searchable
+                  />
+                  <Select
+                    label="Minute"
+                    value={schedule.time ? schedule.time.split(':')[1] : '00'}
+                    onChange={(value) => {
+                      const hour = schedule.time ? schedule.time.split(':')[0] : '00';
+                      handleTimeChange24h(`${hour}:${value}`);
+                    }}
+                    data={Array.from({ length: 60 }, (_, i) => ({
+                      value: String(i).padStart(2, '0'),
+                      label: String(i).padStart(2, '0'),
+                    }))}
+                    disabled={!schedule.enabled}
+                    searchable
+                  />
+                </Group>
               )}
                 <NumberInput
                   label="Retention"
@@ -739,7 +733,7 @@ export default function BackupManager() {
             {/* Timezone info - only show in simple mode */}
             {!advancedMode && schedule.enabled && schedule.time && (
               <Text size="xs" c="dimmed" mt="xs">
-                Timezone: {userTimezone} • Backup will run at {schedule.time}
+                System Timezone: {userTimezone} • Backup will run at {schedule.time} {userTimezone}
               </Text>
             )}
           </>
