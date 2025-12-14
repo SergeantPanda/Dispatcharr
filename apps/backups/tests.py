@@ -1016,6 +1016,41 @@ class BackupSchedulerTestCase(TestCase):
             scheduler.update_schedule_settings({'enabled': False})
             CoreSettings.set_system_time_zone(original_tz)
 
+    def test_orphaned_crontab_cleanup(self):
+        """Test that old CrontabSchedule is deleted when schedule changes"""
+        from . import scheduler
+        from django_celery_beat.models import PeriodicTask, CrontabSchedule
+
+        # Create initial daily schedule
+        scheduler.update_schedule_settings({
+            'enabled': True,
+            'frequency': 'daily',
+            'time': '03:00',
+        })
+
+        task = PeriodicTask.objects.get(name='backup-scheduled-task')
+        first_crontab_id = task.crontab.id
+        initial_count = CrontabSchedule.objects.count()
+
+        # Change to weekly schedule (different crontab)
+        scheduler.update_schedule_settings({
+            'enabled': True,
+            'frequency': 'weekly',
+            'day_of_week': 3,
+            'time': '03:00',
+        })
+
+        task.refresh_from_db()
+        second_crontab_id = task.crontab.id
+
+        # Verify old crontab was deleted
+        self.assertNotEqual(first_crontab_id, second_crontab_id)
+        self.assertFalse(CrontabSchedule.objects.filter(id=first_crontab_id).exists())
+        self.assertEqual(CrontabSchedule.objects.count(), initial_count)
+
+        # Cleanup
+        scheduler.update_schedule_settings({'enabled': False})
+
 
 class BackupTasksTestCase(TestCase):
     """Test cases for backup Celery tasks"""

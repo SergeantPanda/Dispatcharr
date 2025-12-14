@@ -618,116 +618,120 @@ export default function BackupManager() {
                 </Group>
               </>
             ) : (
-              <Group grow align="flex-end">
-                <Select
-                  label="Frequency"
-                  value={schedule.frequency}
-                  onChange={(value) => handleScheduleChange('frequency', value)}
-                  data={[
-                    { value: 'daily', label: 'Daily' },
-                    { value: 'weekly', label: 'Weekly' },
-                  ]}
-                  disabled={!schedule.enabled}
-                />
-              {schedule.frequency === 'weekly' && (
-                <Select
-                  label="Day"
-                  value={String(schedule.day_of_week)}
-                  onChange={(value) => handleScheduleChange('day_of_week', parseInt(value, 10))}
-                  data={DAYS_OF_WEEK}
-                  disabled={!schedule.enabled}
-                />
-              )}
-              {is12Hour ? (
-                <Group grow align="flex-end" gap="xs">
+              <Stack gap="sm">
+                <Group align="flex-end" gap="xs" wrap="nowrap">
                   <Select
-                    label="Hour"
-                    value={displayTime ? displayTime.split(':')[0] : '12'}
-                    onChange={(value) => {
-                      const minute = displayTime ? displayTime.split(':')[1] : '00';
-                      handleTimeChange12h(`${value}:${minute}`, null);
-                    }}
-                    data={Array.from({ length: 12 }, (_, i) => ({
-                      value: String(i + 1),
-                      label: String(i + 1),
-                    }))}
-                    disabled={!schedule.enabled}
-                    searchable
-                  />
-                  <Select
-                    label="Minute"
-                    value={displayTime ? displayTime.split(':')[1] : '00'}
-                    onChange={(value) => {
-                      const hour = displayTime ? displayTime.split(':')[0] : '12';
-                      handleTimeChange12h(`${hour}:${value}`, null);
-                    }}
-                    data={Array.from({ length: 60 }, (_, i) => ({
-                      value: String(i).padStart(2, '0'),
-                      label: String(i).padStart(2, '0'),
-                    }))}
-                    disabled={!schedule.enabled}
-                    searchable
-                  />
-                  <Select
-                    label="Period"
-                    value={timePeriod}
-                    onChange={(value) => handleTimeChange12h(null, value)}
+                    label="Frequency"
+                    value={schedule.frequency}
+                    onChange={(value) => handleScheduleChange('frequency', value)}
                     data={[
-                      { value: 'AM', label: 'AM' },
-                      { value: 'PM', label: 'PM' },
+                      { value: 'daily', label: 'Daily' },
+                      { value: 'weekly', label: 'Weekly' },
                     ]}
                     disabled={!schedule.enabled}
                   />
+                  {schedule.frequency === 'weekly' && (
+                    <Select
+                      label="Day"
+                      value={String(schedule.day_of_week)}
+                      onChange={(value) => handleScheduleChange('day_of_week', parseInt(value, 10))}
+                      data={DAYS_OF_WEEK}
+                      disabled={!schedule.enabled}
+                    />
+                  )}
+                  {is12Hour ? (
+                    <>
+                      <Select
+                        label="Hour"
+                        value={displayTime ? displayTime.split(':')[0] : '12'}
+                        onChange={(value) => {
+                          const minute = displayTime ? displayTime.split(':')[1] : '00';
+                          handleTimeChange12h(`${value}:${minute}`, null);
+                        }}
+                        data={Array.from({ length: 12 }, (_, i) => ({
+                          value: String(i + 1),
+                          label: String(i + 1),
+                        }))}
+                        disabled={!schedule.enabled}
+                        searchable
+                      />
+                      <Select
+                        label="Minute"
+                        value={displayTime ? displayTime.split(':')[1] : '00'}
+                        onChange={(value) => {
+                          const hour = displayTime ? displayTime.split(':')[0] : '12';
+                          handleTimeChange12h(`${hour}:${value}`, null);
+                        }}
+                        data={Array.from({ length: 60 }, (_, i) => ({
+                          value: String(i).padStart(2, '0'),
+                          label: String(i).padStart(2, '0'),
+                        }))}
+                        disabled={!schedule.enabled}
+                        searchable
+                      />
+                      <Select
+                        label="Period"
+                        value={timePeriod}
+                        onChange={(value) => handleTimeChange12h(null, value)}
+                        data={[
+                          { value: 'AM', label: 'AM' },
+                          { value: 'PM', label: 'PM' },
+                        ]}
+                        disabled={!schedule.enabled}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <Select
+                        label="Hour"
+                        value={schedule.time ? schedule.time.split(':')[0] : '00'}
+                        onChange={(value) => {
+                          const minute = schedule.time ? schedule.time.split(':')[1] : '00';
+                          handleTimeChange24h(`${value}:${minute}`);
+                        }}
+                        data={Array.from({ length: 24 }, (_, i) => ({
+                          value: String(i).padStart(2, '0'),
+                          label: String(i).padStart(2, '0'),
+                        }))}
+                        disabled={!schedule.enabled}
+                        searchable
+                      />
+                      <Select
+                        label="Minute"
+                        value={schedule.time ? schedule.time.split(':')[1] : '00'}
+                        onChange={(value) => {
+                          const hour = schedule.time ? schedule.time.split(':')[0] : '00';
+                          handleTimeChange24h(`${hour}:${value}`);
+                        }}
+                        data={Array.from({ length: 60 }, (_, i) => ({
+                          value: String(i).padStart(2, '0'),
+                          label: String(i).padStart(2, '0'),
+                        }))}
+                        disabled={!schedule.enabled}
+                        searchable
+                      />
+                    </>
+                  )}
                 </Group>
-              ) : (
                 <Group grow align="flex-end" gap="xs">
-                  <Select
-                    label="Hour"
-                    value={schedule.time ? schedule.time.split(':')[0] : '00'}
-                    onChange={(value) => {
-                      const minute = schedule.time ? schedule.time.split(':')[1] : '00';
-                      handleTimeChange24h(`${value}:${minute}`);
-                    }}
-                    data={Array.from({ length: 24 }, (_, i) => ({
-                      value: String(i).padStart(2, '0'),
-                      label: String(i).padStart(2, '0'),
-                    }))}
+                  <NumberInput
+                    label="Retention"
+                    description="0 = keep all"
+                    value={schedule.retention_count}
+                    onChange={(value) => handleScheduleChange('retention_count', value || 0)}
+                    min={0}
                     disabled={!schedule.enabled}
-                    searchable
                   />
-                  <Select
-                    label="Minute"
-                    value={schedule.time ? schedule.time.split(':')[1] : '00'}
-                    onChange={(value) => {
-                      const hour = schedule.time ? schedule.time.split(':')[0] : '00';
-                      handleTimeChange24h(`${hour}:${value}`);
-                    }}
-                    data={Array.from({ length: 60 }, (_, i) => ({
-                      value: String(i).padStart(2, '0'),
-                      label: String(i).padStart(2, '0'),
-                    }))}
-                    disabled={!schedule.enabled}
-                    searchable
-                  />
+                  <Button
+                    onClick={handleSaveSchedule}
+                    loading={scheduleSaving}
+                    disabled={!scheduleChanged}
+                    variant="default"
+                  >
+                    Save
+                  </Button>
                 </Group>
-              )}
-                <NumberInput
-                  label="Retention"
-                  description="0 = keep all"
-                  value={schedule.retention_count}
-                  onChange={(value) => handleScheduleChange('retention_count', value || 0)}
-                  min={0}
-                  disabled={!schedule.enabled}
-                />
-                <Button
-                  onClick={handleSaveSchedule}
-                  loading={scheduleSaving}
-                  disabled={!scheduleChanged}
-                  variant="default"
-                >
-                  Save
-                </Button>
-              </Group>
+              </Stack>
             )}
 
             {/* Timezone info - only show in simple mode */}
