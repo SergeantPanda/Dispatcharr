@@ -107,9 +107,21 @@ def _sync_periodic_task() -> None:
 
     if not settings["enabled"]:
         # Delete the task if it exists
-        PeriodicTask.objects.filter(name=BACKUP_SCHEDULE_TASK_NAME).delete()
+        task = PeriodicTask.objects.filter(name=BACKUP_SCHEDULE_TASK_NAME).first()
+        if task:
+            old_crontab = task.crontab
+            task.delete()
+            _cleanup_orphaned_crontab(old_crontab)
         logger.info("Backup schedule disabled, removed periodic task")
         return
+
+    # Get old crontab before creating new one
+    old_crontab = None
+    try:
+        old_task = PeriodicTask.objects.get(name=BACKUP_SCHEDULE_TASK_NAME)
+        old_crontab = old_task.crontab
+    except PeriodicTask.DoesNotExist:
+        pass
 
     # Check if using cron expression (advanced mode)
     if settings["cron_expression"]:
@@ -169,5 +181,18 @@ def _sync_periodic_task() -> None:
         },
     )
 
+    # Clean up old crontab if it changed and is orphaned
+    if old_crontab and old_crontab.id != crontab.id:
+        _cleanup_orphaned_crontab(old_crontab)
+
     action = "Created" if created else "Updated"
     logger.info(f"{action} backup schedule: {settings['frequency']} at {settings['time']}")
+
+
+def _cleanup_orphaned_crontab(crontab_schedule):
+    """Delete old CrontabSchedule from backup task."""
+    if crontab_schedule is None:
+        return
+
+    logger.debug(f"Cleaning up old CrontabSchedule: {crontab_schedule.id}")
+    crontab_schedule.delete()
