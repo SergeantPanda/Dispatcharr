@@ -1,50 +1,23 @@
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
-  ActionIcon,
   Box,
   Button,
-  Card,
-  Center,
-  Flex,
   Badge,
   Group,
-  Image,
-  Modal,
   SimpleGrid,
   Stack,
   Text,
   Title,
-  Tooltip,
-  Switch,
-  Select,
-  MultiSelect,
-  TextInput,
   useMantineTheme,
 } from '@mantine/core';
 import {
-  AlertTriangle,
   SquarePlus,
-  SquareX,
 } from 'lucide-react';
-import dayjs from 'dayjs';
-import duration from 'dayjs/plugin/duration';
-import relativeTime from 'dayjs/plugin/relativeTime';
-import utc from 'dayjs/plugin/utc';
-import timezone from 'dayjs/plugin/timezone';
 import useChannelsStore from '../store/channels';
 import useSettingsStore from '../store/settings';
-import useLocalStorage from '../hooks/useLocalStorage';
 import useVideoStore from '../store/useVideoStore';
 import RecordingForm from '../components/forms/Recording';
-import { notifications } from '@mantine/notifications';
-import API from '../api';
-import { DatePickerInput, TimeInput } from '@mantine/dates';
-import { useForm } from '@mantine/form';
 import {
-  parseDate,
-  RECURRING_DAY_OPTIONS,
-  toTimeString,
-  useDateTimeFormat,
   useTimeHelpers,
 } from '../utils/dateTimeUtils.js';
 import { RecordingDetailsModal } from '../components/forms/RecordingDetailsModal.jsx';
