@@ -103,50 +103,46 @@ const DVRPage = () => {
     ));
   }
 
-  const getOnWatchLive = () => {
-    return () => {
-      const rec = detailsRecording;
-      const now = userNow();
-      const s = toUserTime(rec.start_time);
-      const e = toUserTime(rec.end_time);
-      if (now.isAfter(s) && now.isBefore(e)) {
-        // call into child RecordingCard behavior by constructing a URL like there
-        const channel = channels[rec.channel];
-        if (!channel) return;
-        let url = `/proxy/ts/stream/${channel.uuid}`;
-        if (useSettingsStore.getState().environment.env_mode === 'dev') {
-          url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
-        }
-        useVideoStore.getState().showVideo(url, 'live');
+  const handleOnWatchLive = () => {
+    const rec = detailsRecording;
+    const now = userNow();
+    const s = toUserTime(rec.start_time);
+    const e = toUserTime(rec.end_time);
+    if (now.isAfter(s) && now.isBefore(e)) {
+      // call into child RecordingCard behavior by constructing a URL like there
+      const channel = channels[rec.channel];
+      if (!channel) return;
+      let url = `/proxy/ts/stream/${channel.uuid}`;
+      if (useSettingsStore.getState().environment.env_mode === 'dev') {
+        url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
       }
-    };
+      useVideoStore.getState().showVideo(url, 'live');
+    }
   }
 
-  const getOnWatchRecording = () => {
-    return () => {
-      let fileUrl =
-        detailsRecording.custom_properties?.file_url ||
-        detailsRecording.custom_properties?.output_file_url;
-      if (!fileUrl) return;
-      if (
-        useSettingsStore.getState().environment.env_mode === 'dev' &&
-        fileUrl.startsWith('/')
-      ) {
-        fileUrl = `${window.location.protocol}//${window.location.hostname}:5656${fileUrl}`;
-      }
-      useVideoStore.getState().showVideo(fileUrl, 'vod', {
-        name:
-          detailsRecording.custom_properties?.program?.title ||
-          'Recording',
-        logo: {
-          url:
-            (detailsRecording.custom_properties?.poster_logo_id
-              ? `/api/channels/logos/${detailsRecording.custom_properties.poster_logo_id}/cache/`
-              : channels[detailsRecording.channel]?.logo?.cache_url) ||
-            '/logo.png',
-        },
-      });
-    };
+  const handleOnWatchRecording = () => {
+    let fileUrl =
+      detailsRecording.custom_properties?.file_url ||
+      detailsRecording.custom_properties?.output_file_url;
+    if (!fileUrl) return;
+    if (
+      useSettingsStore.getState().environment.env_mode === 'dev' &&
+      fileUrl.startsWith('/')
+    ) {
+      fileUrl = `${window.location.protocol}//${window.location.hostname}:5656${fileUrl}`;
+    }
+    useVideoStore.getState().showVideo(fileUrl, 'vod', {
+      name:
+        detailsRecording.custom_properties?.program?.title ||
+        'Recording',
+      logo: {
+        url:
+          (detailsRecording.custom_properties?.poster_logo_id
+            ? `/api/channels/logos/${detailsRecording.custom_properties.poster_logo_id}/cache/`
+            : channels[detailsRecording.channel]?.logo?.cache_url) ||
+          '/logo.png',
+      },
+    });
   }
   return (
     <Box p={10}>
@@ -269,8 +265,8 @@ const DVRPage = () => {
             '/logo.png'
           }
           env_mode={useSettingsStore.getState().environment.env_mode}
-          onWatchLive={getOnWatchLive()}
-          onWatchRecording={getOnWatchRecording()}
+          onWatchLive={handleOnWatchLive}
+          onWatchRecording={handleOnWatchRecording}
           onEdit={(rec) => {
             setEditRecording(rec);
             closeDetails();
