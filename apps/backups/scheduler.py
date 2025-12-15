@@ -190,9 +190,14 @@ def _sync_periodic_task() -> None:
 
 
 def _cleanup_orphaned_crontab(crontab_schedule):
-    """Delete old CrontabSchedule from backup task."""
+    """Delete old CrontabSchedule if no other tasks are using it."""
     if crontab_schedule is None:
         return
 
-    logger.debug(f"Cleaning up old CrontabSchedule: {crontab_schedule.id}")
+    # Check if any other tasks are using this crontab
+    if PeriodicTask.objects.filter(crontab=crontab_schedule).exists():
+        logger.debug(f"CrontabSchedule {crontab_schedule.id} still in use, not deleting")
+        return
+
+    logger.debug(f"Cleaning up orphaned CrontabSchedule: {crontab_schedule.id}")
     crontab_schedule.delete()
