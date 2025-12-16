@@ -24,6 +24,7 @@ import { RecordingDetailsModal } from '../components/forms/RecordingDetailsModal
 import { RecurringRuleModal } from '../components/forms/RecurringRuleModal.jsx';
 import { RecordingCard } from '../components/cards/RecordingCard.jsx';
 import { categorizeRecordings } from '../utils/pages/DVRUtils.js';
+import { getPosterUrl } from '../utils/cards/RecordingCardUtils.js';
 
 const DVRPage = () => {
   const theme = useMantineTheme();
@@ -136,11 +137,11 @@ const DVRPage = () => {
         detailsRecording.custom_properties?.program?.title ||
         'Recording',
       logo: {
-        url:
-          (detailsRecording.custom_properties?.poster_logo_id
-            ? `/api/channels/logos/${detailsRecording.custom_properties.poster_logo_id}/cache/`
-            : channels[detailsRecording.channel]?.logo?.cache_url) ||
-          '/logo.png',
+        url: getPosterUrl(
+          detailsRecording.custom_properties?.poster_logo_id,
+          undefined,
+          channels[detailsRecording.channel]?.logo?.cache_url
+        )
       },
     });
   }
@@ -257,13 +258,11 @@ const DVRPage = () => {
           onClose={closeDetails}
           recording={detailsRecording}
           channel={channels[detailsRecording.channel]}
-          posterUrl={
-            (detailsRecording.custom_properties?.poster_logo_id
-              ? `/api/channels/logos/${detailsRecording.custom_properties.poster_logo_id}/cache/`
-              : detailsRecording.custom_properties?.poster_url ||
-                channels[detailsRecording.channel]?.logo?.cache_url) ||
-            '/logo.png'
-          }
+          posterUrl={getPosterUrl(
+              detailsRecording.custom_properties?.poster_logo_id,
+              detailsRecording.custom_properties,
+              channels[detailsRecording.channel]?.logo?.cache_url
+          )}
           env_mode={useSettingsStore.getState().environment.env_mode}
           onWatchLive={handleOnWatchLive}
           onWatchRecording={handleOnWatchRecording}
