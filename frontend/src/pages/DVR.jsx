@@ -93,7 +93,7 @@ const DVRPage = () => {
     return categorizeRecordings(recordings, toUserTime, now);
   }, [recordings, now, toUserTime]);
 
-  const RecordingList = (list) => {
+  const RecordingList = ({ list }) => {
     return list.map((rec) => (
       <RecordingCard
         key={`rec-${rec.id}`}
@@ -102,7 +102,7 @@ const DVRPage = () => {
         onOpenRecurring={openRuleModal}
       />
     ));
-  }
+  };
 
   const handleOnWatchLive = () => {
     const rec = detailsRecording;
