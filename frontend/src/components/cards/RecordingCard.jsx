@@ -51,8 +51,8 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
   const isRecurringRule = customProps?.rule?.type === 'recurring';
 
   // Poster or channel logo
-  const posterLogoId = customProps.poster_logo_id;
-  const posterUrl = getPosterUrl(posterLogoId, customProps, channel, env_mode);
+  const posterUrl = getPosterUrl(
+    customProps.poster_logo_id, customProps, channel?.logo?.cache_url, env_mode);
 
   const start = toUserTime(recording.start_time);
   const end = toUserTime(recording.end_time);
