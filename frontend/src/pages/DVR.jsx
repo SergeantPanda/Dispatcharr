@@ -175,7 +175,7 @@ const DVRPage = () => {
               { maxWidth: '36rem', cols: 1 },
             ]}
           >
-            {RecordingList(inProgress)}
+            {<RecordingList list={inProgress} />}
             {inProgress.length === 0 && (
               <Text size="sm" c="dimmed">
                 Nothing recording right now.
@@ -197,7 +197,7 @@ const DVRPage = () => {
               { maxWidth: '36rem', cols: 1 },
             ]}
           >
-            {RecordingList(upcoming)}
+            {<RecordingList list={upcoming} />}
             {upcoming.length === 0 && (
               <Text size="sm" c="dimmed">
                 No upcoming recordings.
@@ -219,7 +219,7 @@ const DVRPage = () => {
               { maxWidth: '36rem', cols: 1 },
             ]}
           >
-            {RecordingList(completed)}
+            {<RecordingList list={completed} />}
             {completed.length === 0 && (
               <Text size="sm" c="dimmed">
                 No completed recordings yet.
