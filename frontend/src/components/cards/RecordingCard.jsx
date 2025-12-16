@@ -2,7 +2,6 @@ import useChannelsStore from '../../store/channels.jsx';
 import useSettingsStore from '../../store/settings.jsx';
 import useVideoStore from '../../store/useVideoStore.jsx';
 import { useDateTimeFormat, useTimeHelpers } from '../../utils/dateTimeUtils.js';
-import API from '../../api.js';
 import { notifications } from '@mantine/notifications';
 import React from 'react';
 import {
@@ -22,6 +21,17 @@ import {
 } from '@mantine/core';
 import { AlertTriangle, SquareX } from 'lucide-react';
 import { RecordingSynopsis } from '../RecordingSynopsis.jsx';
+import {
+  deleteRecordingById,
+  deleteSeriesAndRule,
+  getPosterUrl,
+  getRecordingUrl,
+  getSeasonLabel,
+  getSeriesInfo,
+  getShowVideoUrl,
+  removeRecording,
+  runComSkip,
+} from './../../utils/cards/RecordingCardUtils.js';
 
 export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
   const channels = useChannelsStore((s) => s.channels);
@@ -33,24 +43,6 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
 
   const channel = channels?.[recording.channel];
 
-  const deleteRecording = (id) => {
-    // Optimistically remove immediately from UI
-    try {
-      useChannelsStore.getState().removeRecording(id);
-    } catch (error) {
-      console.error('Failed to optimistically remove recording', error);
-    }
-    // Fire-and-forget server delete; websocket will keep others in sync
-    API.deleteRecording(id).catch(() => {
-      // On failure, fallback to refetch to restore state
-      try {
-        useChannelsStore.getState().fetchRecordings();
-      } catch (error) {
-        console.error('Failed to refresh recordings after delete', error);
-      }
-    });
-  };
-
   const customProps = recording.custom_properties || {};
   const program = customProps.program || {};
   const recordingName = program.title || 'Custom Recording';
@@ -60,13 +52,7 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
 
   // Poster or channel logo
   const posterLogoId = customProps.poster_logo_id;
-  let posterUrl = posterLogoId
-    ? `/api/channels/logos/${posterLogoId}/cache/`
-    : customProps.poster_url || channel?.logo?.cache_url || '/logo.png';
-  // Prefix API host in dev if using a relative path
-  if (env_mode === 'dev' && posterUrl && posterUrl.startsWith('/')) {
-    posterUrl = `${window.location.protocol}//${window.location.hostname}:5656${posterUrl}`;
-  }
+  const posterUrl = getPosterUrl(posterLogoId, customProps, channel, env_mode);
 
   const start = toUserTime(recording.start_time);
   const end = toUserTime(recording.end_time);
@@ -85,27 +71,18 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
   const onscreen =
     customProps.onscreen_episode ??
     program?.custom_properties?.onscreen_episode;
-  const seLabel =
-    season && episode
-      ? `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
-      : onscreen || null;
+  const seLabel = getSeasonLabel(season, episode, onscreen);
 
   const handleWatchLive = () => {
     if (!channel) return;
-    let url = `/proxy/ts/stream/${channel.uuid}`;
-    if (env_mode === 'dev') {
-      url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
-    }
-    showVideo(url, 'live');
+    showVideo(getShowVideoUrl(channel, env_mode), 'live');
   };
 
   const handleWatchRecording = () => {
     // Only enable if backend provides a playable file URL in custom properties
-    let fileUrl = customProps.file_url || customProps.output_file_url;
+    const fileUrl = getRecordingUrl(customProps, env_mode);
     if (!fileUrl) return;
-    if (env_mode === 'dev' && fileUrl.startsWith('/')) {
-      fileUrl = `${window.location.protocol}//${window.location.hostname}:5656${fileUrl}`;
-    }
+
     showVideo(fileUrl, 'vod', {
       name: recordingName,
       logo: { url: posterUrl },
@@ -115,7 +92,7 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
   const handleRunComskip = async (e) => {
     e?.stopPropagation?.();
     try {
-      await API.runComskip(recording.id);
+      await runComSkip(recording);
       notifications.show({
         title: 'Removing commercials',
         message: 'Queued comskip for this recording',
@@ -139,20 +116,16 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
     if (isSeriesGroup) {
       setCancelOpen(true);
     } else {
-      deleteRecording(recording.id);
+      removeRecording(recording.id);
     }
   };
 
-  const seriesInfo = (() => {
-    const cp = customProps || {};
-    const pr = cp.program || {};
-    return { tvg_id: pr.tvg_id, title: pr.title };
-  })();
+  const seriesInfo = getSeriesInfo(customProps);
 
   const removeUpcomingOnly = async () => {
     try {
       setBusy(true);
-      await API.deleteRecording(recording.id);
+      await deleteRecordingById(recording.id);
     } finally {
       setBusy(false);
       setCancelOpen(false);
@@ -167,23 +140,7 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
   const removeSeriesAndRule = async () => {
     try {
       setBusy(true);
-      const { tvg_id, title } = seriesInfo;
-      if (tvg_id) {
-        try {
-          await API.bulkRemoveSeriesRecordings({
-            tvg_id,
-            title,
-            scope: 'title',
-          });
-        } catch (error) {
-          console.error('Failed to remove series recordings', error);
-        }
-        try {
-          await API.deleteSeriesRule(tvg_id);
-        } catch (error) {
-          console.error('Failed to delete series rule', error);
-        }
-      }
+      await deleteSeriesAndRule(seriesInfo);
     } finally {
       setBusy(false);
       setCancelOpen(false);
@@ -198,6 +155,51 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
     }
   };
 
+  const handleOnMainCardClick = () => {
+    if (isRecurringRule) {
+      onOpenRecurring?.(recording, false);
+    } else {
+      onOpenDetails?.(recording);
+    }
+  }
+
+  const WatchLive = () => {
+    return <Button
+      size="xs"
+      variant="light"
+      onClick={(e) => {
+        e.stopPropagation();
+        handleWatchLive();
+      }}
+    >
+      Watch Live
+    </Button>;
+  }
+
+  const WatchRecording = () => {
+    return <Tooltip
+      label={
+        customProps.file_url || customProps.output_file_url
+          ? 'Watch recording'
+          : 'Recording playback not available yet'
+      }
+    >
+      <Button
+        size="xs"
+        variant="default"
+        onClick={(e) => {
+          e.stopPropagation();
+          handleWatchRecording();
+        }}
+        disabled={
+          customProps.status === 'recording' || !(customProps.file_url || customProps.output_file_url)
+        }
+      >
+        Watch
+      </Button>
+    </Tooltip>;
+  }
+
   const MainCard = (
     <Card
       shadow="sm"
@@ -211,16 +213,10 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
         height: '100%',
         cursor: 'pointer',
       }}
-      onClick={() => {
-        if (isRecurringRule) {
-          onOpenRecurring?.(recording, false);
-        } else {
-          onOpenDetails?.(recording);
-        }
-      }}
+      onClick={handleOnMainCardClick}
     >
-      <Flex justify="space-between" align="center" style={{ paddingBottom: 8 }}>
-        <Group gap={8} style={{ flex: 1, minWidth: 0 }}>
+      <Flex justify="space-between" align="center" pb={8}>
+        <Group gap={8} flex={1} miw={0}>
           <Badge
             color={
               isInterrupted
@@ -241,7 +237,7 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
                   : 'Completed'}
           </Badge>
           {isInterrupted && <AlertTriangle size={16} color="#ffa94d" />}
-          <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
+          <Stack gap={2} flex={1} miw={0}>
             <Group gap={8} wrap="nowrap">
               <Text fw={600} lineClamp={1} title={recordingName}>
                 {recordingName}
@@ -289,7 +285,7 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
           alt={recordingName}
           fallbackSrc="/logo.png"
         />
-        <Stack gap={6} style={{ flex: 1 }}>
+        <Stack gap={6} flex={1}>
           {!isSeriesGroup && subTitle && (
             <Group justify="space-between">
               <Text size="sm" c="dimmed">
@@ -332,43 +328,9 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
           )}
 
           <Group justify="flex-end" gap="xs" pt={4}>
-            {isInProgress && (
-              <Button
-                size="xs"
-                variant="light"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleWatchLive();
-                }}
-              >
-                Watch Live
-              </Button>
-            )}
+            {isInProgress && <WatchLive />}
 
-            {!isUpcoming && (
-              <Tooltip
-                label={
-                  customProps.file_url || customProps.output_file_url
-                    ? 'Watch recording'
-                    : 'Recording playback not available yet'
-                }
-              >
-                <Button
-                  size="xs"
-                  variant="default"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleWatchRecording();
-                  }}
-                  disabled={
-                    customProps.status === 'recording' ||
-                    !(customProps.file_url || customProps.output_file_url)
-                  }
-                >
-                  Watch
-                </Button>
-              </Tooltip>
-            )}
+            {!isUpcoming && <WatchRecording />}
             {!isUpcoming &&
               customProps?.status === 'completed' &&
               (!customProps?.comskip ||

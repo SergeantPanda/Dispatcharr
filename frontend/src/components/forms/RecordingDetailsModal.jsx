@@ -1,20 +1,19 @@
 import useChannelsStore from '../../store/channels.jsx';
 import { useDateTimeFormat, useTimeHelpers } from '../../utils/dateTimeUtils.js';
 import React from 'react';
-import API from '../../api.js';
-import {
-  Badge,
-  Button,
-  Card,
-  Flex,
-  Group,
-  Image,
-  Modal,
-  Stack,
-  Text,
-} from '@mantine/core';
+import { Badge, Button, Card, Flex, Group, Image, Modal, Stack, Text, } from '@mantine/core';
 import useVideoStore from '../../store/useVideoStore.jsx';
 import { notifications } from '@mantine/notifications';
+import {
+  deleteRecordingById,
+  getPosterUrl, getRecordingUrl,
+  getSeasonLabel, getShowVideoUrl, runComSkip,
+} from '../../utils/cards/RecordingCardUtils.js';
+import {
+  getRating,
+  getStatRows,
+  getUpcomingEpisodes,
+} from '../../utils/forms/RecordingDetailsModalUtils.js';
 
 export const RecordingDetailsModal = ({
                                         opened,
@@ -43,26 +42,10 @@ export const RecordingDetailsModal = ({
   const end = toUserTime(safeRecording.end_time);
   const stats = customProps.stream_info || {};
 
-  const statRows = [
-    ['Video Codec', stats.video_codec],
-    [
-      'Resolution',
-      stats.resolution ||
-      (stats.width && stats.height ? `${stats.width}x${stats.height}` : null),
-    ],
-    ['FPS', stats.source_fps],
-    ['Video Bitrate', stats.video_bitrate && `${stats.video_bitrate} kb/s`],
-    ['Audio Codec', stats.audio_codec],
-    ['Audio Channels', stats.audio_channels],
-    ['Sample Rate', stats.sample_rate && `${stats.sample_rate} Hz`],
-    ['Audio Bitrate', stats.audio_bitrate && `${stats.audio_bitrate} kb/s`],
-  ].filter(([, v]) => v !== null && v !== undefined && v !== '');
+  const statRows = getStatRows(stats);
 
   // Rating (if available)
-  const rating =
-    customProps.rating ||
-    customProps.rating_value ||
-    (program && program.custom_properties && program.custom_properties.rating);
+  const rating = getRating(customProps, program);
   const ratingSystem = customProps.rating_system || 'MPAA';
 
   const fileUrl = customProps.file_url || customProps.output_file_url;
@@ -71,61 +54,11 @@ export const RecordingDetailsModal = ({
       customProps.status === 'interrupted') &&
     Boolean(fileUrl);
 
-  // Prefix in dev (Vite) if needed
-  let resolvedPosterUrl = posterUrl;
-  if (
-    typeof import.meta !== 'undefined' &&
-    import.meta.env &&
-    import.meta.env.DEV
-  ) {
-    if (resolvedPosterUrl && resolvedPosterUrl.startsWith('/')) {
-      resolvedPosterUrl = `${window.location.protocol}//${window.location.hostname}:5656${resolvedPosterUrl}`;
-    }
-  }
-
   const isSeriesGroup = Boolean(
     safeRecording._group_count && safeRecording._group_count > 1
   );
   const upcomingEpisodes = React.useMemo(() => {
-    if (!isSeriesGroup) return [];
-    const arr = Array.isArray(allRecordings)
-      ? allRecordings
-      : Object.values(allRecordings || {});
-    const tvid = program.tvg_id || '';
-    const titleKey = (program.title || '').toLowerCase();
-    const filtered = arr.filter((r) => {
-      const cp = r.custom_properties || {};
-      const pr = cp.program || {};
-      if ((pr.tvg_id || '') !== tvid) return false;
-      if ((pr.title || '').toLowerCase() !== titleKey) return false;
-      const st = toUserTime(r.start_time);
-      return st.isAfter(userNow());
-    });
-    // Deduplicate by program.id if present, else by time+title
-    const seen = new Set();
-    const deduped = [];
-    for (const r of filtered) {
-      const cp = r.custom_properties || {};
-      const pr = cp.program || {};
-      // Prefer season/episode or onscreen code; else fall back to sub_title; else program id/slot
-      const season = cp.season ?? pr?.custom_properties?.season;
-      const episode = cp.episode ?? pr?.custom_properties?.episode;
-      const onscreen =
-        cp.onscreen_episode ?? pr?.custom_properties?.onscreen_episode;
-      let key = null;
-      if (season != null && episode != null) key = `se:${season}:${episode}`;
-      else if (onscreen) key = `onscreen:${String(onscreen).toLowerCase()}`;
-      else if (pr.sub_title) key = `sub:${(pr.sub_title || '').toLowerCase()}`;
-      else if (pr.id != null) key = `id:${pr.id}`;
-      else
-        key = `slot:${r.channel}|${r.start_time}|${r.end_time}|${pr.title || ''}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      deduped.push(r);
-    }
-    return deduped.sort(
-      (a, b) => toUserTime(a.start_time) - toUserTime(b.start_time)
-    );
+    return getUpcomingEpisodes(isSeriesGroup, allRecordings, program, toUserTime, userNow);
   }, [
     allRecordings,
     isSeriesGroup,
@@ -146,27 +79,14 @@ export const RecordingDetailsModal = ({
     const episode = cp.episode ?? pr?.custom_properties?.episode;
     const onscreen =
       cp.onscreen_episode ?? pr?.custom_properties?.onscreen_episode;
-    const se =
-      season && episode
-        ? `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
-        : onscreen || null;
+    const se = getSeasonLabel(season, episode, onscreen);
     const posterLogoId = cp.poster_logo_id;
-    let purl = posterLogoId
-      ? `/api/channels/logos/${posterLogoId}/cache/`
-      : cp.poster_url || posterUrl || '/logo.png';
-    if (
-      typeof import.meta !== 'undefined' &&
-      import.meta.env &&
-      import.meta.env.DEV &&
-      purl &&
-      purl.startsWith('/')
-    ) {
-      purl = `${window.location.protocol}//${window.location.hostname}:5656${purl}`;
-    }
+    const purl = getPosterUrl(posterLogoId, cp, posterUrl);
+
     const onRemove = async (e) => {
       e?.stopPropagation?.();
       try {
-        await API.deleteRecording(rec.id);
+        await deleteRecordingById(rec.id);
       } catch (error) {
         console.error('Failed to delete upcoming recording', error);
       }
@@ -176,16 +96,18 @@ export const RecordingDetailsModal = ({
         console.error('Failed to refresh recordings after delete', error);
       }
     };
+
+    const handleOnMainCardClick = () => {
+      setChildRec(rec);
+      setChildOpen(true);
+    }
     return (
       <Card
         withBorder
         radius="md"
         padding="sm"
         style={{ backgroundColor: '#27272A', cursor: 'pointer' }}
-        onClick={() => {
-          setChildRec(rec);
-          setChildOpen(true);
-        }}
+        onClick={handleOnMainCardClick}
       >
         <Flex gap="sm" align="center">
           <Image
@@ -197,7 +119,7 @@ export const RecordingDetailsModal = ({
             alt={pr.title || recordingName}
             fallbackSrc="/logo.png"
           />
-          <Stack gap={4} style={{ flex: 1 }}>
+          <Stack gap={4} flex={1}>
             <Group justify="space-between">
               <Text
                 fw={600}
@@ -227,6 +149,90 @@ export const RecordingDetailsModal = ({
     );
   };
 
+  const handleOnWatchLive = () => {
+    const rec = childRec;
+    const now = userNow();
+    const s = toUserTime(rec.start_time);
+    const e = toUserTime(rec.end_time);
+
+    if (now.isAfter(s) && now.isBefore(e)) {
+      if (!channelMap[rec.channel]) return;
+      useVideoStore.getState().showVideo(getShowVideoUrl(channelMap[rec.channel], env_mode), 'live');
+    }
+  }
+
+  const handleOnWatchRecording = () => {
+    let fileUrl = getRecordingUrl(childRec.custom_properties, env_mode)
+    if (!fileUrl) return;
+
+    useVideoStore.getState().showVideo(fileUrl, 'vod', {
+      name:
+        childRec.custom_properties?.program?.title || 'Recording',
+      logo: {
+        url: getPosterUrl(
+          childRec.custom_properties?.poster_logo_id,
+          undefined,
+          channelMap[childRec.channel]?.logo?.cache_url
+        )
+      },
+    });
+  }
+
+  const WatchLive = () => {
+    return <Button
+      size="xs"
+      variant="light"
+      onClick={(e) => {
+        e.stopPropagation?.();
+        onWatchLive();
+      }}
+    >
+      Watch Live
+    </Button>;
+  }
+
+  const WatchRecording = () => {
+    return <Button
+      size="xs"
+      variant="default"
+      onClick={(e) => {
+        e.stopPropagation?.();
+        onWatchRecording();
+      }}
+      disabled={!canWatchRecording}
+    >
+      Watch
+    </Button>;
+  }
+
+  const Edit = () => {
+    return <Button
+      size="xs"
+      variant="light"
+      color="blue"
+      onClick={(e) => {
+        e.stopPropagation?.();
+        onEdit(recording);
+      }}
+    >
+      Edit
+    </Button>;
+  }
+
+  const handleRunComskip = async (e) => {
+    e.stopPropagation?.();
+    try {
+      await runComSkip(recording)
+      notifications.show({
+        title: 'Removing commercials',
+        message: 'Queued comskip for this recording',
+        color: 'blue.5',
+        autoClose: 2000,
+      });
+    } catch (error) {
+      console.error('Failed to run comskip', error);
+    }
+  }
   return (
     <Modal
       opened={opened}
@@ -263,56 +269,21 @@ export const RecordingDetailsModal = ({
               onClose={() => setChildOpen(false)}
               recording={childRec}
               channel={channelMap[childRec.channel]}
-              posterUrl={
-                (childRec.custom_properties?.poster_logo_id
-                  ? `/api/channels/logos/${childRec.custom_properties.poster_logo_id}/cache/`
-                  : childRec.custom_properties?.poster_url ||
-                  channelMap[childRec.channel]?.logo?.cache_url) ||
-                '/logo.png'
-              }
+              posterUrl={getPosterUrl(
+                  childRec.custom_properties?.poster_logo_id,
+                  childRec.custom_properties,
+                  channelMap[childRec.channel]?.logo?.cache_url
+              )}
               env_mode={env_mode}
-              onWatchLive={() => {
-                const rec = childRec;
-                const now = userNow();
-                const s = toUserTime(rec.start_time);
-                const e = toUserTime(rec.end_time);
-                if (now.isAfter(s) && now.isBefore(e)) {
-                  const ch = channelMap[rec.channel];
-                  if (!ch) return;
-                  let url = `/proxy/ts/stream/${ch.uuid}`;
-                  if (env_mode === 'dev') {
-                    url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
-                  }
-                  useVideoStore.getState().showVideo(url, 'live');
-                }
-              }}
-              onWatchRecording={() => {
-                let fileUrl =
-                  childRec.custom_properties?.file_url ||
-                  childRec.custom_properties?.output_file_url;
-                if (!fileUrl) return;
-                if (env_mode === 'dev' && fileUrl.startsWith('/')) {
-                  fileUrl = `${window.location.protocol}//${window.location.hostname}:5656${fileUrl}`;
-                }
-                useVideoStore.getState().showVideo(fileUrl, 'vod', {
-                  name:
-                    childRec.custom_properties?.program?.title || 'Recording',
-                  logo: {
-                    url:
-                      (childRec.custom_properties?.poster_logo_id
-                        ? `/api/channels/logos/${childRec.custom_properties.poster_logo_id}/cache/`
-                        : channelMap[childRec.channel]?.logo?.cache_url) ||
-                      '/logo.png',
-                  },
-                });
-              }}
+              onWatchLive={handleOnWatchLive}
+              onWatchRecording={handleOnWatchRecording}
             />
           )}
         </Stack>
       ) : (
         <Flex gap="lg" align="flex-start">
           <Image
-            src={resolvedPosterUrl}
+            src={posterUrl}
             w={180}
             h={240}
             fit="contain"
@@ -326,44 +297,9 @@ export const RecordingDetailsModal = ({
                 {channel ? `${channel.channel_number} • ${channel.name}` : '—'}
               </Text>
               <Group gap={8}>
-                {onWatchLive && (
-                  <Button
-                    size="xs"
-                    variant="light"
-                    onClick={(e) => {
-                      e.stopPropagation?.();
-                      onWatchLive();
-                    }}
-                  >
-                    Watch Live
-                  </Button>
-                )}
-                {onWatchRecording && (
-                  <Button
-                    size="xs"
-                    variant="default"
-                    onClick={(e) => {
-                      e.stopPropagation?.();
-                      onWatchRecording();
-                    }}
-                    disabled={!canWatchRecording}
-                  >
-                    Watch
-                  </Button>
-                )}
-                {onEdit && start.isAfter(userNow()) && (
-                  <Button
-                    size="xs"
-                    variant="light"
-                    color="blue"
-                    onClick={(e) => {
-                      e.stopPropagation?.();
-                      onEdit(recording);
-                    }}
-                  >
-                    Edit
-                  </Button>
-                )}
+                {onWatchLive && <WatchLive />}
+                {onWatchRecording && <WatchRecording />}
+                {onEdit && start.isAfter(userNow()) && <Edit />}
                 {customProps.status === 'completed' &&
                   (!customProps?.comskip ||
                     customProps?.comskip?.status !== 'completed') && (
@@ -371,20 +307,7 @@ export const RecordingDetailsModal = ({
                       size="xs"
                       variant="light"
                       color="teal"
-                      onClick={async (e) => {
-                        e.stopPropagation?.();
-                        try {
-                          await API.runComskip(recording.id);
-                          notifications.show({
-                            title: 'Removing commercials',
-                            message: 'Queued comskip for this recording',
-                            color: 'blue.5',
-                            autoClose: 2000,
-                          });
-                        } catch (error) {
-                          console.error('Failed to run comskip', error);
-                        }
-                      }}
+                      onClick={handleRunComskip}
                     >
                       Remove commercials
                     </Button>
