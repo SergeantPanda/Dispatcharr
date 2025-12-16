@@ -9,10 +9,17 @@ import {
 import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from '@mantine/form';
 import dayjs from 'dayjs';
-import API from '../../api.js';
 import { notifications } from '@mantine/notifications';
 import { Badge, Button, Card, Group, Modal, MultiSelect, Select, Stack, Switch, Text, TextInput } from '@mantine/core';
 import { DatePickerInput, TimeInput } from '@mantine/dates';
+import { deleteRecordingById } from '../../utils/cards/RecordingCardUtils.js';
+import {
+  deleteRecurringRuleById,
+  getChannelOptions,
+  getUpcomingOccurrences,
+  updateRecurringRule,
+  updateRecurringRuleEnabled,
+} from '../../utils/forms/RecurringRuleModalUtils.js';
 
 export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
   const channels = useChannelsStore((s) => s.channels);
@@ -30,19 +37,7 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
   const rule = recurringRules.find((r) => r.id === ruleId);
 
   const channelOptions = useMemo(() => {
-    const list = Object.values(channels || {});
-    list.sort((a, b) => {
-      const aNum = Number(a.channel_number) || 0;
-      const bNum = Number(b.channel_number) || 0;
-      if (aNum === bNum) {
-        return (a.name || '').localeCompare(b.name || '');
-      }
-      return aNum - bNum;
-    });
-    return list.map((item) => ({
-      value: `${item.id}`,
-      label: item.name || `Channel ${item.id}`,
-    }));
+    return getChannelOptions(channels);
   }, [channels]);
 
   const form = useForm({
@@ -109,41 +104,14 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
   }, [opened, ruleId, rule]);
 
   const upcomingOccurrences = useMemo(() => {
-    const list = Array.isArray(recordings)
-      ? recordings
-      : Object.values(recordings || {});
-    const now = userNow();
-    return list
-      .filter(
-        (rec) =>
-          rec?.custom_properties?.rule?.id === ruleId &&
-          toUserTime(rec.start_time).isAfter(now)
-      )
-      .sort(
-        (a, b) =>
-          toUserTime(a.start_time).valueOf() -
-          toUserTime(b.start_time).valueOf()
-      );
+    return getUpcomingOccurrences(recordings, userNow, ruleId, toUserTime);
   }, [recordings, ruleId, toUserTime, userNow]);
 
   const handleSave = async (values) => {
     if (!rule) return;
     setSaving(true);
     try {
-      await API.updateRecurringRule(ruleId, {
-        channel: values.channel_id,
-        days_of_week: (values.days_of_week || []).map((d) => Number(d)),
-        start_time: toTimeString(values.start_time),
-        end_time: toTimeString(values.end_time),
-        start_date: values.start_date
-          ? dayjs(values.start_date).format('YYYY-MM-DD')
-          : null,
-        end_date: values.end_date
-          ? dayjs(values.end_date).format('YYYY-MM-DD')
-          : null,
-        name: values.rule_name?.trim() || '',
-        enabled: Boolean(values.enabled),
-      });
+      await updateRecurringRule(ruleId, values);
       await Promise.all([fetchRecurringRules(), fetchRecordings()]);
       notifications.show({
         title: 'Recurring rule updated',
@@ -163,7 +131,7 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
     if (!rule) return;
     setDeleting(true);
     try {
-      await API.deleteRecurringRule(ruleId);
+      await deleteRecurringRuleById(ruleId);
       await Promise.all([fetchRecurringRules(), fetchRecordings()]);
       notifications.show({
         title: 'Recurring rule removed',
@@ -183,7 +151,7 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
     if (!rule) return;
     setSaving(true);
     try {
-      await API.updateRecurringRule(ruleId, { enabled: checked });
+      await updateRecurringRuleEnabled(ruleId, checked);
       await Promise.all([fetchRecurringRules(), fetchRecordings()]);
       notifications.show({
         title: checked ? 'Recurring rule enabled' : 'Recurring rule paused',
@@ -204,7 +172,7 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
   const handleCancelOccurrence = async (occurrence) => {
     setBusyOccurrence(occurrence.id);
     try {
-      await API.deleteRecording(occurrence.id);
+      await deleteRecordingById(occurrence.id);
       await fetchRecordings();
       notifications.show({
         title: 'Occurrence cancelled',
@@ -227,6 +195,77 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
     );
   }
 
+  const handleEnableChange = (event) => {
+    form.setFieldValue('enabled', event.currentTarget.checked);
+    handleToggleEnabled(event.currentTarget.checked);
+  }
+
+  const handleStartDateChange = (value) => {
+    form.setFieldValue('start_date', value || dayjs().toDate());
+  }
+
+  const handleEndDateChange = (value) => {
+    form.setFieldValue('end_date', value);
+  }
+
+  const handleStartTimeChange = (value) => {
+    form.setFieldValue('start_time', toTimeString(value));
+  }
+
+  const handleEndTimeChange = (value) => {
+    form.setFieldValue('end_time', toTimeString(value));
+  }
+
+  const UpcomingList = () => {
+    return <Stack gap="xs">
+      {upcomingOccurrences.map((occ) => {
+        const occStart = toUserTime(occ.start_time);
+        const occEnd = toUserTime(occ.end_time);
+
+        return (
+          <Card
+            key={`occ-${occ.id}`}
+            withBorder
+            padding="sm"
+            radius="md"
+          >
+            <Group justify="space-between" align="center">
+              <Stack gap={2} flex={1}>
+                <Text fw={600} size="sm">
+                  {occStart.format(`${dateformat}, YYYY`)}
+                </Text>
+                <Text size="xs" c="dimmed">
+                  {occStart.format(timeformat)} – {occEnd.format(timeformat)}
+                </Text>
+              </Stack>
+              <Group gap={6}>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  onClick={() => {
+                    onClose();
+                    onEditOccurrence?.(occ);
+                  }}
+                >
+                  Edit
+                </Button>
+                <Button
+                  size="xs"
+                  color="red"
+                  variant="light"
+                  loading={busyOccurrence === occ.id}
+                  onClick={() => handleCancelOccurrence(occ)}
+                >
+                  Cancel
+                </Button>
+              </Group>
+            </Group>
+          </Card>
+        );
+      })}
+    </Stack>;
+  }
+
   return (
     <Modal
       opened={opened}
@@ -243,10 +282,7 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
           <Switch
             size="sm"
             checked={form.values.enabled}
-            onChange={(event) => {
-              form.setFieldValue('enabled', event.currentTarget.checked);
-              handleToggleEnabled(event.currentTarget.checked);
-            }}
+            onChange={handleEnableChange}
             label={form.values.enabled ? 'Enabled' : 'Paused'}
             disabled={saving}
           />
@@ -278,15 +314,13 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
               <DatePickerInput
                 label="Start date"
                 value={form.values.start_date}
-                onChange={(value) =>
-                  form.setFieldValue('start_date', value || dayjs().toDate())
-                }
+                onChange={handleStartDateChange}
                 valueFormat="MMM D, YYYY"
               />
               <DatePickerInput
                 label="End date"
                 value={form.values.end_date}
-                onChange={(value) => form.setFieldValue('end_date', value)}
+                onChange={handleEndDateChange}
                 valueFormat="MMM D, YYYY"
                 minDate={form.values.start_date || undefined}
               />
@@ -295,9 +329,7 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
               <TimeInput
                 label="Start time"
                 value={form.values.start_time}
-                onChange={(value) =>
-                  form.setFieldValue('start_time', toTimeString(value))
-                }
+                onChange={handleStartTimeChange}
                 withSeconds={false}
                 format="12"
                 amLabel="AM"
@@ -306,9 +338,7 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
               <TimeInput
                 label="End time"
                 value={form.values.end_time}
-                onChange={(value) =>
-                  form.setFieldValue('end_time', toTimeString(value))
-                }
+                onChange={handleEndTimeChange}
                 withSeconds={false}
                 format="12"
                 amLabel="AM"
@@ -341,54 +371,7 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
             <Text size="sm" c="dimmed">
               No future airings currently scheduled.
             </Text>
-          ) : (
-            <Stack gap="xs">
-              {upcomingOccurrences.map((occ) => {
-                const occStart = toUserTime(occ.start_time);
-                const occEnd = toUserTime(occ.end_time);
-                return (
-                  <Card
-                    key={`occ-${occ.id}`}
-                    withBorder
-                    padding="sm"
-                    radius="md"
-                  >
-                    <Group justify="space-between" align="center">
-                      <Stack gap={2} style={{ flex: 1 }}>
-                        <Text fw={600} size="sm">
-                          {occStart.format(`${dateformat}, YYYY`)}
-                        </Text>
-                        <Text size="xs" c="dimmed">
-                          {occStart.format(timeformat)} – {occEnd.format(timeformat)}
-                        </Text>
-                      </Stack>
-                      <Group gap={6}>
-                        <Button
-                          size="xs"
-                          variant="subtle"
-                          onClick={() => {
-                            onClose();
-                            onEditOccurrence?.(occ);
-                          }}
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          size="xs"
-                          color="red"
-                          variant="light"
-                          loading={busyOccurrence === occ.id}
-                          onClick={() => handleCancelOccurrence(occ)}
-                        >
-                          Cancel
-                        </Button>
-                      </Group>
-                    </Group>
-                  </Card>
-                );
-              })}
-            </Stack>
-          )}
+          ) : <UpcomingList />}
         </Stack>
       </Stack>
     </Modal>
