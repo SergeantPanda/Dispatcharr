@@ -10,6 +10,7 @@ from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import transaction
 from django.db.models import Q
 import os, json, requests, logging
+from urllib.parse import unquote
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
@@ -2053,7 +2054,7 @@ class DeleteSeriesRuleAPIView(APIView):
             return [Authenticated()]
 
     def delete(self, request, tvg_id):
-        tvg_id = str(tvg_id)
+        tvg_id = unquote(str(tvg_id or ""))
         rules = [r for r in CoreSettings.get_dvr_series_rules() if str(r.get("tvg_id")) != tvg_id]
         CoreSettings.set_dvr_series_rules(rules)
         return Response({"success": True, "rules": rules})

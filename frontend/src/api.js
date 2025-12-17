@@ -2308,7 +2308,8 @@ export default class API {
 
   static async deleteSeriesRule(tvgId) {
     try {
-      await request(`${host}/api/channels/series-rules/${tvgId}/`, { method: 'DELETE' });
+      const encodedTvgId = encodeURIComponent(tvgId);
+      await request(`${host}/api/channels/series-rules/${encodedTvgId}/`, { method: 'DELETE' });
       notifications.show({ title: 'Series rule removed' });
     } catch (e) {
       errorNotification('Failed to remove series rule', e);
