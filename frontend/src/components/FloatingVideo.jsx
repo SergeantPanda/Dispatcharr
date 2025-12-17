@@ -1,5 +1,5 @@
 // frontend/src/components/FloatingVideo.js
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Draggable from 'react-draggable';
 import useVideoStore from '../store/useVideoStore';
 import mpegts from 'mpegts.js';
@@ -17,7 +17,19 @@ export default function FloatingVideo() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [showOverlay, setShowOverlay] = useState(true);
+  const [videoSize, setVideoSize] = useState({ width: 320, height: 180 });
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeStateRef = useRef(null);
   const overlayTimeoutRef = useRef(null);
+  const aspectRatioRef = useRef(320 / 180);
+  const [dragPosition, setDragPosition] = useState(null);
+  const dragPositionRef = useRef(null);
+  const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const initialPositionRef = useRef(null);
+
+  const MIN_WIDTH = 220;
+  const MIN_HEIGHT = 124;
+  const VISIBLE_MARGIN = 48; // keep part of the window visible when dragging
 
   // Safely destroy the mpegts player to prevent errors
   const safeDestroyPlayer = () => {
@@ -315,24 +327,223 @@ export default function FloatingVideo() {
     }, 50);
   };
 
+  const clampToVisible = useCallback(
+    (x, y) => {
+      if (typeof window === 'undefined') return { x, y };
+
+      const minX = -(videoSize.width - VISIBLE_MARGIN);
+      const minY = -(videoSize.height - VISIBLE_MARGIN);
+      const maxX = window.innerWidth - VISIBLE_MARGIN;
+      const maxY = window.innerHeight - VISIBLE_MARGIN;
+
+      return {
+        x: Math.min(Math.max(x, minX), maxX),
+        y: Math.min(Math.max(y, minY), maxY),
+      };
+    },
+    [VISIBLE_MARGIN, videoSize.height, videoSize.width]
+  );
+
+  const handleResizeMove = useCallback(
+    (event) => {
+      if (!resizeStateRef.current) return;
+
+      const clientX =
+        event.touches && event.touches.length ? event.touches[0].clientX : event.clientX;
+      const clientY =
+        event.touches && event.touches.length ? event.touches[0].clientY : event.clientY;
+
+      const deltaX = clientX - resizeStateRef.current.startX;
+      const deltaY = clientY - resizeStateRef.current.startY;
+      const aspectRatio = resizeStateRef.current.aspectRatio || aspectRatioRef.current;
+
+      // Derive width/height while keeping the original aspect ratio
+      let nextWidth = resizeStateRef.current.startWidth + deltaX;
+      let nextHeight = nextWidth / aspectRatio;
+
+      // Allow vertical-driven resize if the user drags mostly vertically
+      if (Math.abs(deltaY) > Math.abs(deltaX)) {
+        nextHeight = resizeStateRef.current.startHeight + deltaY;
+        nextWidth = nextHeight * aspectRatio;
+      }
+
+      // Respect minimums while keeping the ratio
+      if (nextWidth < MIN_WIDTH) {
+        nextWidth = MIN_WIDTH;
+        nextHeight = nextWidth / aspectRatio;
+      }
+
+      if (nextHeight < MIN_HEIGHT) {
+        nextHeight = MIN_HEIGHT;
+        nextWidth = nextHeight * aspectRatio;
+      }
+
+      // Keep within viewport with a margin based on current position
+      const posX = dragPositionRef.current?.x ?? 0;
+      const posY = dragPositionRef.current?.y ?? 0;
+      const margin = VISIBLE_MARGIN;
+
+      const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - posX - margin);
+      const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight - posY - margin);
+
+      if (nextWidth > maxWidth) {
+        nextWidth = maxWidth;
+        nextHeight = nextWidth / aspectRatio;
+      }
+
+      if (nextHeight > maxHeight) {
+        nextHeight = maxHeight;
+        nextWidth = nextHeight * aspectRatio;
+      }
+
+      // Final pass to honor both bounds while keeping the ratio
+      if (nextWidth > maxWidth) {
+        nextWidth = maxWidth;
+        nextHeight = nextWidth / aspectRatio;
+      }
+
+      setVideoSize({
+        width: Math.round(nextWidth),
+        height: Math.round(nextHeight),
+      });
+    },
+    [MIN_HEIGHT, MIN_WIDTH, VISIBLE_MARGIN]
+  );
+
+  const endResize = useCallback(() => {
+    setIsResizing(false);
+    resizeStateRef.current = null;
+    window.removeEventListener('mousemove', handleResizeMove);
+    window.removeEventListener('mouseup', endResize);
+    window.removeEventListener('touchmove', handleResizeMove);
+    window.removeEventListener('touchend', endResize);
+  }, [handleResizeMove]);
+
+  const startResize = (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+
+    const clientX =
+      event.touches && event.touches.length ? event.touches[0].clientX : event.clientX;
+    const clientY =
+      event.touches && event.touches.length ? event.touches[0].clientY : event.clientY;
+
+    const aspectRatio =
+      videoSize.height > 0 ? videoSize.width / videoSize.height : aspectRatioRef.current;
+    aspectRatioRef.current = aspectRatio;
+
+    resizeStateRef.current = {
+      startX: clientX,
+      startY: clientY,
+      startWidth: videoSize.width,
+      startHeight: videoSize.height,
+      aspectRatio,
+    };
+
+    setIsResizing(true);
+
+    window.addEventListener('mousemove', handleResizeMove);
+    window.addEventListener('mouseup', endResize);
+    window.addEventListener('touchmove', handleResizeMove);
+    window.addEventListener('touchend', endResize);
+  };
+
+  useEffect(() => {
+    return () => {
+      endResize();
+    };
+  }, [endResize]);
+
+  useEffect(() => {
+    dragPositionRef.current = dragPosition;
+  }, [dragPosition]);
+
+  // Initialize the floating window near bottom-right once
+  useEffect(() => {
+    if (initialPositionRef.current || typeof window === 'undefined') return;
+
+    const initialX = Math.max(10, window.innerWidth - videoSize.width - 20);
+    const initialY = Math.max(10, window.innerHeight - videoSize.height - 20);
+    const pos = clampToVisible(initialX, initialY);
+
+    initialPositionRef.current = pos;
+    setDragPosition(pos);
+    dragPositionRef.current = pos;
+  }, [clampToVisible, videoSize.height, videoSize.width]);
+
+  const handleDragStart = useCallback(
+    (event, data) => {
+      const clientX = event.touches?.[0]?.clientX ?? event.clientX;
+      const clientY = event.touches?.[0]?.clientY ?? event.clientY;
+      const rect = videoContainerRef.current?.getBoundingClientRect();
+
+      if (clientX != null && clientY != null && rect) {
+        dragOffsetRef.current = {
+          x: clientX - rect.left,
+          y: clientY - rect.top,
+        };
+      } else {
+        dragOffsetRef.current = { x: 0, y: 0 };
+      }
+
+      const clamped = clampToVisible(data?.x ?? 0, data?.y ?? 0);
+      setDragPosition(clamped);
+      dragPositionRef.current = clamped;
+    },
+    [clampToVisible]
+  );
+
+  const handleDrag = useCallback(
+    (event) => {
+      const clientX = event.touches?.[0]?.clientX ?? event.clientX;
+      const clientY = event.touches?.[0]?.clientY ?? event.clientY;
+      if (clientX == null || clientY == null) return;
+
+      const nextX = clientX - (dragOffsetRef.current?.x ?? 0);
+      const nextY = clientY - (dragOffsetRef.current?.y ?? 0);
+      const clamped = clampToVisible(nextX, nextY);
+      setDragPosition(clamped);
+      dragPositionRef.current = clamped;
+    },
+    [clampToVisible]
+  );
+
+  const handleDragStop = useCallback(
+    (_, data) => {
+      const clamped = clampToVisible(data?.x ?? 0, data?.y ?? 0);
+      setDragPosition(clamped);
+      dragPositionRef.current = clamped;
+    },
+    [clampToVisible]
+  );
+
   // If the floating video is hidden or no URL is selected, do not render
   if (!isVisible || !streamUrl) {
     return null;
   }
 
   return (
-    <Draggable nodeRef={videoContainerRef}>
+    <Draggable
+      nodeRef={videoContainerRef}
+      cancel=".floating-video-no-drag"
+      disabled={isResizing}
+      position={dragPosition || undefined}
+      defaultPosition={initialPositionRef.current || { x: 0, y: 0 }}
+      onStart={handleDragStart}
+      onDrag={handleDrag}
+      onStop={handleDragStop}
+    >
       <div
         ref={videoContainerRef}
         style={{
           position: 'fixed',
-          bottom: '20px',
-          right: '20px',
-          width: '320px',
+          top: 0,
+          left: 0,
+          width: `${videoSize.width}px`,
           zIndex: 9999,
           backgroundColor: '#333',
           borderRadius: '8px',
-          overflow: 'hidden',
+          overflow: 'visible',
           boxShadow: '0 2px 10px rgba(0,0,0,0.7)',
         }}
       >
@@ -378,10 +589,12 @@ export default function FloatingVideo() {
           <video
             ref={videoRef}
             controls
+            className="floating-video-no-drag"
             style={{
               width: '100%',
-              height: '180px',
+              height: `${videoSize.height}px`,
               backgroundColor: '#000',
+              borderRadius: '0 0 8px 8px',
               // Better controls styling for VOD
               ...(contentType === 'vod' && {
                 controlsList: 'nodownload',
@@ -452,6 +665,28 @@ export default function FloatingVideo() {
               </Text>
             </Box>
           )}
+
+          {/* Resize handle */}
+          <Box
+            className="floating-video-no-drag"
+            onMouseDown={startResize}
+            onTouchStart={startResize}
+            style={{
+              position: 'absolute',
+              bottom: '-12px',
+              right: '-12px',
+              width: '22px',
+              height: '22px',
+              background: 'transparent',
+              borderBottom: '2px solid white',
+              borderRight: '2px solid white',
+              borderRadius: '0 0 6px 0',
+              cursor: 'nwse-resize',
+              zIndex: 6,
+              touchAction: 'none',
+              boxShadow: '0 0 6px rgba(0,0,0,0.35)',
+            }}
+          />
         </Box>
 
         {/* Error message below video - doesn't block controls */}
