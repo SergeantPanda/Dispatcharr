@@ -20,7 +20,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { AlertTriangle, SquareX } from 'lucide-react';
-import { RecordingSynopsis } from '../RecordingSynopsis.jsx';
+import RecordingSynopsis from '../RecordingSynopsis';
 import {
   deleteRecordingById,
   deleteSeriesAndRule,
@@ -33,7 +33,7 @@ import {
   runComSkip,
 } from './../../utils/cards/RecordingCardUtils.js';
 
-export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
+const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
   const channels = useChannelsStore((s) => s.channels);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
@@ -418,3 +418,5 @@ export const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => 
     </Box>
   );
 };
+
+export default RecordingCard;

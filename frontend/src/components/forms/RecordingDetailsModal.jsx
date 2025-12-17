@@ -18,7 +18,7 @@ import {
   getUpcomingEpisodes,
 } from '../../utils/forms/RecordingDetailsModalUtils.js';
 
-export const RecordingDetailsModal = ({
+const RecordingDetailsModal = ({
                                         opened,
                                         onClose,
                                         recording,
@@ -358,3 +358,5 @@ export const RecordingDetailsModal = ({
     </Modal>
   );
 };
+
+export default RecordingDetailsModal;

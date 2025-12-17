@@ -21,7 +21,7 @@ import {
   updateRecurringRuleEnabled,
 } from '../../utils/forms/RecurringRuleModalUtils.js';
 
-export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
+const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
   const channels = useChannelsStore((s) => s.channels);
   const recurringRules = useChannelsStore((s) => s.recurringRules);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
@@ -377,3 +377,5 @@ export const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }
     </Modal>
   );
 };
+
+export default RecurringRuleModal;

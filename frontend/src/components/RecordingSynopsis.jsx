@@ -1,7 +1,7 @@
 import { Text, } from '@mantine/core';
 
 // Short preview that triggers the details modal when clicked
-export const RecordingSynopsis = ({ description, onOpen }) => {
+const RecordingSynopsis = ({ description, onOpen }) => {
   const truncated = description?.length > 140;
   const preview = truncated
     ? `${description.slice(0, 140).trim()}...`
@@ -22,3 +22,5 @@ export const RecordingSynopsis = ({ description, onOpen }) => {
     </Text>
   );
 };
+
+export default RecordingSynopsis;
