@@ -1691,6 +1691,19 @@ export default class API {
     }
   }
 
+  static async stopVODClient(clientId) {
+    try {
+      const response = await request(`${host}/proxy/vod/stop_client/`, {
+        method: 'POST',
+        body: { client_id: clientId },
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to stop VOD client', e);
+    }
+  }
+
   static async stopChannel(id) {
     try {
       const response = await request(`${host}/proxy/ts/stop/${id}`, {
