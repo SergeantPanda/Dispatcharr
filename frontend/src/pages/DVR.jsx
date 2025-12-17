@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, lazy, Suspense } from 'react';
 import {
   Box,
   Button,
@@ -20,11 +20,12 @@ import RecordingForm from '../components/forms/Recording';
 import {
   useTimeHelpers,
 } from '../utils/dateTimeUtils.js';
-import { RecordingDetailsModal } from '../components/forms/RecordingDetailsModal.jsx';
-import { RecurringRuleModal } from '../components/forms/RecurringRuleModal.jsx';
-import { RecordingCard } from '../components/cards/RecordingCard.jsx';
+const RecordingDetailsModal = lazy(() => import('../components/forms/RecordingDetailsModal'));
+import RecurringRuleModal from '../components/forms/RecurringRuleModal.jsx';
+import RecordingCard from '../components/cards/RecordingCard.jsx';
 import { categorizeRecordings } from '../utils/pages/DVRUtils.js';
 import { getPosterUrl } from '../utils/cards/RecordingCardUtils.js';
+import ErrorBoundary from '../components/ErrorBoundary.jsx';
 
 const DVRPage = () => {
   const theme = useMantineTheme();
@@ -253,24 +254,28 @@ const DVRPage = () => {
 
       {/* Details Modal */}
       {detailsRecording && (
-        <RecordingDetailsModal
-          opened={detailsOpen}
-          onClose={closeDetails}
-          recording={detailsRecording}
-          channel={channels[detailsRecording.channel]}
-          posterUrl={getPosterUrl(
-              detailsRecording.custom_properties?.poster_logo_id,
-              detailsRecording.custom_properties,
-              channels[detailsRecording.channel]?.logo?.cache_url
-          )}
-          env_mode={useSettingsStore.getState().environment.env_mode}
-          onWatchLive={handleOnWatchLive}
-          onWatchRecording={handleOnWatchRecording}
-          onEdit={(rec) => {
-            setEditRecording(rec);
-            closeDetails();
-          }}
-        />
+        <ErrorBoundary>
+          <Suspense fallback={<Text>Loading...</Text>}>
+            <RecordingDetailsModal
+              opened={detailsOpen}
+              onClose={closeDetails}
+              recording={detailsRecording}
+              channel={channels[detailsRecording.channel]}
+              posterUrl={getPosterUrl(
+                detailsRecording.custom_properties?.poster_logo_id,
+                detailsRecording.custom_properties,
+                channels[detailsRecording.channel]?.logo?.cache_url
+              )}
+              env_mode={useSettingsStore.getState().environment.env_mode}
+              onWatchLive={handleOnWatchLive}
+              onWatchRecording={handleOnWatchRecording}
+              onEdit={(rec) => {
+                setEditRecording(rec);
+                closeDetails();
+              }}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
     </Box>
   );
