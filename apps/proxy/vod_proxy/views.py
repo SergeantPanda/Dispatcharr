@@ -15,7 +15,7 @@ from django.views import View
 from apps.vod.models import Movie, Series, Episode
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.proxy.vod_proxy.connection_manager import VODConnectionManager
-from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url
+from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info, create_vod_response
 
 logger = logging.getLogger(__name__)
@@ -1011,3 +1011,59 @@ class VODStatsView(View):
         except Exception as e:
             logger.error(f"Error getting VOD stats: {e}")
             return JsonResponse({'error': str(e)}, status=500)
+
+
+from rest_framework.decorators import api_view, permission_classes
+from apps.accounts.permissions import IsAdmin
+
+
+@csrf_exempt
+@api_view(["POST"])
+@permission_classes([IsAdmin])
+def stop_vod_client(request):
+    """Stop a specific VOD client connection using stop signal mechanism"""
+    try:
+        # Parse request body
+        import json
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
+        client_id = data.get('client_id')
+        if not client_id:
+            return JsonResponse({'error': 'No client_id provided'}, status=400)
+
+        logger.info(f"Request to stop VOD client: {client_id}")
+
+        # Get Redis client
+        connection_manager = MultiWorkerVODConnectionManager.get_instance()
+        redis_client = connection_manager.redis_client
+
+        if not redis_client:
+            return JsonResponse({'error': 'Redis not available'}, status=500)
+
+        # Check if connection exists
+        connection_key = f"vod_persistent_connection:{client_id}"
+        connection_data = redis_client.hgetall(connection_key)
+        if not connection_data:
+            logger.warning(f"VOD connection not found: {client_id}")
+            return JsonResponse({'error': 'Connection not found'}, status=404)
+
+        # Set a stop signal key that the worker will check
+        stop_key = get_vod_client_stop_key(client_id)
+        redis_client.setex(stop_key, 60, "true")  # 60 second TTL
+
+        logger.info(f"Set stop signal for VOD client: {client_id}")
+
+        return JsonResponse({
+            'message': 'VOD client stop signal sent',
+            'client_id': client_id,
+            'stop_key': stop_key
+        })
+
+    except Exception as e:
+        logger.error(f"Error stopping VOD client: {e}", exc_info=True)
+        return JsonResponse({'error': str(e)}, status=500)
+
+

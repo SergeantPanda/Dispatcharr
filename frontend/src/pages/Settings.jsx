@@ -30,6 +30,7 @@ import { isNotEmpty, useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import UserAgentsTable from '../components/tables/UserAgentsTable';
 import StreamProfilesTable from '../components/tables/StreamProfilesTable';
+import BackupManager from '../components/backups/BackupManager';
 import useLocalStorage from '../hooks/useLocalStorage';
 import useAuthStore from '../store/auth';
 import {
@@ -278,7 +279,7 @@ const SettingsPage = () => {
   const networkAccessForm = useForm({
     mode: 'controlled',
     initialValues: Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
-      acc[key] = '0.0.0.0/0,::0/0';
+      acc[key] = '0.0.0.0/0,::/0';
       return acc;
     }, {}),
     validate: Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
@@ -358,7 +359,7 @@ const SettingsPage = () => {
       );
       networkAccessForm.setValues(
         Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
-          acc[key] = networkAccessSettings[key] || '0.0.0.0/0,::0/0';
+          acc[key] = networkAccessSettings[key] || '0.0.0.0/0,::/0';
           return acc;
         }, {})
       );
@@ -1304,6 +1305,13 @@ const SettingsPage = () => {
                       </Flex>
                     </Stack>
                   </form>
+                </Accordion.Panel>
+              </Accordion.Item>
+
+              <Accordion.Item value="backups">
+                <Accordion.Control>Backup & Restore</Accordion.Control>
+                <Accordion.Panel>
+                  <BackupManager />
                 </Accordion.Panel>
               </Accordion.Item>
             </>
