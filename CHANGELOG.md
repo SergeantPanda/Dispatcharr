@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated dependencies: Django (5.2.4 → 5.2.9) includes CVE security patch, psycopg2-binary (2.9.10 → 2.9.11), celery (5.5.3 → 5.6.0), djangorestframework (3.16.0 → 3.16.1), requests (2.32.4 → 2.32.5), psutil (7.0.0 → 7.1.3), gevent (25.5.1 → 25.9.1), rapidfuzz (3.13.0 → 3.14.3), torch (2.7.1 → 2.9.1), sentence-transformers (5.1.0 → 5.2.0), lxml (6.0.0 → 6.0.2) (Closes #662)
 - Frontend dependencies updated: Vite (6.2.0 → 7.1.7), ESLint (9.21.0 → 9.27.0), and related packages; added npm `overrides` to enforce js-yaml@^4.1.1 for transitive security fix. All 6 reported vulnerabilities resolved with `npm audit fix`.
 - Floating video player now supports resizing via a drag handles, with minimum size enforcement and viewport/page boundary constraints to keep it visible.
+- Redis connection settings now fully configurable via environment variables (`REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_URL`), replacing hardcoded `localhost:6379` values throughout the codebase. This enables use of external Redis services in production deployments. (Closes #762)
+- Celery broker and result backend URLs now respect `REDIS_HOST`/`REDIS_PORT`/`REDIS_DB` settings as defaults, with `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND` environment variables available for override.
 
 ### Fixed
 
