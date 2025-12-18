@@ -2292,17 +2292,27 @@ def xc_get_epg(request, user, short=False):
     output = {"epg_listings": []}
 
     for program in programs:
-        id = "0"
-        epg_id = "0"
         title = program['title'] if isinstance(program, dict) else program.title
         description = program['description'] if isinstance(program, dict) else program.description
 
         start = program["start_time"] if isinstance(program, dict) else program.start_time
         end = program["end_time"] if isinstance(program, dict) else program.end_time
 
+        # For database programs, use actual ID; for generated dummy programs, create synthetic ID
+        if isinstance(program, dict):
+            # Generated dummy program - create unique ID from channel + timestamp
+            program_id = str(abs(hash(f"{channel_id}_{int(start.timestamp())}")))
+        else:
+            # Database program - use actual ID
+            program_id = str(program.id)
+
+        # epg_id refers to the EPG source/channel mapping in XC panels
+        # Use the actual EPGData ID when available, otherwise fall back to 0
+        epg_id = str(channel.epg_data.id) if channel.epg_data else "0"
+
         program_output = {
-            "id": f"{id}",
-            "epg_id": f"{epg_id}",
+            "id": program_id,
+            "epg_id": epg_id,
             "title": base64.b64encode((title or "").encode()).decode(),
             "lang": "",
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
