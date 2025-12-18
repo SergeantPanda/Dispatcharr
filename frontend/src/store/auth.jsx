@@ -43,6 +43,8 @@ const useAuthStore = create((set, get) => ({
       throw new Error('Unauthorized');
     }
 
+    set({ user, isAuthenticated: true });
+
     // Ensure settings are loaded first
     await useSettingsStore.getState().fetchSettings();
 
@@ -62,8 +64,6 @@ const useAuthStore = create((set, get) => ({
       if (user.user_level >= USER_LEVELS.ADMIN) {
         await Promise.all([useUsersStore.getState().fetchUsers()]);
       }
-
-      set({ user, isAuthenticated: true });
     } catch (error) {
       console.error('Error initializing data:', error);
     }
