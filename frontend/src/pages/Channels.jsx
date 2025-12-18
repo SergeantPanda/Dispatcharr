@@ -10,7 +10,6 @@ import ErrorBoundary from '../components/ErrorBoundary';
 
 const PageContent = () => {
   const authUser = useAuthStore((s) => s.user);
-  if (!authUser.id) throw new Error()
 
   const [allotmentSizes, setAllotmentSizes] = useLocalStorage(
     'channels-splitter-sizes',
@@ -24,6 +23,8 @@ const PageContent = () => {
   const handleResize = (sizes) => {
     setAllotmentSizes(sizes);
   };
+
+  if (!authUser.id) return <></>;
 
   if (authUser.user_level <= USER_LEVELS.STANDARD) {
     return (
