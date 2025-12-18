@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Update docker/dev-build.sh to support private registries, multiple architectures and pushing. Now [@jdblack](https://github.com/jblack). Now you can do things like `dev-build.sh  -p -r my.private.registry -a linux/arm64,linux/amd64`. 
+### Added
+
+- VOD client stop button in Stats page: Users can now disconnect individual VOD clients from the Stats view, similar to the existing channel client disconnect functionality.
+- Automated configuration backup/restore system with scheduled backups, retention policies, and async task processing - Thanks [@stlalpha](https://github.com/stlalpha) (Closes #153)
+
+### Changed
+
+- Removed unreachable code path in m3u output - Thanks [@DawtCom](https://github.com/DawtCom)
+- Update docker/dev-build.sh to support private registries, multiple architectures and pushing. Now you can do things like `dev-build.sh  -p -r my.private.registry -a linux/arm64,linux/amd64` - Thanks [@jdblack](https://github.com/jblack)
+
+### Fixed
+
+- VOD episode processing now correctly handles duplicate episodes (same episode in multiple languages/qualities) by reusing Episode records across multiple M3UEpisodeRelation entries instead of attempting to create duplicates (Fixes #556)
+- XtreamCodes series streaming endpoint now correctly handles episodes with multiple streams (different languages/qualities) by selecting the best available stream based on account priority (Fixes #569)
+- XtreamCodes series info API now returns unique episodes instead of duplicate entries when multiple streams exist for the same episode (different languages/qualities)
+- nginx now gracefully handles hosts without IPv6 support by automatically disabling IPv6 binding at startup (Fixes #744)
+- XtreamCodes EPG API now returns correct date/time format for start/end fields and proper string types for timestamps and channel_id
+- XtreamCodes EPG API now handles None values for title and description fields to prevent AttributeError
 
 ## [0.14.0] - 2025-12-09
 
