@@ -30,6 +30,8 @@ export default function FloatingVideo() {
   const MIN_WIDTH = 220;
   const MIN_HEIGHT = 124;
   const VISIBLE_MARGIN = 48; // keep part of the window visible when dragging
+  const HEADER_HEIGHT = 38; // height of the close button header area
+  const ERROR_HEIGHT = 45; // approximate height of error message area when displayed
   const HANDLE_SIZE = 18;
   const HANDLE_OFFSET = 0;
   const resizeHandleBaseStyle = {
@@ -404,34 +406,42 @@ export default function FloatingVideo() {
     (x, y) => {
       if (typeof window === 'undefined') return { x, y };
 
+      const totalHeight = videoSize.height + HEADER_HEIGHT + ERROR_HEIGHT;
       const minX = -(videoSize.width - VISIBLE_MARGIN);
-      const minY = -(videoSize.height - VISIBLE_MARGIN);
-      const maxX = window.innerWidth - VISIBLE_MARGIN;
-      const maxY = window.innerHeight - VISIBLE_MARGIN;
+      const minY = -(totalHeight - VISIBLE_MARGIN);
+      const maxX = window.innerWidth - videoSize.width;
+      const maxY = window.innerHeight - totalHeight;
 
       return {
         x: Math.min(Math.max(x, minX), maxX),
         y: Math.min(Math.max(y, minY), maxY),
       };
     },
-    [VISIBLE_MARGIN, videoSize.height, videoSize.width]
+    [
+      VISIBLE_MARGIN,
+      HEADER_HEIGHT,
+      ERROR_HEIGHT,
+      videoSize.height,
+      videoSize.width,
+    ]
   );
 
   const clampToVisibleWithSize = useCallback(
     (x, y, width, height) => {
       if (typeof window === 'undefined') return { x, y };
 
+      const totalHeight = height + HEADER_HEIGHT + ERROR_HEIGHT;
       const minX = -(width - VISIBLE_MARGIN);
-      const minY = -(height - VISIBLE_MARGIN);
-      const maxX = window.innerWidth - VISIBLE_MARGIN;
-      const maxY = window.innerHeight - VISIBLE_MARGIN;
+      const minY = -(totalHeight - VISIBLE_MARGIN);
+      const maxX = window.innerWidth - width;
+      const maxY = window.innerHeight - totalHeight;
 
       return {
         x: Math.min(Math.max(x, minX), maxX),
         y: Math.min(Math.max(y, minY), maxY),
       };
     },
-    [VISIBLE_MARGIN]
+    [VISIBLE_MARGIN, HEADER_HEIGHT, ERROR_HEIGHT]
   );
 
   const handleResizeMove = useCallback(
@@ -439,9 +449,13 @@ export default function FloatingVideo() {
       if (!resizeStateRef.current) return;
 
       const clientX =
-        event.touches && event.touches.length ? event.touches[0].clientX : event.clientX;
+        event.touches && event.touches.length
+          ? event.touches[0].clientX
+          : event.clientX;
       const clientY =
-        event.touches && event.touches.length ? event.touches[0].clientY : event.clientY;
+        event.touches && event.touches.length
+          ? event.touches[0].clientY
+          : event.clientY;
 
       const {
         startX,
@@ -564,17 +578,21 @@ export default function FloatingVideo() {
     event.preventDefault();
 
     const clientX =
-      event.touches && event.touches.length ? event.touches[0].clientX : event.clientX;
+      event.touches && event.touches.length
+        ? event.touches[0].clientX
+        : event.clientX;
     const clientY =
-      event.touches && event.touches.length ? event.touches[0].clientY : event.clientY;
+      event.touches && event.touches.length
+        ? event.touches[0].clientY
+        : event.clientY;
 
     const aspectRatio =
-      videoSize.height > 0 ? videoSize.width / videoSize.height : aspectRatioRef.current;
+      videoSize.height > 0
+        ? videoSize.width / videoSize.height
+        : aspectRatioRef.current;
     aspectRatioRef.current = aspectRatio;
-    const startPos =
-      dragPositionRef.current ||
-      initialPositionRef.current ||
-      { x: 0, y: 0 };
+    const startPos = dragPositionRef.current ||
+      initialPositionRef.current || { x: 0, y: 0 };
 
     resizeStateRef.current = {
       startX: clientX,
@@ -608,14 +626,21 @@ export default function FloatingVideo() {
   useEffect(() => {
     if (initialPositionRef.current || typeof window === 'undefined') return;
 
+    const totalHeight = videoSize.height + HEADER_HEIGHT + ERROR_HEIGHT;
     const initialX = Math.max(10, window.innerWidth - videoSize.width - 20);
-    const initialY = Math.max(10, window.innerHeight - videoSize.height - 20);
+    const initialY = Math.max(10, window.innerHeight - totalHeight - 20);
     const pos = clampToVisible(initialX, initialY);
 
     initialPositionRef.current = pos;
     setDragPosition(pos);
     dragPositionRef.current = pos;
-  }, [clampToVisible, videoSize.height, videoSize.width]);
+  }, [
+    clampToVisible,
+    videoSize.height,
+    videoSize.width,
+    HEADER_HEIGHT,
+    ERROR_HEIGHT,
+  ]);
 
   const handleDragStart = useCallback(
     (event, data) => {
@@ -811,7 +836,6 @@ export default function FloatingVideo() {
               </Text>
             </Box>
           )}
-
         </Box>
 
         {/* Error message below video - doesn't block controls */}
