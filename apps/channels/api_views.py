@@ -8,7 +8,6 @@ from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import transaction
-from django.db.models import Q
 import os, json, requests, logging
 from urllib.parse import unquote
 from apps.accounts.permissions import (
@@ -421,36 +420,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
             group_names = channel_group.split(",")
             qs = qs.filter(channel_group__name__in=group_names)
 
-        filters = {}
-        q_filters = Q()
-
-        channel_profile_id = self.request.query_params.get("channel_profile_id")
-        show_disabled_param = self.request.query_params.get("show_disabled", None)
-        only_streamless = self.request.query_params.get("only_streamless", None)
-
-        if channel_profile_id:
-            try:
-                profile_id_int = int(channel_profile_id)
-                filters["channelprofilemembership__channel_profile_id"] = profile_id_int
-
-                if show_disabled_param is None:
-                    filters["channelprofilemembership__enabled"] = True
-            except (ValueError, TypeError):
-                # Ignore invalid profile id values
-                pass
-
-        if only_streamless:
-            q_filters &= Q(streams__isnull=True)
-
         if self.request.user.user_level < 10:
-            filters["user_level__lte"] = self.request.user.user_level
+            qs = qs.filter(user_level__lte=self.request.user.user_level)
 
-        if filters:
-            qs = qs.filter(**filters)
-        if q_filters:
-            qs = qs.filter(q_filters)
-
-        return qs.distinct()
+        return qs
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
