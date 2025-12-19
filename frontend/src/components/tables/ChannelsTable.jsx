@@ -47,6 +47,7 @@ import {
   Select,
   NumberInput,
   Tooltip,
+  LoadingOverlay,
 } from '@mantine/core';
 import { getCoreRowModel, flexRender } from '@tanstack/react-table';
 import './table.css';
@@ -289,6 +290,7 @@ const ChannelsTable = ({}) => {
   const [selectedProfile, setSelectedProfile] = useState(
     profiles[selectedProfileId]
   );
+  const [hasFetchedData, setHasFetchedData] = useState(false);
 
   const [paginationString, setPaginationString] = useState('');
   const [filters, setFilters] = useState({
@@ -361,10 +363,14 @@ const ChannelsTable = ({}) => {
     });
   });
 
+  const channelsTableLength = hasFetchedData ? Object.keys(data).length : undefined;
+
   /**
    * Functions
    */
   const fetchData = useCallback(async () => {
+    setIsLoading(true);
+
     const params = new URLSearchParams();
     params.append('page', pagination.pageIndex + 1);
     params.append('page_size', pagination.pageSize);
@@ -396,6 +402,9 @@ const ChannelsTable = ({}) => {
       await API.queryChannels(params),
       await API.getAllChannelIds(params),
     ]);
+
+    setIsLoading(false);
+    setHasFetchedData(true);
 
     setTablePrefs({
       pageSize: pagination.pageSize,
@@ -1330,12 +1339,12 @@ const ChannelsTable = ({}) => {
 
           {/* Table or ghost empty state inside Paper */}
           <Box>
-            {Object.keys(channels).length === 0 && (
+            {channelsTableLength === 0 && (
               <ChannelsTableOnboarding editChannel={editChannel} />
             )}
           </Box>
 
-          {Object.keys(channels).length > 0 && (
+          {channelsTableLength > 0 && (
             <Box
               style={{
                 display: 'flex',
@@ -1352,6 +1361,7 @@ const ChannelsTable = ({}) => {
                   borderRadius: 'var(--mantine-radius-default)',
                 }}
               >
+                <LoadingOverlay visible={isLoading} />
                 <CustomTable table={table} />
               </Box>
 
