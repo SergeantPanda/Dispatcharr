@@ -2326,7 +2326,7 @@ def xc_get_epg(request, user, short=False):
 
         if short == False:
             program_output["now_playing"] = 1 if start <= django_timezone.now() <= end else 0
-            program_output["has_archive"] = "0"
+            program_output["has_archive"] = 0
 
         output['epg_listings'].append(program_output)
 

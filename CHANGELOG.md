@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- XtreamCodes EPG `has_archive` field now returns integer `0` instead of string `"0"` for proper JSON type consistency
+
 ## [0.15.0] - 2025-12-20
 
 ### Added
