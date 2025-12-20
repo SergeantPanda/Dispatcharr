@@ -47,7 +47,6 @@ import {
   Select,
   NumberInput,
   Tooltip,
-  LoadingOverlay,
 } from '@mantine/core';
 import { getCoreRowModel, flexRender } from '@tanstack/react-table';
 import './table.css';
@@ -1389,7 +1388,6 @@ const ChannelsTable = ({}) => {
                   borderRadius: 'var(--mantine-radius-default)',
                 }}
               >
-                <LoadingOverlay visible={isLoading} />
                 <CustomTable table={table} />
               </Box>
 
