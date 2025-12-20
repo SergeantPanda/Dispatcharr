@@ -1,4 +1,10 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, {
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+  useRef,
+} from 'react';
 import useChannelsStore from '../../store/channels';
 import useLogosStore from '../../store/logos';
 import { notifications } from '@mantine/notifications';
@@ -289,7 +295,6 @@ const ChannelsTable = ({}) => {
   const [selectedProfile, setSelectedProfile] = useState(
     profiles[selectedProfileId]
   );
-  const [hasFetchedData, setHasFetchedData] = useState(false);
   const [showDisabled, setShowDisabled] = useState(true);
   const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
     useState(false);
@@ -310,6 +315,8 @@ const ChannelsTable = ({}) => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [isBulkDelete, setIsBulkDelete] = useState(false);
   const [channelToDelete, setChannelToDelete] = useState(null);
+
+  const hasFetchedData = useRef(false);
 
   // Column sizing state for resizable columns
   // Store in localStorage but with empty object as default
@@ -365,7 +372,8 @@ const ChannelsTable = ({}) => {
     });
   });
 
-  const channelsTableLength = hasFetchedData ? Object.keys(data).length : undefined;
+  const channelsTableLength = (Object.keys(data).length > 0 || hasFetchedData.current) ?
+    Object.keys(data).length : undefined;
 
   /**
    * Functions
@@ -406,7 +414,7 @@ const ChannelsTable = ({}) => {
     ]);
 
     setIsLoading(false);
-    setHasFetchedData(true);
+    hasFetchedData.current = true;
 
     setTablePrefs({
       pageSize: pagination.pageSize,
