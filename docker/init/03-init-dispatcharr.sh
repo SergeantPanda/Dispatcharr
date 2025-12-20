@@ -30,15 +30,11 @@ if [ "$(id -u)" = "0" ] && [ -d "/app" ]; then
     fi
 fi
 # Configure nginx port
-sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
-
-# Configure nginx based on IPv6 availability
-if ip -6 addr show | grep -q "inet6"; then
-    echo "✅ IPv6 is available, enabling IPv6 in nginx"
-else
-    echo "⚠️  IPv6 not available, disabling IPv6 in nginx"
-    sed -i '/listen \[::\]:/d' /etc/nginx/sites-enabled/default
+if ! [[ "$DISPATCHARR_PORT" =~ ^[0-9]+$ ]]; then
+    echo "⚠️  Warning: DISPATCHARR_PORT is not a valid integer, using default port 9191"
+    DISPATCHARR_PORT=9191
 fi
+sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
 # NOTE: mac doesn't run as root, so only manage permissions
 # if this script is running as root

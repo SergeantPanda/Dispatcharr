@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2025-12-20
+
 ### Added
 
 - VOD client stop button in Stats page: Users can now disconnect individual VOD clients from the Stats view, similar to the existing channel client disconnect functionality.
@@ -27,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Docker init script now validates DISPATCHARR_PORT is an integer before using it, preventing sed errors when Kubernetes sets it to a service URL like `tcp://10.98.37.10:80`. Falls back to default port 9191 when invalid (Fixes #737)
 - M3U Profile form now properly resets local state for search and replace patterns after saving, preventing validation errors when adding multiple profiles in a row
 - DVR series rule deletion now properly handles TVG IDs that contain slashes by encoding them in the URL path (Fixes #697)
 - VOD episode processing now correctly handles duplicate episodes (same episode in multiple languages/qualities) by reusing Episode records across multiple M3UEpisodeRelation entries instead of attempting to create duplicates (Fixes #556)
