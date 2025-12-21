@@ -83,34 +83,34 @@ const GuideRow = React.memo(({ index, style, data }) => {
     >
       <Box
         style={{
-          display: 'flex',
-          height: '100%',
           borderBottom: '0px solid #27272A',
           transition: 'height 0.2s ease',
-          position: 'relative',
           overflow: 'visible',
         }}
+        display={'flex'}
+        h={'100%'}
+        pos={'relative'}
       >
         <Box
           className="channel-logo"
           style={{
-            width: CHANNEL_WIDTH,
-            minWidth: CHANNEL_WIDTH,
             flexShrink: 0,
-            display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             backgroundColor: '#18181B',
             borderRight: '1px solid #27272A',
             borderBottom: '1px solid #27272A',
             boxShadow: '2px 0 5px rgba(0,0,0,0.2)',
-            left: 0,
             zIndex: 30,
-            height: '100%',
             transition: 'height 0.2s ease',
             cursor: 'pointer',
-            position: 'relative',
           }}
+          w={CHANNEL_WIDTH}
+          miw={CHANNEL_WIDTH}
+          display={'flex'}
+          left={0}
+          h={'100%'}
+          pos={'relative'}
           onClick={(event) => handleLogoClick(channel, event)}
           onMouseEnter={() => setHoveredChannelId(channel.id)}
           onMouseLeave={() => setHoveredChannelId(null)}
@@ -120,17 +120,17 @@ const GuideRow = React.memo(({ index, style, data }) => {
               align="center"
               justify="center"
               style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                width: '100%',
-                height: '100%',
                 backgroundColor: 'rgba(0, 0, 0, 0.7)',
                 zIndex: 10,
                 animation: 'fadeIn 0.2s',
               }}
+              pos={'absolute'}
+              top={0}
+              left={0}
+              right={0}
+              bottom={0}
+              w={'100%'}
+              h={'100%'}
             >
               <Play size={32} color="#fff" fill="#fff" />
             </Flex>
@@ -141,25 +141,25 @@ const GuideRow = React.memo(({ index, style, data }) => {
             align="center"
             justify="space-between"
             style={{
-              width: '100%',
-              height: '100%',
-              padding: '4px',
               boxSizing: 'border-box',
               zIndex: 5,
-              position: 'relative',
             }}
+            w={'100%'}
+            h={'100%'}
+            p={'4px'}
+            pos={'relative'}
           >
             <Box
               style={{
-                width: '100%',
-                height: `${rowHeight - 32}px`,
-                display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 overflow: 'hidden',
-                padding: '4px',
-                marginBottom: '4px',
               }}
+              w={'100%'}
+              h={`${rowHeight - 32}px`}
+              display={'flex'}
+              p={'4px'}
+              mb={'4px'}
             >
               <img
                 src={logos[channel.logo_id]?.cache_url || logo}
@@ -176,21 +176,21 @@ const GuideRow = React.memo(({ index, style, data }) => {
               size="sm"
               weight={600}
               style={{
-                position: 'absolute',
-                bottom: '4px',
-                left: '50%',
                 transform: 'translateX(-50%)',
                 backgroundColor: '#18181B',
-                padding: '2px 8px',
-                borderRadius: 4,
-                fontSize: '0.85em',
-                border: '1px solid #27272A',
-                height: '24px',
-                display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                minWidth: '36px',
               }}
+              pos={'absolute'}
+              bottom={4}
+              left={'50%'}
+              p={'2px 8px'}
+              bdrs={4}
+              fz={'0.85em'}
+              bd={'1px solid #27272A'}
+              h={'24px'}
+              display={'flex'}
+              miw={'36px'}
             >
               {channel.channel_number || '-'}
             </Text>
@@ -199,12 +199,12 @@ const GuideRow = React.memo(({ index, style, data }) => {
 
         <Box
           style={{
-            flex: 1,
-            position: 'relative',
-            height: '100%',
             transition: 'height 0.2s ease',
-            paddingLeft: 0,
           }}
+          flex={1}
+          pos={'relative'}
+          h={'100%'}
+          pl={0}
         >
           {channelPrograms.length > 0 ? (
             channelPrograms.map((program) =>
@@ -217,18 +217,18 @@ const GuideRow = React.memo(({ index, style, data }) => {
                   <Box
                     key={`placeholder-${channel.id}-${placeholderIndex}`}
                     style={{
-                      position: 'absolute',
-                      left: placeholderIndex * (HOUR_WIDTH * 2),
-                      top: 0,
-                      width: HOUR_WIDTH * 2,
-                      height: rowHeight - 4,
-                      border: '1px dashed #2D3748',
-                      borderRadius: '4px',
-                      display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      color: '#4A5568',
                     }}
+                    pos={'absolute'}
+                    left={placeholderIndex * (HOUR_WIDTH * 2)}
+                    top={0}
+                    w={HOUR_WIDTH * 2}
+                    h={rowHeight - 4}
+                    bd={'1px dashed #2D3748'}
+                    bdrs={4}
+                    display={'flex'}
+                    c={'#4A5568'}
                   >
                     <Text size="sm">No program data</Text>
                   </Box>
@@ -1074,31 +1074,24 @@ export default function TVChannelGuide({ startDate, endDate }) {
           className="guide-program-container"
           key={`${channel?.id || 'unknown'}-${program.id || `${program.tvg_id}-${program.start_time}`}`}
           style={{
-            position: 'absolute',
-            left: leftPx + gapSize,
-            top: 0,
-            width: isExpanded ? expandedWidthPx : widthPx,
-            height: rowHeight - 4,
             cursor: 'pointer',
             zIndex: isExpanded ? 25 : 5,
-            transition: isExpanded
-              ? 'height 0.2s ease, width 0.2s ease'
-              : 'height 0.2s ease',
+            transition: isExpanded ? 'height 0.2s ease, width 0.2s ease' : 'height 0.2s ease',
           }}
+          pos={'absolute'}
+          left={leftPx + gapSize}
+          top={0}
+          w={isExpanded ? expandedWidthPx : widthPx}
+          h={rowHeight - 4}
           onClick={(event) => handleProgramClick(program, event)}
         >
           <Paper
             elevation={isExpanded ? 4 : 2}
             className={`guide-program ${isLive ? 'live' : isPast ? 'past' : 'not-live'} ${isExpanded ? 'expanded' : ''}`}
             style={{
-              width: '100%',
-              height: '100%',
               overflow: 'hidden',
-              position: 'relative',
-              display: 'flex',
               flexDirection: 'column',
               justifyContent: isExpanded ? 'flex-start' : 'space-between',
-              padding: isExpanded ? '12px' : '8px',
               backgroundColor: isExpanded
                 ? isLive
                   ? '#1a365d'
@@ -1110,10 +1103,15 @@ export default function TVChannelGuide({ startDate, endDate }) {
                   : isPast
                     ? '#27272A'
                     : '#2c5282',
-              color: isPast ? '#a0aec0' : '#fff',
               boxShadow: isExpanded ? '0 4px 8px rgba(0,0,0,0.4)' : 'none',
               transition: 'all 0.2s ease',
             }}
+            w={'100%'}
+            h={'100%'}
+            pos={'relative'}
+            display={'flex'}
+            p={isExpanded ? 12 : 8}
+            c={isPast ? '#a0aec0' : '#fff'}
           >
             <Box
               style={{
@@ -1125,11 +1123,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 component="div"
                 size={isExpanded ? 'lg' : 'md'}
                 style={{
-                  fontWeight: 'bold',
                   whiteSpace: 'nowrap',
                   textOverflow: 'ellipsis',
                   overflow: 'hidden',
                 }}
+                fw={'bold'}
               >
                 <Group gap="xs">
                   {recording && (
@@ -1169,13 +1167,13 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 <Text
                   size="xs"
                   style={{
-                    marginTop: '4px',
                     whiteSpace: isExpanded ? 'normal' : 'nowrap',
                     textOverflow: isExpanded ? 'clip' : 'ellipsis',
                     overflow: isExpanded ? 'auto' : 'hidden',
-                    color: isPast ? '#718096' : '#cbd5e0',
-                    maxHeight: isExpanded ? '80px' : 'unset',
                   }}
+                  mt={4}
+                  c={isPast ? '#718096' : '#cbd5e0'}
+                  mah={isExpanded ? '80px' : 'unset'}
                 >
                   {program.description}
                 </Text>
@@ -1183,7 +1181,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             )}
 
             {isExpanded && (
-              <Box style={{ marginTop: 'auto' }}>
+              <Box mt={'auto'}>
                 <Flex gap="md" justify="flex-end" mt={8}>
                   {!isPast && (
                     <Button
@@ -1363,29 +1361,27 @@ export default function TVChannelGuide({ startDate, endDate }) {
       className="tv-guide"
       style={{
         overflow: 'hidden',
-        width: '100%',
-        height: '100%',
-        // backgroundColor: 'rgb(39, 39, 42)',
-        color: '#fff',
-        fontFamily: 'Roboto, sans-serif',
       }}
+      w={'100%'}
+      h={'100%'}
+      c={'#fff'}
+      ff={'Roboto, sans-serif'}
       onClick={handleClickOutside} // Close expanded program when clicking outside
     >
       {/* Sticky top bar */}
       <Flex
         direction="column"
         style={{
-          // backgroundColor: '#424242',
-          color: '#fff',
-          padding: '12px 20px',
-          position: 'sticky',
-          top: 0,
           zIndex: 1000,
         }}
+        c={'#fff'}
+        p={'12px 20px'}
+        pos={'sticky'}
+        top={0}
       >
         {/* Title and current time */}
         <Flex justify="space-between" align="center" mb={12}>
-          <Title order={3} style={{ fontWeight: 'bold' }}>
+          <Title order={3} fw={'bold'}>
             TV Guide
           </Title>
           <Flex align="center" gap="md">
@@ -1412,7 +1408,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             placeholder="Search channels..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ width: '250px' }} // Reduced width from flex: 1
+            w={'250px'} // Reduced width from flex: 1
             leftSection={<Search size={16} />}
             rightSection={
               searchQuery ? (
@@ -1433,7 +1429,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             data={groupOptions}
             value={selectedGroupId}
             onChange={handleGroupChange} // Use the new handler
-            style={{ width: '220px' }}
+            w={'220px'}
             clearable={true} // Allow clearing the selection
           />
 
@@ -1442,7 +1438,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             data={profileOptions}
             value={selectedProfileId}
             onChange={handleProfileChange} // Use the new handler
-            style={{ width: '180px' }}
+            w={'180px'}
             clearable={true} // Allow clearing the selection
           />
 
@@ -1460,9 +1456,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
             onClick={openRules}
             style={{
               backgroundColor: '#245043',
-              border: '1px solid #3BA882',
-              color: '#FFFFFF',
             }}
+            bd={'1px solid #3BA882'}
+            c={'#FFFFFF'}
           >
             Series Rules
           </Button>
@@ -1477,34 +1473,34 @@ export default function TVChannelGuide({ startDate, endDate }) {
       {/* Guide container with headers and scrollable content */}
       <Box
         style={{
-          display: 'flex',
           flexDirection: 'column',
-          height: 'calc(100vh - 120px)',
         }}
+        display={'flex'}
+        h={'calc(100vh - 120px)'}
       >
         {/* Logo header - Sticky, non-scrollable */}
         <Box
           style={{
-            display: 'flex',
-            position: 'sticky',
-            top: 0,
             zIndex: 100,
           }}
+          display={'flex'}
+          pos={'sticky'}
+          top={0}
         >
           {/* Logo header cell - sticky in both directions */}
           <Box
             style={{
-              width: CHANNEL_WIDTH,
-              minWidth: CHANNEL_WIDTH,
               flexShrink: 0,
-              height: '40px',
               backgroundColor: '#18181B',
               borderBottom: '1px solid #27272A',
               borderRight: '1px solid #27272A', // Increased border width
-              position: 'sticky',
-              left: 0,
               zIndex: 200,
             }}
+            w={CHANNEL_WIDTH}
+            miw={CHANNEL_WIDTH}
+            h={'40px'}
+            pos={'sticky'}
+            left={0}
           />
 
           {/* Timeline header with its own scrollbar */}
@@ -1512,26 +1508,26 @@ export default function TVChannelGuide({ startDate, endDate }) {
             style={{
               flex: 1,
               overflow: 'hidden',
-              position: 'relative',
             }}
+            pos={'relative'}
           >
             <Box
               ref={timelineRef}
               style={{
                 overflowX: 'auto',
                 overflowY: 'hidden',
-                position: 'relative',
               }}
+              pos={'relative'}
               onScroll={handleTimelineScroll}
               onWheel={handleTimelineWheel} // Add wheel event handler
             >
               <Box
                 style={{
-                  display: 'flex',
                   backgroundColor: '#1E2A27',
                   borderBottom: '1px solid #27272A',
-                  width: hourTimeline.length * HOUR_WIDTH,
                 }}
+                display={'flex'}
+                w={hourTimeline.length * HOUR_WIDTH}
               >
                 {' '}
                 {hourTimeline.map((hourData) => {
@@ -1541,15 +1537,15 @@ export default function TVChannelGuide({ startDate, endDate }) {
                     <Box
                       key={time.format()}
                       style={{
-                        width: HOUR_WIDTH,
-                        height: '40px',
-                        position: 'relative',
-                        color: '#a0aec0',
                         borderRight: '1px solid #8DAFAA',
                         cursor: 'pointer',
                         borderLeft: isNewDay ? '2px solid #3BA882' : 'none', // Highlight day boundaries
                         backgroundColor: isNewDay ? '#1E2A27' : '#1B2421', // Subtle background for new days
                       }}
+                      w={HOUR_WIDTH}
+                      h={'40px'}
+                      pos={'relative'}
+                      c={'#a0aec0'}
                       onClick={(e) => handleTimeClick(time, e)}
                     >
                       {/* Remove the special day label for new days since we'll show day for all hours */}
@@ -1558,25 +1554,23 @@ export default function TVChannelGuide({ startDate, endDate }) {
                       <Text
                         size="sm"
                         style={{
-                          position: 'absolute',
-                          top: '8px', // Consistent positioning for all hours
-                          left: '4px',
                           transform: 'none',
-                          borderRadius: '2px',
-                          lineHeight: 1.2,
-                          textAlign: 'left',
                         }}
+                        pos={'absolute'}
+                        top={8} // Consistent positioning for all hours
+                        left={4}
+                        bdrs={2}
+                        lh={1.2}
+                        ta={'left'}
                       >
                         {/* Show day above time for every hour using the same format */}
                         <Text
                           span
                           size="xs"
-                          style={{
-                            display: 'block',
-                            opacity: 0.7,
-                            fontWeight: isNewDay ? 600 : 400, // Still emphasize day transitions
-                            color: isNewDay ? '#3BA882' : undefined,
-                          }}
+                          display={'block'}
+                          opacity={0.7}
+                          fw={isNewDay ? 600 : 400} // Still emphasize day transitions
+                          c={isNewDay ? '#3BA882' : undefined}
                         >
                           {formatDayLabel(time)}{' '}
                           {/* Use same formatDayLabel function for all hours */}
@@ -1590,38 +1584,38 @@ export default function TVChannelGuide({ startDate, endDate }) {
                       {/* Hour boundary marker - more visible */}
                       <Box
                         style={{
-                          position: 'absolute',
-                          left: 0,
-                          top: 0,
-                          bottom: 0,
-                          width: '1px',
                           backgroundColor: '#27272A',
                           zIndex: 10,
                         }}
+                        pos={'absolute'}
+                        left={0}
+                        top={0}
+                        bottom={0}
+                        w={'1px'}
                       />
 
                       {/* Quarter hour tick marks */}
                       <Box
                         style={{
-                          position: 'absolute',
-                          bottom: 0,
-                          width: '100%',
-                          display: 'flex',
                           justifyContent: 'space-between',
-                          padding: '0 1px',
                         }}
+                        pos={'absolute'}
+                        bottom={0}
+                        w={'100%'}
+                        display={'flex'}
+                        p={'0 1px'}
                       >
                         {[15, 30, 45].map((minute) => (
                           <Box
                             key={minute}
                             style={{
-                              width: '1px',
-                              height: '8px',
                               backgroundColor: '#718096',
-                              position: 'absolute',
-                              bottom: 0,
-                              left: `${(minute / 60) * 100}%`,
                             }}
+                            w={'1px'}
+                            h={'8px'}
+                            pos={'absolute'}
+                            bottom={0}
+                            left={`${(minute / 60) * 100}%`}
                           />
                         ))}
                       </Box>
@@ -1638,22 +1632,22 @@ export default function TVChannelGuide({ startDate, endDate }) {
           ref={guideContainerRef}
           style={{
             flex: 1,
-            position: 'relative',
             overflow: 'hidden',
           }}
+          pos={'relative'}
         >
           {nowPosition >= 0 && (
             <Box
               style={{
-                position: 'absolute',
-                left: nowPosition + CHANNEL_WIDTH - guideScrollLeft,
-                top: 0,
-                bottom: 0,
-                width: '2px',
                 backgroundColor: '#38b2ac',
                 zIndex: 15,
                 pointerEvents: 'none',
               }}
+              pos={'absolute'}
+              left={nowPosition + CHANNEL_WIDTH - guideScrollLeft}
+              top={0}
+              bottom={0}
+              w={'2px'}
             />
           )}
 
@@ -1674,13 +1668,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               {GuideRow}
             </VariableSizeList>
           ) : (
-            <Box
-              style={{
-                padding: '30px',
-                textAlign: 'center',
-                color: '#a0aec0',
-              }}
-            >
+            <Box p={'30px'} ta={'center'} c={'#a0aec0'} >
               <Text size="lg">No channels match your filters</Text>
               <Button variant="subtle" onClick={clearFilters} mt={10}>
                 Clear Filters
