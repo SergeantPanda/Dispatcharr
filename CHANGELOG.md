@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - XtreamCodes EPG `has_archive` field now returns integer `0` instead of string `"0"` for proper JSON type consistency
+- nginx now gracefully handles hosts without IPv6 support by automatically disabling IPv6 binding at startup (Fixes #744)
 
 ## [0.15.0] - 2025-12-20
 
