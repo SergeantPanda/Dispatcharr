@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Fixed event viewer arrow direction (previously inverted) — UI behavior corrected. Thanks [@drnikcuk](https://github.com/drnikcuk) (Closes #772)
+
 ## [0.15.1] - 2025-12-22
 
 ### Fixed
