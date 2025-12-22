@@ -645,26 +645,20 @@ class StreamManager:
             if content_lower.startswith('output #') or 'encoder' in content_lower:
                 self.ffmpeg_input_phase = False
 
-            # Parse VLC-specific output - look for TS demux type info for codec detection
-            if 'ts demux debug' in content_lower and 'type=' in content_lower and ('video' in content_lower or 'audio' in content_lower):
-                from .services.channel_service import ChannelService
-                ChannelService.parse_and_store_stream_info(self.channel_id, content, "vlc", self.current_stream_id)
+            # Try to auto-parse with any available parser
+            from .services.log_parsers import LogParserFactory
+            from .services.channel_service import ChannelService
             
-            # Parse streamlink-specific output
-            if 'opening stream:' in content_lower or 'available streams:' in content_lower:
-                from .services.channel_service import ChannelService
-                ChannelService.parse_and_store_stream_info(self.channel_id, content, "streamlink", self.current_stream_id)
-
-            # Only parse stream info if we're still in the input phase
-            if ("stream #" in content_lower and
-                ("video:" in content_lower or "audio:" in content_lower) and
-                self.ffmpeg_input_phase):
-
-                from .services.channel_service import ChannelService
-                if "video:" in content_lower:
-                    ChannelService.parse_and_store_stream_info(self.channel_id, content, "video", self.current_stream_id)
-                elif "audio:" in content_lower:
-                    ChannelService.parse_and_store_stream_info(self.channel_id, content, "audio", self.current_stream_id)
+            parse_result = LogParserFactory.auto_parse(content)
+            if parse_result:
+                stream_type, parsed_data = parse_result
+                # For FFmpeg, only parse during input phase
+                if stream_type in ['video', 'audio', 'input']:
+                    if self.ffmpeg_input_phase:
+                        ChannelService.parse_and_store_stream_info(self.channel_id, content, stream_type, self.current_stream_id)
+                else:
+                    # VLC and Streamlink can be parsed anytime
+                    ChannelService.parse_and_store_stream_info(self.channel_id, content, stream_type, self.current_stream_id)
 
             # Determine log level based on content
             if any(keyword in content_lower for keyword in ['error', 'failed', 'cannot', 'invalid', 'corrupt']):
