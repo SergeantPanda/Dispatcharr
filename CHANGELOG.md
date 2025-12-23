@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed event viewer arrow direction (previously inverted) — UI behavior corrected. Thanks [@drnikcuk](https://github.com/drnikcuk) (Closes #772)
 
+### Fixed
+
+- Stream validation now returns original URL instead of redirected URL to prevent issues with temporary redirect URLs that expire before clients can connect
+
 ## [0.15.1] - 2025-12-22
 
 ### Fixed
