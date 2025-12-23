@@ -697,22 +697,18 @@ class StreamManager:
 
             # Determine log level based on content
             if any(keyword in content_lower for keyword in ['error', 'failed', 'cannot', 'invalid', 'corrupt']):
-                logger.error(f"FFmpeg stderr for channel {self.channel_id}: {content}")
+                logger.error(f"Stream process error for channel {self.channel_id}: {content}")
             elif any(keyword in content_lower for keyword in ['warning', 'deprecated', 'ignoring']):
-                logger.warning(f"FFmpeg stderr for channel {self.channel_id}: {content}")
+                logger.warning(f"Stream process warning for channel {self.channel_id}: {content}")
             elif content.startswith('frame=') or 'fps=' in content or 'speed=' in content:
                 # Stats lines - log at trace level to avoid spam
-                logger.trace(f"FFmpeg stats for channel {self.channel_id}: {content}")
+                logger.trace(f"Stream stats for channel {self.channel_id}: {content}")
             elif any(keyword in content_lower for keyword in ['input', 'output', 'stream', 'video', 'audio']):
                 # Stream info - log at info level
-                logger.info(f"FFmpeg info for channel {self.channel_id}: {content}")
-                if content.startswith('Input #0'):
-                    # If it's input 0, parse stream info
-                    from .services.channel_service import ChannelService
-                    ChannelService.parse_and_store_stream_info(self.channel_id, content, "input", self.current_stream_id)
+                logger.info(f"Stream info for channel {self.channel_id}: {content}")
             else:
                 # Everything else at debug level
-                logger.debug(f"FFmpeg stderr for channel {self.channel_id}: {content}")
+                logger.debug(f"Stream process output for channel {self.channel_id}: {content}")
 
         except Exception as e:
             logger.error(f"Error logging stderr content for channel {self.channel_id}: {e}")
