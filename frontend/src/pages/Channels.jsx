@@ -1,7 +1,7 @@
-import React, { lazy, Suspense } from 'react';
+import React from 'react';
 import ChannelsTable from '../components/tables/ChannelsTable';
-const StreamsTable = lazy(() => import('../components/tables/StreamsTable'));
-import { Box, Text } from '@mantine/core';
+import StreamsTable from '../components/tables/StreamsTable';
+import { Box, } from '@mantine/core';
 import { Allotment } from 'allotment';
 import { USER_LEVELS } from '../constants';
 import useAuthStore from '../store/auth';
@@ -53,11 +53,7 @@ const PageContent = () => {
         </Box>
         <Box p={10} miw={'100px'} style={{ overflowX: 'auto' }}>
           <Box miw={'600px'}>
-            <ErrorBoundary>
-              <Suspense fallback={<Text>Loading...</Text>}>
-                <StreamsTable />
-              </Suspense>
-            </ErrorBoundary>
+            <StreamsTable />
           </Box>
         </Box>
       </Allotment>
