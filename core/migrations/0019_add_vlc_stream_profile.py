@@ -5,9 +5,9 @@ from django.db import migrations
 def add_vlc_profile(apps, schema_editor):
     StreamProfile = apps.get_model("core", "StreamProfile")
     UserAgent = apps.get_model("core", "UserAgent")
-    
+
     # Check if VLC profile already exists
-    if not StreamProfile.objects.filter(name="vlc").exists():
+    if not StreamProfile.objects.filter(name="VLC").exists():
         # Get the TiviMate user agent (should be pk=1)
         try:
             tivimate_ua = UserAgent.objects.get(pk=1)
@@ -17,9 +17,9 @@ def add_vlc_profile(apps, schema_editor):
             if not tivimate_ua:
                 # No user agents exist, skip creating profile
                 return
-        
+
         StreamProfile.objects.create(
-            name="vlc",
+            name="VLC",
             command="cvlc",
             parameters="-vv -I dummy --no-video-title-show --http-user-agent {userAgent} {streamUrl} --sout #standard{access=file,mux=ts,dst=-}",
             is_active=True,
@@ -29,7 +29,7 @@ def add_vlc_profile(apps, schema_editor):
 
 def remove_vlc_profile(apps, schema_editor):
     StreamProfile = apps.get_model("core", "StreamProfile")
-    StreamProfile.objects.filter(name="vlc").delete()
+    StreamProfile.objects.filter(name="VLC").delete()
 
 class Migration(migrations.Migration):
 

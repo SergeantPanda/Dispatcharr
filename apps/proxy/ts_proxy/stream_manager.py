@@ -107,6 +107,10 @@ class StreamManager:
         # Add this flag for tracking transcoding process status
         self.transcode_process_active = False
 
+        # Track stream command for efficient log parser routing
+        self.stream_command = None
+        self.parser_type = None  # Will be set when transcode process starts
+
         # Add tracking for data throughput
         self.bytes_processed = 0
         self.last_bytes_update = time.time()
@@ -476,6 +480,21 @@ class StreamManager:
             # Build and start transcode command
             self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
 
+            # Store stream command for efficient log parser routing
+            self.stream_command = stream_profile.command
+            # Map actual commands to parser types for direct routing
+            command_to_parser = {
+                'ffmpeg': 'ffmpeg',
+                'cvlc': 'vlc',
+                'vlc': 'vlc',
+                'streamlink': 'streamlink'
+            }
+            self.parser_type = command_to_parser.get(self.stream_command.lower())
+            if self.parser_type:
+                logger.debug(f"Using {self.parser_type} parser for log parsing (command: {self.stream_command})")
+            else:
+                logger.debug(f"Unknown stream command '{self.stream_command}', will use auto-detection for log parsing")
+
             # For UDP streams, remove any user_agent parameters from the command
             if hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP:
                 # Filter out any arguments that contain the user_agent value or related headers
@@ -645,11 +664,27 @@ class StreamManager:
             if content_lower.startswith('output #') or 'encoder' in content_lower:
                 self.ffmpeg_input_phase = False
 
-            # Try to auto-parse with any available parser
+            # Route to appropriate parser based on known command type
             from .services.log_parsers import LogParserFactory
             from .services.channel_service import ChannelService
-            
-            parse_result = LogParserFactory.auto_parse(content)
+
+            parse_result = None
+
+            # If we know the parser type, use direct routing for efficiency
+            if self.parser_type:
+                # Get the appropriate parser and check what it can parse
+                parser = LogParserFactory._parsers.get(self.parser_type)
+                if parser:
+                    stream_type = parser.can_parse(content)
+                    if stream_type:
+                        # Parser can handle this line, parse it directly
+                        parsed_data = LogParserFactory.parse(stream_type, content)
+                        if parsed_data:
+                            parse_result = (stream_type, parsed_data)
+            else:
+                # Unknown command type - use auto-detection as fallback
+                parse_result = LogParserFactory.auto_parse(content)
+
             if parse_result:
                 stream_type, parsed_data = parse_result
                 # For FFmpeg, only parse during input phase
