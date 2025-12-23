@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Advanced filtering for Channels table: Filter menu now allows toggling disabled channels visibility (when a profile is selected) and filtering to show only empty channels without streams (Closes #182)
+
 ### Changed
 
 - Fixed event viewer arrow direction (previously inverted) — UI behavior corrected. Thanks [@drnikcuk](https://github.com/drnikcuk) (Closes #772)
