@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Advanced filtering for Channels table: Filter menu now allows toggling disabled channels visibility (when a profile is selected) and filtering to show only empty channels without streams (Closes #182)
+- Network Access warning modal now displays the client's IP address for better transparency when network restrictions are being enforced - Thanks [@damien-alt-sudo](https://github.com/damien-alt-sudo) (Closes #778)
 
 ### Changed
 
