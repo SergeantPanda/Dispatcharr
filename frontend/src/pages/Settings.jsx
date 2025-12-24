@@ -191,6 +191,8 @@ const SettingsPage = () => {
     useState(false);
   const [netNetworkAccessConfirmCIDRs, setNetNetworkAccessConfirmCIDRs] =
     useState([]);
+    
+  const [clientIpAddress, setClientIpAddress] = useState(null);
 
   const [proxySettingsSaved, setProxySettingsSaved] = useState(false);
   const [generalSettingsSaved, setGeneralSettingsSaved] = useState(false);
@@ -507,6 +509,9 @@ const SettingsPage = () => {
       setNetworkAccessError(`${check.message}: ${check.data}`);
       return;
     }
+
+    // Store the client IP
+    setClientIpAddress(check.client_ip);
 
     // For now, only warn if we're blocking the UI
     const blockedAccess = check.UI;
@@ -1365,7 +1370,7 @@ Please ensure you have time to let this complete before proceeding.`}
         message={
           <>
             <Text>
-              Your client is not included in the allowed networks for the web
+              Your client {clientIpAddress && `(${clientIpAddress}) `}is not included in the allowed networks for the web
               UI. Are you sure you want to proceed?
             </Text>
 
