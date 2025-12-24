@@ -68,7 +68,7 @@ const epgUrlBase = `${window.location.protocol}//${window.location.host}/output/
 const hdhrUrlBase = `${window.location.protocol}//${window.location.host}/hdhr`;
 
 const ChannelEnabledSwitch = React.memo(
-  ({ rowId, selectedProfileId, selectedTableIds, setSelectedTableIds }) => {
+  ({ rowId, selectedProfileId, selectedTableIds }) => {
     // Directly extract the channels set once to avoid re-renders on every change.
     const isEnabled = useChannelsStore(
       useCallback(
@@ -79,20 +79,16 @@ const ChannelEnabledSwitch = React.memo(
       )
     );
 
-    const handleToggle = async () => {
+    const handleToggle = () => {
       if (selectedTableIds.length > 1) {
-        await API.updateProfileChannels(
+        API.updateProfileChannels(
           selectedTableIds,
           selectedProfileId,
           !isEnabled
         );
       } else {
-        await API.updateProfileChannel(rowId, selectedProfileId, !isEnabled);
+        API.updateProfileChannel(rowId, selectedProfileId, !isEnabled);
       }
-
-      setSelectedTableIds([]);
-
-      return API.requeryChannels();
     };
 
     return (
@@ -751,7 +747,6 @@ const ChannelsTable = ({}) => {
               rowId={row.original.id}
               selectedProfileId={selectedProfileId}
               selectedTableIds={table.getState().selectedTableIds}
-              setSelectedTableIds={table.setSelectedTableIds}
             />
           );
         },

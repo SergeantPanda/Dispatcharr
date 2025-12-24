@@ -1691,6 +1691,19 @@ export default class API {
     }
   }
 
+  static async stopVODClient(clientId) {
+    try {
+      const response = await request(`${host}/proxy/vod/stop_client/`, {
+        method: 'POST',
+        body: { client_id: clientId },
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to stop VOD client', e);
+    }
+  }
+
   static async stopChannel(id) {
     try {
       const response = await request(`${host}/proxy/ts/stop/${id}`, {
@@ -2308,7 +2321,8 @@ export default class API {
 
   static async deleteSeriesRule(tvgId) {
     try {
-      await request(`${host}/api/channels/series-rules/${tvgId}/`, { method: 'DELETE' });
+      const encodedTvgId = encodeURIComponent(tvgId);
+      await request(`${host}/api/channels/series-rules/${encodedTvgId}/`, { method: 'DELETE' });
       notifications.show({ title: 'Series rule removed' });
     } catch (e) {
       errorNotification('Failed to remove series rule', e);

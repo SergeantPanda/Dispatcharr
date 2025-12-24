@@ -19,11 +19,11 @@ SETTING_KEYS = {
 }
 
 DEFAULTS = {
-    "enabled": False,
+    "enabled": True,
     "frequency": "daily",
     "time": "03:00",
     "day_of_week": 0,  # Sunday
-    "retention_count": 0,
+    "retention_count": 3,
     "cron_expression": "",
 }
 
