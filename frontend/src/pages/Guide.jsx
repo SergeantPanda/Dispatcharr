@@ -9,7 +9,6 @@ import React, {
 import useChannelsStore from '../store/channels';
 import useLogosStore from '../store/logos';
 import useVideoStore from '../store/useVideoStore'; // NEW import
-import { notifications } from '@mantine/notifications';
 import useSettingsStore from '../store/settings';
 import {
   ActionIcon,
@@ -80,6 +79,7 @@ import GuideRow from '../components/GuideRow.jsx';
 import HourTimeline from '../components/HourTimeline';
 import ProgramRecordingModal from '../components/forms/ProgramRecordingModal';
 import SeriesRecordingModal from '../components/forms/SeriesRecordingModal';
+import { showNotification } from '../utils/notificationUtils.js';
 
 export default function TVChannelGuide({ startDate, endDate }) {
   const channels = useChannelsStore((s) => s.channels);
@@ -130,7 +130,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   useEffect(() => {
     if (Object.keys(channels).length === 0) {
       console.warn('No channels provided or empty channels array');
-      notifications.show({ title: 'No channels available', color: 'red.5' });
+      showNotification({ title: 'No channels available', color: 'red.5' });
       return;
     }
 
@@ -522,7 +522,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
     async (program) => {
       const channel = findChannelByTvgId(program.tvg_id);
       if (!channel) {
-        notifications.show({
+        showNotification({
           title: 'Unable to schedule recording',
           message: 'No channel found for this program.',
           color: 'red.6',
@@ -531,7 +531,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
       }
 
       await createRecording(channel, program);
-      notifications.show({ title: 'Recording scheduled' });
+      showNotification({ title: 'Recording scheduled' });
     },
     [findChannelByTvgId]
   );
@@ -547,7 +547,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
         error
       );
     }
-    notifications.show({
+    showNotification({
       title: mode === 'new' ? 'Record new episodes' : 'Record all episodes',
     });
   }, []);

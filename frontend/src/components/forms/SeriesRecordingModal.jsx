@@ -1,9 +1,9 @@
 import React from 'react';
 import { Modal, Stack, Text, Flex, Group, Button } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import useChannelsStore from '../../store/channels.jsx';
 import { deleteSeriesAndRule } from '../../utils/cards/RecordingCardUtils.js';
 import { evaluateSeriesRulesByTvgId, fetchRules } from '../../pages/guideUtils.js';
+import { showNotification } from '../../utils/notificationUtils.js';
 
 export default function SeriesRecordingModal({
  opened,
@@ -18,7 +18,7 @@ export default function SeriesRecordingModal({
     } catch (error) {
       console.warn('Failed to refresh recordings after evaluation', error);
     }
-    notifications.show({
+    showNotification({
       title: 'Evaluated',
       message: 'Checked for episodes',
     });
