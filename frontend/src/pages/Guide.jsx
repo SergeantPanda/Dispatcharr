@@ -5,6 +5,7 @@ import React, {
   useEffect,
   useRef,
   useCallback,
+  Suspense,
 } from 'react';
 import useChannelsStore from '../store/channels';
 import useLogosStore from '../store/logos';
@@ -16,6 +17,7 @@ import {
   Button,
   Flex,
   Group,
+  LoadingOverlay,
   Paper,
   Select,
   Text,
@@ -77,9 +79,12 @@ import {
 } from '../utils/dateTimeUtils.js';
 import GuideRow from '../components/GuideRow.jsx';
 import HourTimeline from '../components/HourTimeline';
-import ProgramRecordingModal from '../components/forms/ProgramRecordingModal';
-import SeriesRecordingModal from '../components/forms/SeriesRecordingModal';
+const ProgramRecordingModal = React.lazy(() =>
+  import('../components/forms/ProgramRecordingModal'));
+const SeriesRecordingModal = React.lazy(() =>
+  import('../components/forms/SeriesRecordingModal'));
 import { showNotification } from '../utils/notificationUtils.js';
+import ErrorBoundary from '../components/ErrorBoundary.jsx';
 
 export default function TVChannelGuide({ startDate, endDate }) {
   const channels = useChannelsStore((s) => s.channels);
@@ -1219,27 +1224,35 @@ export default function TVChannelGuide({ startDate, endDate }) {
       </Box>
       {/* Record choice modal */}
       {recordChoiceOpen && recordChoiceProgram && (
-        <ProgramRecordingModal
-          opened={recordChoiceOpen}
-          onClose={() => setRecordChoiceOpen(false)}
-          program={recordChoiceProgram}
-          recording={recordingForProgram}
-          existingRuleMode={existingRuleMode}
-          onRecordOne={() => recordOne(recordChoiceProgram)}
-          onRecordSeriesAll={() => saveSeriesRule(recordChoiceProgram, 'all')}
-          onRecordSeriesNew={() => saveSeriesRule(recordChoiceProgram, 'new')}
-          onExistingRuleModeChange={setExistingRuleMode}
-        />
+        <ErrorBoundary>
+          <Suspense fallback={<LoadingOverlay />}>
+            <ProgramRecordingModal
+              opened={recordChoiceOpen}
+              onClose={() => setRecordChoiceOpen(false)}
+              program={recordChoiceProgram}
+              recording={recordingForProgram}
+              existingRuleMode={existingRuleMode}
+              onRecordOne={() => recordOne(recordChoiceProgram)}
+              onRecordSeriesAll={() => saveSeriesRule(recordChoiceProgram, 'all')}
+              onRecordSeriesNew={() => saveSeriesRule(recordChoiceProgram, 'new')}
+              onExistingRuleModeChange={setExistingRuleMode}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
       {/* Series rules modal */}
       {rulesOpen && (
-        <SeriesRecordingModal
-          opened={rulesOpen}
-          onClose={() => setRulesOpen(false)}
-          rules={rules}
-          onRulesUpdate={setRules}
-        />
+        <ErrorBoundary>
+          <Suspense fallback={<LoadingOverlay />}>
+            <SeriesRecordingModal
+              opened={rulesOpen}
+              onClose={() => setRulesOpen(false)}
+              rules={rules}
+              onRulesUpdate={setRules}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
     </Box>
   );
