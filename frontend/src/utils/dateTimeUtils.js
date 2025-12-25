@@ -12,6 +12,38 @@ dayjs.extend(relativeTime);
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+export const convertToMs = (dateTime) => dayjs(dateTime).valueOf();
+
+export const initializeTime = (dateTime) => dayjs(dateTime);
+
+export const startOfDay = (dateTime) => dayjs(dateTime).startOf('day');
+
+export const isBefore = (date1, date2) => dayjs(date1).isBefore(date2);
+
+export const isAfter = (date1, date2) => dayjs(date1).isAfter(date2);
+
+export const isSame = (date1, date2, unit = 'day') => dayjs(date1).isSame(date2, unit);
+
+export const add = (dateTime, value, unit) => dayjs(dateTime).add(value, unit);
+
+export const diff = (date1, date2, unit = 'millisecond') => dayjs(date1).diff(date2, unit);
+
+export const format = (dateTime, formatStr) => dayjs(dateTime).format(formatStr);
+
+export const getNow = () => dayjs();
+
+export const getNowMs = () => Date.now();
+
+export const roundToNearest = (dateTime, minutes) => {
+  const current = initializeTime(dateTime);
+  const minute = current.minute();
+  const snappedMinute = Math.round(minute / minutes) * minutes;
+
+  return snappedMinute === 60
+    ? current.add(1, 'hour').minute(0)
+    : current.minute(snappedMinute);
+};
+
 export const useUserTimeZone = () => {
   const settings = useSettingsStore((s) => s.settings);
   const [timeZone, setTimeZone] = useLocalStorage(
@@ -38,15 +70,15 @@ export const useTimeHelpers = () => {
     (value) => {
       if (!value) return dayjs.invalid();
       try {
-        return dayjs(value).tz(timeZone);
+        return initializeTime(value).tz(timeZone);
       } catch (error) {
-        return dayjs(value);
+        return initializeTime(value);
       }
     },
     [timeZone]
   );
 
-  const userNow = useCallback(() => dayjs().tz(timeZone), [timeZone]);
+  const userNow = useCallback(() => getNow().tz(timeZone), [timeZone]);
 
   return { timeZone, toUserTime, userNow };
 };
@@ -78,7 +110,7 @@ export const toTimeString = (value) => {
     if (parsed.isValid()) return parsed.format('HH:mm');
     return value;
   }
-  const parsed = dayjs(value);
+  const parsed = initializeTime(value);
   return parsed.isValid() ? parsed.format('HH:mm') : '00:00';
 };
 
