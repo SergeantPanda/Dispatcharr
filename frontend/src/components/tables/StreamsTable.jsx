@@ -1,4 +1,10 @@
-import React, { useEffect, useMemo, useCallback, useState } from 'react';
+import React, {
+  useEffect,
+  useMemo,
+  useCallback,
+  useState,
+  useRef,
+} from 'react';
 import API from '../../api';
 import StreamForm from '../forms/Stream';
 import usePlaylistsStore from '../../store/playlists';
@@ -167,8 +173,9 @@ const StreamRowActions = ({
   );
 };
 
-const StreamsTable = () => {
+const StreamsTable = ({ onReady }) => {
   const theme = useMantineTheme();
+  const hasSignaledReady = useRef(false);
 
   /**
    * useState
@@ -430,6 +437,12 @@ const StreamsTable = () => {
 
       // Generate the string
       setPaginationString(`${startItem} to ${endItem} of ${result.count}`);
+
+      // Signal that initial data load is complete
+      if (!hasSignaledReady.current && onReady) {
+        hasSignaledReady.current = true;
+        onReady();
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
     }
@@ -442,6 +455,7 @@ const StreamsTable = () => {
     groupsLoaded,
     channelGroups,
     fetchChannelGroups,
+    onReady,
   ]);
 
   // Bulk creation: create channels from selected streams asynchronously
