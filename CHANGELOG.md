@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Fixed event viewer arrow direction (previously inverted) — UI behavior corrected. - Thanks [@drnikcuk](https://github.com/drnikcuk) (Closes #772)
+- Channel number inputs in stream-to-channel creation modals no longer have a maximum value restriction, allowing users to enter any valid channel number supported by the database
 - Stream log parsing refactored to use factory pattern: Simplified `ChannelService.parse_and_store_stream_info()` to route parsing through specialized log parsers instead of inline program-specific logic (~150 lines of code removed)
 - Stream profile names in fixtures updated to use proper capitalization (ffmpeg → FFmpeg, streamlink → Streamlink)
 
