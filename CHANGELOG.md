@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - VLC log parsing for stream information: Detects video/audio codecs from TS demux output, supports both stream-copy and transcode modes with resolution/FPS extraction from transcode output
   - Locked, read-only VLC stream profile configured for headless operation with intelligent audio/video codec detection
   - VLC and required plugins installed in Docker environment with headless configuration
-- ErrorBoundary component for handling frontend errors gracefully with generic error message
+- ErrorBoundary component for handling frontend errors gracefully with generic error message - Thanks [@nick4810](https://github.com/nick4810)
 
 ### Changed
 
