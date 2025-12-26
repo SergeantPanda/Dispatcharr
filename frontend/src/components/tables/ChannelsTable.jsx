@@ -6,7 +6,6 @@ import React, {
   useRef,
 } from 'react';
 import useChannelsStore from '../../store/channels';
-import useLogosStore from '../../store/logos';
 import { notifications } from '@mantine/notifications';
 import API from '../../api';
 import ChannelForm from '../forms/Channel';
@@ -225,7 +224,7 @@ const ChannelRowActions = React.memo(
   }
 );
 
-const ChannelsTable = ({}) => {
+const ChannelsTable = ({ onReady }) => {
   // EPG data lookup
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
@@ -235,6 +234,7 @@ const ChannelsTable = ({}) => {
   const canDeleteChannelGroup = useChannelsStore(
     (s) => s.canDeleteChannelGroup
   );
+  const hasSignaledReady = useRef(false);
 
   /**
    * STORES
@@ -260,7 +260,6 @@ const ChannelsTable = ({}) => {
   const channels = useChannelsStore((s) => s.channels);
   const profiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
-  const logos = useLogosStore((s) => s.logos);
   const [tablePrefs, setTablePrefs] = useLocalStorage('channel-table-prefs', {
     pageSize: 50,
   });
@@ -372,8 +371,10 @@ const ChannelsTable = ({}) => {
     });
   });
 
-  const channelsTableLength = (Object.keys(data).length > 0 || hasFetchedData.current) ?
-    Object.keys(data).length : undefined;
+  const channelsTableLength =
+    Object.keys(data).length > 0 || hasFetchedData.current
+      ? Object.keys(data).length
+      : undefined;
 
   /**
    * Functions
@@ -420,7 +421,14 @@ const ChannelsTable = ({}) => {
       pageSize: pagination.pageSize,
     });
     setAllRowIds(ids);
-  }, [pagination, sorting, debouncedFilters]);
+
+    // Signal ready after first successful data fetch
+    // EPG data is already loaded in initData before this component mounts
+    if (!hasSignaledReady.current && onReady) {
+      hasSignaledReady.current = true;
+      onReady();
+    }
+  }, [pagination, sorting, debouncedFilters, onReady]);
 
   const stopPropagation = useCallback((e) => {
     e.stopPropagation();
@@ -907,8 +915,10 @@ const ChannelsTable = ({}) => {
     // columns from being recreated during drag operations (which causes infinite loops).
     // The column.size values are only used for INITIAL sizing - TanStack Table manages
     // the actual sizes through its own state after initialization.
+    // Note: logos is intentionally excluded - LazyLogo components handle their own logo data
+    // from the store, so we don't need to recreate columns when logos load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedProfileId, channelGroups, logos, theme]
+    [selectedProfileId, channelGroups, theme]
   );
 
   const renderHeaderCell = (header) => {

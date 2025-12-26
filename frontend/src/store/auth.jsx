@@ -7,7 +7,6 @@ import useEPGsStore from './epgs';
 import useStreamProfilesStore from './streamProfiles';
 import useUserAgentsStore from './userAgents';
 import useUsersStore from './users';
-import useLogosStore from './logos';
 import API from '../api';
 import { USER_LEVELS } from '../constants';
 
@@ -64,6 +63,9 @@ const useAuthStore = create((set, get) => ({
       if (user.user_level >= USER_LEVELS.ADMIN) {
         await Promise.all([useUsersStore.getState().fetchUsers()]);
       }
+
+      // Note: Logos are loaded after the Channels page tables finish loading
+      // This is handled by the tables themselves signaling completion
     } catch (error) {
       console.error('Error initializing data:', error);
     }
