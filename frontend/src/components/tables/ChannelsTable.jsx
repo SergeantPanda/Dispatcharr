@@ -386,6 +386,15 @@ const ChannelsTable = ({ onReady }) => {
     params.append('page', pagination.pageIndex + 1);
     params.append('page_size', pagination.pageSize);
     params.append('include_streams', 'true');
+    if (selectedProfileId !== '0') {
+      params.append('channel_profile_id', selectedProfileId);
+    }
+    if (showDisabled === true) {
+      params.append('show_disabled', true);
+    }
+    if (showOnlyStreamlessChannels === true) {
+      params.append('only_streamless', true);
+    }
 
     // Apply sorting
     if (sorting.length > 0) {
@@ -428,7 +437,15 @@ const ChannelsTable = ({ onReady }) => {
       hasSignaledReady.current = true;
       onReady();
     }
-  }, [pagination, sorting, debouncedFilters, onReady]);
+  }, [
+    pagination,
+    sorting,
+    debouncedFilters,
+    onReady,
+    showDisabled,
+    selectedProfileId,
+    showOnlyStreamlessChannels,
+  ]);
 
   const stopPropagation = useCallback((e) => {
     e.stopPropagation();
@@ -1355,6 +1372,10 @@ const ChannelsTable = ({ onReady }) => {
             deleteChannels={deleteChannels}
             selectedTableIds={table.selectedTableIds}
             table={table}
+            showDisabled={showDisabled}
+            setShowDisabled={setShowDisabled}
+            showOnlyStreamlessChannels={showOnlyStreamlessChannels}
+            setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
           />
 
           {/* Table or ghost empty state inside Paper */}
