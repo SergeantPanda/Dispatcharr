@@ -17,12 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - VLC log parsing for stream information: Detects video/audio codecs from TS demux output, supports both stream-copy and transcode modes with resolution/FPS extraction from transcode output
   - Locked, read-only VLC stream profile configured for headless operation with intelligent audio/video codec detection
   - VLC and required plugins installed in Docker environment with headless configuration
+- ErrorBoundary component for handling frontend errors gracefully with generic error message
 
 ### Changed
 
 - Fixed event viewer arrow direction (previously inverted) — UI behavior corrected. - Thanks [@drnikcuk](https://github.com/drnikcuk) (Closes #772)
 - Stream log parsing refactored to use factory pattern: Simplified `ChannelService.parse_and_store_stream_info()` to route parsing through specialized log parsers instead of inline program-specific logic (~150 lines of code removed)
 - Stream profile names in fixtures updated to use proper capitalization (ffmpeg → FFmpeg, streamlink → Streamlink)
+- Frontend component refactoring for improved code organization and maintainability - Thanks [@nick4810](https://github.com/nick4810)
+  - Extracted large nested components into separate files (RecordingCard, RecordingDetailsModal, RecurringRuleModal, RecordingSynopsis)
+  - Moved business logic from components into dedicated utility files (dateTimeUtils, RecordingCardUtils, RecordingDetailsModalUtils, RecurringRuleModalUtils, DVRUtils)
+  - Lazy loaded heavy components (SuperuserForm, RecordingDetailsModal) with loading fallbacks
+  - Removed unused Dashboard and Home pages
+- Logo loading optimization: Logos now load only after both Channels and Streams tables complete loading to prevent blocking initial page render, with rendering gated by table readiness to ensure data loads before visual elements
 
 ### Fixed
 
