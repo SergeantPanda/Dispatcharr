@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stream validation now returns original URL instead of redirected URL to prevent issues with temporary redirect URLs that expire before clients can connect
 - XtreamCodes EPG limit parameter now properly converted to integer to prevent type errors when accessing EPG listings (Fixes #781)
 - Stream validation now continues with GET request if HEAD request fails due to connection issues - Thanks [@kvnnap](https://github.com/kvnnap) (Fixes #782)
+- XtreamCodes M3U files now correctly set `x-tvg-url` and `url-tvg` headers to reference XC EPG URL (`xmltv.php`) instead of standard EPG endpoint when downloaded via XC API (Fixes #629)
 
 ## [0.15.1] - 2025-12-22
 

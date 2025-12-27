@@ -174,16 +174,26 @@ def generate_m3u(request, profile_name=None, user=None):
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
 
     # Build EPG URL with query parameters if needed
-    epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
+    # Check if this is an XC API request (has username/password in GET params and user is authenticated)
+    xc_username = request.GET.get('username')
+    xc_password = request.GET.get('password')
 
-    # Optionally preserve certain query parameters
-    preserved_params = ['tvg_id_source', 'cachedlogos', 'days']
-    query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
-    if query_params:
-        from urllib.parse import urlencode
-        epg_url = f"{epg_base_url}?{urlencode(query_params)}"
+    if user is not None and xc_username and xc_password:
+        # This is an XC API request - use XC-style EPG URL
+        base_url = request.build_absolute_uri('/')[:-1]
+        epg_url = f"{base_url}/xmltv.php?username={xc_username}&password={xc_password}"
     else:
-        epg_url = epg_base_url
+        # Regular request - use standard EPG endpoint
+        epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
+
+        # Optionally preserve certain query parameters
+        preserved_params = ['tvg_id_source', 'cachedlogos', 'days']
+        query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
+        if query_params:
+            from urllib.parse import urlencode
+            epg_url = f"{epg_base_url}?{urlencode(query_params)}"
+        else:
+            epg_url = epg_base_url
 
     # Add x-tvg-url and url-tvg attribute for EPG URL
     m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
