@@ -31,9 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Lazy loaded heavy components (SuperuserForm, RecordingDetailsModal) with loading fallbacks
   - Removed unused Dashboard and Home pages
 - Logo loading optimization: Logos now load only after both Channels and Streams tables complete loading to prevent blocking initial page render, with rendering gated by table readiness to ensure data loads before visual elements
+- M3U stream URLs now use `build_absolute_uri_with_port()` for consistency with EPG and logo URLs, ensuring uniform port handling across all M3U file URLs
 
 ### Fixed
 
+- M3U and EPG URLs now correctly preserve non-standard HTTPS ports (e.g., `:8443`) when accessed behind reverse proxies that forward the port in headers — `get_host_and_port()` now properly checks `X-Forwarded-Port` header before falling back to other detection methods (Fixes #704)
 - M3U and EPG manager page no longer crashes when a playlist references a deleted channel group (Fixes screen blank on navigation)
 - Stream validation now returns original URL instead of redirected URL to prevent issues with temporary redirect URLs that expire before clients can connect
 - XtreamCodes EPG limit parameter now properly converted to integer to prevent type errors when accessing EPG listings (Fixes #781)

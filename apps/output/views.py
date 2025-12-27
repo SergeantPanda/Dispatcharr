@@ -180,7 +180,7 @@ def generate_m3u(request, profile_name=None, user=None):
 
     if user is not None and xc_username and xc_password:
         # This is an XC API request - use XC-style EPG URL
-        base_url = request.build_absolute_uri('/')[:-1]
+        base_url = build_absolute_uri_with_port(request, '')
         epg_url = f"{base_url}/xmltv.php?username={xc_username}&password={xc_password}"
     else:
         # Regular request - use standard EPG endpoint
@@ -257,12 +257,10 @@ def generate_m3u(request, profile_name=None, user=None):
                 stream_url = first_stream.url
             else:
                 # Fall back to proxy URL if no direct URL available
-                base_url = request.build_absolute_uri('/')[:-1]
-                stream_url = f"{base_url}/proxy/ts/stream/{channel.uuid}"
+                stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
         else:
             # Standard behavior - use proxy URL
-            base_url = request.build_absolute_uri('/')[:-1]
-            stream_url = f"{base_url}/proxy/ts/stream/{channel.uuid}"
+            stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
 
         m3u_content += extinf_line + stream_url + "\n"
 
@@ -2942,19 +2940,16 @@ def get_host_and_port(request):
     if xfh:
         if ":" in xfh:
             host, port = xfh.split(":", 1)
-            # Omit standard ports from URLs, or omit if port doesn't match standard for scheme
-            # (e.g., HTTPS but port is 9191 = behind external reverse proxy)
+            # Omit standard ports from URLs
             if port == standard_port:
                 return host, None
-            # If port doesn't match standard and X-Forwarded-Proto is set, likely behind external RP
-            if request.META.get("HTTP_X_FORWARDED_PROTO"):
-                host = xfh.split(":")[0]  # Strip port, will check for proper port below
-            else:
-                return host, port
+            # Non-standard port in X-Forwarded-Host - return it
+            # This handles reverse proxies on non-standard ports (e.g., https://example.com:8443)
+            return host, port
         else:
             host = xfh
 
-        # Check for X-Forwarded-Port header (if we didn't already find a valid port)
+        # Check for X-Forwarded-Port header (if we didn't find a port in X-Forwarded-Host)
         port = request.META.get("HTTP_X_FORWARDED_PORT")
         if port:
             # Omit standard ports from URLs
@@ -2972,22 +2967,28 @@ def get_host_and_port(request):
     else:
         host = raw_host
 
-    # 3. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
+    # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
+    port = request.META.get("HTTP_X_FORWARDED_PORT")
+    if port:
+        # Omit standard ports from URLs
+        return host, None if port == standard_port else port
+
+    # 4. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
     # If so, assume standard port for the scheme (don't trust SERVER_PORT in this case)
     if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
         return host, None
 
-    # 4. Try SERVER_PORT from META (only if NOT behind reverse proxy)
+    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
     port = request.META.get("SERVER_PORT")
     if port:
         # Omit standard ports from URLs
         return host, None if port == standard_port else port
 
-    # 5. Dev fallback: guess port 5656
+    # 6. Dev fallback: guess port 5656
     if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
         return host, "5656"
 
-    # 6. Final fallback: assume standard port for scheme (omit from URL)
+    # 7. Final fallback: assume standard port for scheme (omit from URL)
     return host, None
 
 def build_absolute_uri_with_port(request, path):
