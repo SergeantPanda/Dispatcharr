@@ -1,10 +1,10 @@
 import React, { useEffect, useCallback, useState } from 'react';
 import { Box, Tabs, Flex, Text } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import useLogosStore from '../store/logos';
 import useVODLogosStore from '../store/vodLogos';
 import LogosTable from '../components/tables/LogosTable';
 import VODLogosTable from '../components/tables/VODLogosTable';
+import { showNotification } from '../utils/notificationUtils.js';
 
 const LogosPage = () => {
   const { fetchAllLogos, needsAllLogos, logos } = useLogosStore();
@@ -21,7 +21,7 @@ const LogosPage = () => {
         await fetchAllLogos();
       }
     } catch (err) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to load channel logos',
         color: 'red',
