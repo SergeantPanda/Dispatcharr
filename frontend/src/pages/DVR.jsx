@@ -18,15 +18,28 @@ import useSettingsStore from '../store/settings';
 import useVideoStore from '../store/useVideoStore';
 import RecordingForm from '../components/forms/Recording';
 import {
-  isAfter, isBefore,
+  isAfter,
+  isBefore,
   useTimeHelpers,
 } from '../utils/dateTimeUtils.js';
-const RecordingDetailsModal = lazy(() => import('../components/forms/RecordingDetailsModal'));
+const RecordingDetailsModal = lazy(() =>
+  import('../components/forms/RecordingDetailsModal'));
 import RecurringRuleModal from '../components/forms/RecurringRuleModal.jsx';
 import RecordingCard from '../components/cards/RecordingCard.jsx';
 import { categorizeRecordings } from '../utils/pages/DVRUtils.js';
 import { getPosterUrl, getRecordingUrl, getShowVideoUrl } from '../utils/cards/RecordingCardUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
+
+const RecordingList = ({ list, onOpenDetails, onOpenRecurring }) => {
+  return list.map((rec) => (
+    <RecordingCard
+      key={`rec-${rec.id}`}
+      recording={rec}
+      onOpenDetails={onOpenDetails}
+      onOpenRecurring={onOpenRecurring}
+    />
+  ));
+};
 
 const DVRPage = () => {
   const theme = useMantineTheme();
@@ -95,17 +108,6 @@ const DVRPage = () => {
     return categorizeRecordings(recordings, toUserTime, now);
   }, [recordings, now, toUserTime]);
 
-  const RecordingList = ({ list }) => {
-    return list.map((rec) => (
-      <RecordingCard
-        key={`rec-${rec.id}`}
-        recording={rec}
-        onOpenDetails={openDetails}
-        onOpenRecurring={openRuleModal}
-      />
-    ));
-  };
-
   const handleOnWatchLive = () => {
     const rec = detailsRecording;
     const now = userNow();
@@ -168,7 +170,11 @@ const DVRPage = () => {
               { maxWidth: '36rem', cols: 1 },
             ]}
           >
-            {<RecordingList list={inProgress} />}
+            {<RecordingList
+              list={inProgress}
+              onOpenDetails={openDetails}
+              onOpenRecurring={openRuleModal}
+            />}
             {inProgress.length === 0 && (
               <Text size="sm" c="dimmed">
                 Nothing recording right now.
@@ -190,7 +196,11 @@ const DVRPage = () => {
               { maxWidth: '36rem', cols: 1 },
             ]}
           >
-            {<RecordingList list={upcoming} />}
+            {<RecordingList
+              list={upcoming}
+              onOpenDetails={openDetails}
+              onOpenRecurring={openRuleModal}
+            />}
             {upcoming.length === 0 && (
               <Text size="sm" c="dimmed">
                 No upcoming recordings.
@@ -212,7 +222,11 @@ const DVRPage = () => {
               { maxWidth: '36rem', cols: 1 },
             ]}
           >
-            {<RecordingList list={completed} />}
+            {<RecordingList
+              list={completed}
+              onOpenDetails={openDetails}
+              onOpenRecurring={openRuleModal}
+            />}
             {completed.length === 0 && (
               <Text size="sm" c="dimmed">
                 No completed recordings yet.
