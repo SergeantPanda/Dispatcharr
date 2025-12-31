@@ -4,6 +4,7 @@ import useLogosStore from '../store/logos';
 import useVODLogosStore from '../store/vodLogos';
 import LogosTable from '../components/tables/LogosTable';
 import VODLogosTable from '../components/tables/VODLogosTable';
+import { showNotification } from '../utils/notificationUtils.js';
 
 const LogosPage = () => {
   const logos = useLogosStore(s => s.logos);
@@ -20,7 +21,7 @@ const LogosPage = () => {
         await useLogosStore.getState().fetchAllLogos();
       }
     } catch (err) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to load channel logos',
         color: 'red',
