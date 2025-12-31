@@ -17,7 +17,7 @@ const BackupManager = React.lazy(() =>
   import('../components/backups/BackupManager.jsx'));
 import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
-import { UiSettingsForm } from '../components/forms/settings/UiSettingsForm.jsx';
+import UiSettingsForm from '../components/forms/settings/UiSettingsForm.jsx';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 const NetworkAccessForm = React.lazy(() =>
   import('../components/forms/settings/NetworkAccessForm.jsx'));
@@ -52,7 +52,7 @@ const SettingsPage = () => {
             </AccordionPanel>
           </AccordionItem>
 
-          {authUser.user_level === USER_LEVELS.ADMIN && (
+          {authUser.user_level == USER_LEVELS.ADMIN && (
             <>
               <AccordionItem value="dvr-settings">
                 <AccordionControl>DVR</AccordionControl>

@@ -9,7 +9,7 @@ import { showNotification } from '../../../utils/notificationUtils.js';
 import { Select } from '@mantine/core';
 import { saveTimeZoneSetting } from '../../../utils/forms/settings/UiSettingsFormUtils.js';
 
-export const UiSettingsForm = React.memo(() => {
+const UiSettingsForm = React.memo(() => {
   const settings = useSettingsStore((s) => s.settings);
 
   const [tableSize, setTableSize] = useLocalStorage('table-size', 'default');
@@ -140,3 +140,5 @@ export const UiSettingsForm = React.memo(() => {
     </>
   );
 });
+
+export default UiSettingsForm;
