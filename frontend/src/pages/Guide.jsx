@@ -91,6 +91,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const recordings = useChannelsStore((s) => s.recordings);
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
+  const isLoading = useChannelsStore((s) => s.isLoading);
+  const [isProgramsLoading, setIsProgramsLoading] = useState(true);
   const logos = useLogosStore((s) => s.logos);
 
   const tvgsById = useEPGsStore((s) => s.tvgsById);
@@ -136,13 +138,22 @@ export default function TVChannelGuide({ startDate, endDate }) {
     if (Object.keys(channels).length === 0) {
       console.warn('No channels provided or empty channels array');
       showNotification({ title: 'No channels available', color: 'red.5' });
+      setIsProgramsLoading(false);
       return;
     }
 
     const sortedChannels = sortChannels(channels);
-
     setGuideChannels(sortedChannels);
-    fetchPrograms().then((data) => setPrograms(data));
+
+    fetchPrograms()
+      .then((data) => {
+        setPrograms(data);
+        setIsProgramsLoading(false);
+      })
+      .catch((error) => {
+        console.error('Failed to fetch programs:', error);
+        setIsProgramsLoading(false);
+      });
   }, [channels]);
 
   // Apply filters when search, group, or profile changes
@@ -1181,6 +1192,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
           }}
           pos='relative'
         >
+          <LoadingOverlay visible={isLoading || isProgramsLoading} />
           {nowPosition >= 0 && (
             <Box
               style={{
