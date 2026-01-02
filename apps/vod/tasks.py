@@ -1295,11 +1295,13 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
             # Ensure season and episode numbers are integers (API may return strings)
             try:
                 season_number = int(episode_data['_season_number'])
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid season_number '{episode_data.get('_season_number')}' for episode '{episode_name}': {e}")
                 season_number = 0
             try:
                 episode_number = int(episode_data.get('episode_num', 0))
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid episode_num '{episode_data.get('episode_num')}' for episode '{episode_name}': {e}")
                 episode_number = 0
             info = episode_data.get('info', {})
 
