@@ -462,14 +462,19 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
         session.headers.update(headers)
 
         # Make HEAD request first as it's faster and doesn't download content
-        head_response = session.head(
-            url,
-            timeout=timeout,
-            allow_redirects=True
-        )
+        head_request_success = True
+        try:
+            head_response = session.head(
+                url,
+                timeout=timeout,
+                allow_redirects=True
+            )
+        except requests.exceptions.RequestException as e:
+            head_request_success = False
+            logger.warning(f"Request error (HEAD), assuming HEAD not supported: {str(e)}")
 
         # If HEAD not supported, server will return 405 or other error
-        if 200 <= head_response.status_code < 300:
+        if head_request_success and (200 <= head_response.status_code < 300):
             # HEAD request successful
             return True, url, head_response.status_code, "Valid (HEAD request)"
 

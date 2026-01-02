@@ -1171,7 +1171,6 @@ const StreamsTable = ({ onReady }) => {
               value={customStartNumber}
               onChange={setCustomStartNumber}
               min={1}
-              max={9999}
               placeholder="Enter starting number..."
             />
           )}
@@ -1241,7 +1240,6 @@ const StreamsTable = ({ onReady }) => {
               value={specificChannelNumber}
               onChange={setSpecificChannelNumber}
               min={1}
-              max={9999}
               placeholder="Enter channel number..."
             />
           )}
