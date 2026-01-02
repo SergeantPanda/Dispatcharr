@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Auto Channel Sync Force EPG Source feature not properly forcing "No EPG" assignment - When selecting "Force EPG Source" > "No EPG (Disabled)", channels were still being auto-matched to EPG data instead of forcing dummy/no EPG. Now correctly sets `force_dummy_epg` flag to prevent unwanted EPG assignment. (Fixes #788)
 - VOD episode processing now properly handles season and episode numbers from APIs that return string values instead of integers, with comprehensive error logging to track data quality issues - Thanks [@patchy8736](https://github.com/patchy8736) (Fixes #770)
 - VOD episode-to-stream relations are now validated to ensure episodes have been saved to the database before creating relations, preventing integrity errors when bulk_create operations encounter conflicts - Thanks [@patchy8736](https://github.com/patchy8736)
 - VOD category filtering now correctly handles category names containing pipe "|" characters (e.g., "PL | BAJKI", "EN | MOVIES") by using `rsplit()` to split from the right instead of the left, ensuring the category type is correctly extracted as the last segment - Thanks [@Vitekant](https://github.com/Vitekant)
