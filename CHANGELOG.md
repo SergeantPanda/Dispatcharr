@@ -26,10 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stream log parsing refactored to use factory pattern: Simplified `ChannelService.parse_and_store_stream_info()` to route parsing through specialized log parsers instead of inline program-specific logic (~150 lines of code removed)
 - Stream profile names in fixtures updated to use proper capitalization (ffmpeg → FFmpeg, streamlink → Streamlink)
 - Frontend component refactoring for improved code organization and maintainability - Thanks [@nick4810](https://github.com/nick4810)
-  - Extracted large nested components into separate files (RecordingCard, RecordingDetailsModal, RecurringRuleModal, RecordingSynopsis)
-  - Moved business logic from components into dedicated utility files (dateTimeUtils, RecordingCardUtils, RecordingDetailsModalUtils, RecurringRuleModalUtils, DVRUtils)
-  - Lazy loaded heavy components (SuperuserForm, RecordingDetailsModal) with loading fallbacks
+  - Extracted large nested components into separate files (RecordingCard, RecordingDetailsModal, RecurringRuleModal, RecordingSynopsis, GuideRow, HourTimeline, PluginCard, ProgramRecordingModal, SeriesRecordingModal, Field)
+  - Moved business logic from components into dedicated utility files (dateTimeUtils, RecordingCardUtils, RecordingDetailsModalUtils, RecurringRuleModalUtils, DVRUtils, guideUtils, PluginsUtils, PluginCardUtils, notificationUtils)
+  - Lazy loaded heavy components (SuperuserForm, RecordingDetailsModal, ProgramRecordingModal, SeriesRecordingModal, PluginCard) with loading fallbacks
   - Removed unused Dashboard and Home pages
+  - Guide page refactoring: Extracted GuideRow and HourTimeline components, moved grid calculations and utility functions to guideUtils.js, added loading states for initial data fetching, improved performance through better memoization
+  - Plugins page refactoring: Extracted PluginCard and Field components, added Zustand store for plugin state management, improved plugin action confirmation handling, better separation of concerns between UI and business logic
 - Logo loading optimization: Logos now load only after both Channels and Streams tables complete loading to prevent blocking initial page render, with rendering gated by table readiness to ensure data loads before visual elements
 - M3U stream URLs now use `build_absolute_uri_with_port()` for consistency with EPG and logo URLs, ensuring uniform port handling across all M3U file URLs
 - Settings and Logos page refactoring for improved readability and separation of concerns - Thanks [@nick4810](https://github.com/nick4810)
