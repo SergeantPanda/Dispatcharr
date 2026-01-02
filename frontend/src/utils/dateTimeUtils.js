@@ -73,15 +73,15 @@ export const useTimeHelpers = () => {
     (value) => {
       if (!value) return dayjs.invalid();
       try {
-        return dayjs(value).tz(timeZone);
+        return initializeTime(value).tz(timeZone);
       } catch (error) {
-        return dayjs(value);
+        return initializeTime(value);
       }
     },
     [timeZone]
   );
 
-  const userNow = useCallback(() => dayjs().tz(timeZone), [timeZone]);
+  const userNow = useCallback(() => getNow().tz(timeZone), [timeZone]);
 
   return { timeZone, toUserTime, userNow };
 };
@@ -113,7 +113,7 @@ export const toTimeString = (value) => {
     if (parsed.isValid()) return parsed.format('HH:mm');
     return value;
   }
-  const parsed = dayjs(value);
+  const parsed = initializeTime(value);
   return parsed.isValid() ? parsed.format('HH:mm') : '00:00';
 };
 
