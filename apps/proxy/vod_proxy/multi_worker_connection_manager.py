@@ -357,12 +357,12 @@ class RedisBackedVODConnection:
 
             logger.info(f"[{self.session_id}] Making request #{state.request_count} to {'final' if state.final_url else 'original'} URL")
 
-            # Make request
+            # Make request (10s connect, 10s read timeout - keeps lock time reasonable if client disconnects)
             response = self.local_session.get(
                 target_url,
                 headers=headers,
                 stream=True,
-                timeout=(10, 30),
+                timeout=(10, 10),
                 allow_redirects=allow_redirects
             )
             response.raise_for_status()
