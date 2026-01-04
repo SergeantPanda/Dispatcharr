@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Release workflow Docker tagging: Fixed issue where `latest` and version tags (e.g., `0.16.0`) were creating separate manifests instead of pointing to the same image digest, which caused old `latest` tags to become orphaned/untagged after new releases. Now creates a single multi-arch manifest with both tags, maintaining proper tag relationships and download statistics visibility on GitHub.
+- Fixed onboarding message appearing in the Channels Table when filtered results are empty. The onboarding message now only displays when there are no channels created at all, not when channels exist but are filtered out by current filters.
 
 ## [0.16.0] - 2026-01-04
 

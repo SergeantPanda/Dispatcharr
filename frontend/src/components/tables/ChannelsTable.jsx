@@ -1380,12 +1380,13 @@ const ChannelsTable = ({ onReady }) => {
 
           {/* Table or ghost empty state inside Paper */}
           <Box>
-            {channelsTableLength === 0 && (
-              <ChannelsTableOnboarding editChannel={editChannel} />
-            )}
+            {channelsTableLength === 0 &&
+              Object.keys(channels).length === 0 && (
+                <ChannelsTableOnboarding editChannel={editChannel} />
+              )}
           </Box>
 
-          {channelsTableLength > 0 && (
+          {(channelsTableLength > 0 || Object.keys(channels).length > 0) && (
             <Box
               style={{
                 display: 'flex',
