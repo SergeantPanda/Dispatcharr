@@ -826,7 +826,6 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 size="xs"
                 step={0.1} // Add step prop to allow decimal inputs
                 precision={1} // Specify decimal precision
-                removeTrailingZeros // Optional: remove trailing zeros for cleaner display
               />
 
               <TextInput
