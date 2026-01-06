@@ -21,20 +21,20 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 # --- Create Python virtual environment ---
 RUN python3.13 -m venv $VIRTUAL_ENV && $VIRTUAL_ENV/bin/pip install --upgrade pip
 
-# --- Build custom NumPy for older hardware ---
+# --- Install Python dependencies (includes optimized PyPI numpy) ---
+COPY requirements.txt /tmp/requirements.txt
+RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+
+# --- Build legacy NumPy wheel for old hardware (store for runtime switching) ---
 RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir build && \
     cd /tmp && \
     $VIRTUAL_ENV/bin/pip download --no-binary numpy --no-deps numpy && \
     tar -xzf numpy-*.tar.gz && \
     cd numpy-*/ && \
     $VIRTUAL_ENV/bin/python -m build --wheel -Csetup-args=-Dcpu-baseline="none" -Csetup-args=-Dcpu-dispatch="none" && \
-    $VIRTUAL_ENV/bin/pip install --no-cache-dir dist/*.whl && \
+    mv dist/*.whl /opt/numpy-legacy.whl && \
     cd / && rm -rf /tmp/numpy-*
-
-# --- Install Python dependencies ---
-COPY requirements.txt /tmp/requirements.txt
-RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir -r /tmp/requirements.txt && \
-    rm /tmp/requirements.txt
 
 # --- Clean up build dependencies to reduce image size ---
 RUN apt-get remove -y build-essential gcc g++ gfortran libopenblas-dev ninja-build && \
