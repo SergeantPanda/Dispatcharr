@@ -33,7 +33,7 @@ RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir build && \
     tar -xzf numpy-*.tar.gz && \
     cd numpy-*/ && \
     $VIRTUAL_ENV/bin/python -m build --wheel -Csetup-args=-Dcpu-baseline="none" -Csetup-args=-Dcpu-dispatch="none" && \
-    mv dist/*.whl /opt/numpy-legacy.whl && \
+    mv dist/*.whl /opt/ && \
     cd / && rm -rf /tmp/numpy-*
 
 # --- Clean up build dependencies to reduce image size ---
