@@ -1,84 +1,102 @@
 // Modal.js
-import React, { useEffect, useMemo } from 'react';
-import { useForm } from 'react-hook-form';
-import { Button, Checkbox, Flex, Modal, Space, TextInput } from '@mantine/core';
+import React, { useEffect } from 'react';
+import { useFormik } from 'formik';
+import * as Yup from 'yup';
+import API from '../../api';
 import {
-  addUserAgent,
-  getResolver,
-  updateUserAgent,
-} from '../../utils/forms/UserAgentUtils.js';
+  LoadingOverlay,
+  TextInput,
+  Button,
+  Checkbox,
+  Modal,
+  Flex,
+  NativeSelect,
+  FileInput,
+  Space,
+} from '@mantine/core';
+import { NETWORK_ACCESS_OPTIONS } from '../../constants';
 
 const UserAgent = ({ userAgent = null, isOpen, onClose }) => {
-  const defaultValues = useMemo(
-    () => ({
-      name: userAgent?.name || '',
-      user_agent: userAgent?.user_agent || '',
-      description: userAgent?.description || '',
-      is_active: userAgent?.is_active ?? true,
+  const formik = useFormik({
+    initialValues: {
+      name: '',
+      user_agent: '',
+      description: '',
+      is_active: true,
+    },
+    validationSchema: Yup.object({
+      name: Yup.string().required('Name is required'),
+      user_agent: Yup.string().required('User-Agent is required'),
     }),
-    [userAgent]
-  );
+    onSubmit: async (values, { setSubmitting, resetForm }) => {
+      if (userAgent?.id) {
+        await API.updateUserAgent({ id: userAgent.id, ...values });
+      } else {
+        await API.addUserAgent(values);
+      }
 
-  const {
-    register,
-    handleSubmit,
-    formState: { errors, isSubmitting },
-    reset,
-    setValue,
-    watch,
-  } = useForm({
-    defaultValues,
-    resolver: getResolver(),
+      resetForm();
+      setSubmitting(false);
+      onClose();
+    },
   });
 
-  const onSubmit = async (values) => {
-    if (userAgent?.id) {
-      await updateUserAgent(userAgent.id, values);
-    } else {
-      await addUserAgent(values);
-    }
-
-    reset();
-    onClose();
-  };
-
   useEffect(() => {
-    reset(defaultValues);
-  }, [defaultValues, reset]);
+    if (userAgent) {
+      formik.setValues({
+        name: userAgent.name,
+        user_agent: userAgent.user_agent,
+        description: userAgent.description,
+        is_active: userAgent.is_active,
+      });
+    } else {
+      formik.resetForm();
+    }
+  }, [userAgent]);
 
   if (!isOpen) {
     return <></>;
   }
 
-  const isActive = watch('is_active');
-
   return (
     <Modal opened={isOpen} onClose={onClose} title="User-Agent">
-      <form onSubmit={handleSubmit(onSubmit)}>
+      <form onSubmit={formik.handleSubmit}>
         <TextInput
+          id="name"
+          name="name"
           label="Name"
-          {...register('name')}
-          error={errors.name?.message}
+          value={formik.values.name}
+          onChange={formik.handleChange}
+          error={formik.touched.name && Boolean(formik.errors.name)}
         />
 
         <TextInput
+          id="user_agent"
+          name="user_agent"
           label="User-Agent"
-          {...register('user_agent')}
-          error={errors.user_agent?.message}
+          value={formik.values.user_agent}
+          onChange={formik.handleChange}
+          error={formik.touched.user_agent && Boolean(formik.errors.user_agent)}
         />
 
         <TextInput
+          id="description"
+          name="description"
           label="Description"
-          {...register('description')}
-          error={errors.description?.message}
+          value={formik.values.description}
+          onChange={formik.handleChange}
+          error={
+            formik.touched.description && Boolean(formik.errors.description)
+          }
         />
 
         <Space h="md" />
 
         <Checkbox
+          name="is_active"
           label="Is Active"
-          checked={isActive}
-          onChange={(e) => setValue('is_active', e.currentTarget.checked)}
+          checked={formik.values.is_active}
+          onChange={formik.handleChange}
         />
 
         <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
@@ -86,7 +104,7 @@ const UserAgent = ({ userAgent = null, isOpen, onClose }) => {
             size="small"
             type="submit"
             variant="contained"
-            disabled={isSubmitting}
+            disabled={formik.isSubmitting}
           >
             Submit
           </Button>

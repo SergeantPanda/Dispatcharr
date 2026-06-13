@@ -11,29 +11,6 @@ const useVODLogosStore = create((set) => ({
   currentPage: 1,
   pageSize: 25,
 
-  _removeLogosFromState: (logoIds) => {
-    set((state) => {
-      const newVODLogos = { ...state.vodLogos };
-      const logoIdSet = new Set(Array.isArray(logoIds) ? logoIds : [logoIds]);
-
-      let removedCount = 0;
-      logoIdSet.forEach((id) => {
-        if (newVODLogos[id]) {
-          delete newVODLogos[id];
-          removedCount++;
-        }
-      });
-
-      const newLogos = state.logos.filter((logo) => !logoIdSet.has(logo.id));
-
-      return {
-        vodLogos: newVODLogos,
-        logos: newLogos,
-        totalCount: Math.max(0, state.totalCount - removedCount),
-      };
-    });
-  },
-
   setVODLogos: (logos, totalCount = 0) => {
     set({
       vodLogos: logos.reduce((acc, logo) => {
@@ -45,10 +22,15 @@ const useVODLogosStore = create((set) => ({
     });
   },
 
-  removeVODLogo: (logoId) => {
-    const state = useVODLogosStore.getState();
-    state._removeLogosFromState(logoId);
-  },
+  removeVODLogo: (logoId) =>
+    set((state) => {
+      const newVODLogos = { ...state.vodLogos };
+      delete newVODLogos[logoId];
+      return {
+        vodLogos: newVODLogos,
+        totalCount: Math.max(0, state.totalCount - 1),
+      };
+    }),
 
   fetchVODLogos: async (params = {}) => {
     set({ isLoading: true, error: null });
@@ -80,8 +62,16 @@ const useVODLogosStore = create((set) => ({
   deleteVODLogo: async (logoId) => {
     try {
       await api.deleteVODLogo(logoId);
-      const state = useVODLogosStore.getState();
-      state._removeLogosFromState(logoId);
+      set((state) => {
+        const newVODLogos = { ...state.vodLogos };
+        delete newVODLogos[logoId];
+        const newLogos = state.logos.filter((logo) => logo.id !== logoId);
+        return {
+          vodLogos: newVODLogos,
+          logos: newLogos,
+          totalCount: Math.max(0, state.totalCount - 1),
+        };
+      });
     } catch (error) {
       console.error('Failed to delete VOD logo:', error);
       throw error;
@@ -91,8 +81,17 @@ const useVODLogosStore = create((set) => ({
   deleteVODLogos: async (logoIds) => {
     try {
       await api.deleteVODLogos(logoIds);
-      const state = useVODLogosStore.getState();
-      state._removeLogosFromState(logoIds);
+      set((state) => {
+        const newVODLogos = { ...state.vodLogos };
+        logoIds.forEach((id) => delete newVODLogos[id]);
+        const logoIdSet = new Set(logoIds);
+        const newLogos = state.logos.filter((logo) => !logoIdSet.has(logo.id));
+        return {
+          vodLogos: newVODLogos,
+          logos: newLogos,
+          totalCount: Math.max(0, state.totalCount - logoIds.length),
+        };
+      });
     } catch (error) {
       console.error('Failed to delete VOD logos:', error);
       throw error;
@@ -113,21 +112,6 @@ const useVODLogosStore = create((set) => ({
       return result;
     } catch (error) {
       console.error('Failed to cleanup unused VOD logos:', error);
-      throw error;
-    }
-  },
-
-  getUnusedLogosCount: async () => {
-    try {
-      const response = await api.getVODLogos({
-        used: 'false',
-        page_size: 1, // Fetch only 1 item to minimize data transfer
-      });
-
-      // Return the count from the paginated response
-      return response.count || 0;
-    } catch (error) {
-      console.error('Failed to fetch unused logos count:', error);
       throw error;
     }
   },

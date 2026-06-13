@@ -1,13 +1,7 @@
 import useChannelsStore from '../../store/channels.jsx';
 import useSettingsStore from '../../store/settings.jsx';
 import useVideoStore from '../../store/useVideoStore.jsx';
-import {
-  format,
-  isAfter,
-  isBefore,
-  useDateTimeFormat,
-  useTimeHelpers,
-} from '../../utils/dateTimeUtils.js';
+import { useDateTimeFormat, useTimeHelpers } from '../../utils/dateTimeUtils.js';
 import { notifications } from '@mantine/notifications';
 import React from 'react';
 import {
@@ -16,23 +10,20 @@ import {
   Box,
   Button,
   Card,
+  Center,
   Flex,
   Group,
   Image,
-  Menu,
   Modal,
   Stack,
   Text,
   Tooltip,
 } from '@mantine/core';
-import { AlertTriangle, Plus, Square, SquareX } from 'lucide-react';
-import defaultLogo from '../../images/logo.png';
+import { AlertTriangle, SquareX } from 'lucide-react';
 import RecordingSynopsis from '../RecordingSynopsis';
 import {
   deleteRecordingById,
   deleteSeriesAndRule,
-  extendRecordingById,
-  getChannelLogoUrl,
   getPosterUrl,
   getRecordingUrl,
   getSeasonLabel,
@@ -40,47 +31,17 @@ import {
   getShowVideoUrl,
   removeRecording,
   runComSkip,
-  stopRecordingById,
 } from './../../utils/cards/RecordingCardUtils.js';
 
-const areRecordingPropsEqual = (prev, next) => {
-  const pr = prev.recording;
-  const nr = next.recording;
-  if (!pr || !nr) return pr === nr;
-
-  const pcp = pr.custom_properties || {};
-  const ncp = nr.custom_properties || {};
-
-  return (
-    pr.id === nr.id &&
-    pr.start_time === nr.start_time &&
-    pr.end_time === nr.end_time &&
-    pr._group_count === nr._group_count &&
-    pcp.status === ncp.status &&
-    pcp.poster_logo_id === ncp.poster_logo_id &&
-    pcp.poster_url === ncp.poster_url &&
-    pcp.file_url === ncp.file_url &&
-    pcp.output_file_url === ncp.output_file_url &&
-    pcp.comskip?.status === ncp.comskip?.status &&
-    pcp.program?.title === ncp.program?.title &&
-    prev.channel?.id === next.channel?.id
-  );
-};
-
-const RecordingCard = ({
-  recording,
-  onOpenDetails,
-  onOpenRecurring,
-  channel: channelProp = null,
-}) => {
+const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
+  const channels = useChannelsStore((s) => s.channels);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const { toUserTime, userNow } = useTimeHelpers();
-  const { timeFormat: timeformat, dateFormat: dateformat } =
-    useDateTimeFormat();
+  const [timeformat, dateformat] = useDateTimeFormat();
 
-  const channel = channelProp;
+  const channel = channels?.[recording.channel];
 
   const customProps = recording.custom_properties || {};
   const program = customProps.program || {};
@@ -89,25 +50,18 @@ const RecordingCard = ({
   const description = program.description || customProps.description || '';
   const isRecurringRule = customProps?.rule?.type === 'recurring';
 
-  // Poster or channel logo (getPosterUrl falls back to Dispatcharr default logo)
+  // Poster or channel logo
   const posterUrl = getPosterUrl(
-    customProps.poster_logo_id,
-    customProps,
-    getChannelLogoUrl(channel)
-  );
+    customProps.poster_logo_id, customProps, channel?.logo?.cache_url, env_mode);
 
   const start = toUserTime(recording.start_time);
   const end = toUserTime(recording.end_time);
   const now = userNow();
   const status = customProps.status;
-  const isTimeActive = isAfter(now, start) && isBefore(now, end);
+  const isTimeActive = now.isAfter(start) && now.isBefore(end);
   const isInterrupted = status === 'interrupted';
-  const isInProgress =
-    isTimeActive &&
-    !isInterrupted &&
-    status !== 'completed' &&
-    status !== 'stopped';
-  const isUpcoming = isBefore(now, start);
+  const isInProgress = isTimeActive; // Show as recording by time, regardless of status glitches
+  const isUpcoming = now.isBefore(start);
   const isSeriesGroup = Boolean(
     recording._group_count && recording._group_count > 1
   );
@@ -121,9 +75,7 @@ const RecordingCard = ({
 
   const handleWatchLive = () => {
     if (!channel) return;
-    showVideo(getShowVideoUrl(channel, env_mode), 'live', {
-      name: channel.name,
-    });
+    showVideo(getShowVideoUrl(channel, env_mode), 'live');
   };
 
   const handleWatchRecording = () => {
@@ -152,39 +104,10 @@ const RecordingCard = ({
     }
   };
 
-  const handleExtend = async (minutes, e) => {
-    e?.stopPropagation?.();
-    try {
-      await extendRecordingById(recording.id, minutes);
-      notifications.show({
-        title: 'Recording extended',
-        message: `Added ${minutes} minutes to this recording`,
-        color: 'teal',
-        autoClose: 2000,
-      });
-    } catch (error) {
-      console.error('Failed to extend recording', error);
-      notifications.show({
-        title: 'Extension failed',
-        message: 'Could not extend the recording',
-        color: 'red',
-        autoClose: 3000,
-      });
-    }
-  };
-
-  // Stop / Cancel / Delete state and handlers
+  // Cancel handling for series groups
   const [cancelOpen, setCancelOpen] = React.useState(false);
-  const [stopConfirmOpen, setStopConfirmOpen] = React.useState(false);
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-
-  const handleStopClick = (e) => {
-    e.stopPropagation();
-    setStopConfirmOpen(true);
-  };
-
-  const handleDeleteClick = (e) => {
+  const handleCancelClick = (e) => {
     e.stopPropagation();
     if (isRecurringRule) {
       onOpenRecurring?.(recording, true);
@@ -193,32 +116,7 @@ const RecordingCard = ({
     if (isSeriesGroup) {
       setCancelOpen(true);
     } else {
-      setDeleteConfirmOpen(true);
-    }
-  };
-
-  const confirmStop = async () => {
-    try {
-      setBusy(true);
-      await stopRecordingById(recording.id);
-    } catch (error) {
-      console.error('Failed to stop recording', error);
-    } finally {
-      setBusy(false);
-      setStopConfirmOpen(false);
-      try {
-        await fetchRecordings();
-      } catch {}
-    }
-  };
-
-  const confirmDelete = async () => {
-    try {
-      setBusy(true);
       removeRecording(recording.id);
-    } finally {
-      setBusy(false);
-      setDeleteConfirmOpen(false);
     }
   };
 
@@ -263,48 +161,44 @@ const RecordingCard = ({
     } else {
       onOpenDetails?.(recording);
     }
-  };
+  }
 
   const WatchLive = () => {
-    return (
-      <Button
-        size="xs"
-        variant="light"
-        onClick={(e) => {
-          e.stopPropagation();
-          handleWatchLive();
-        }}
-      >
-        Watch Live
-      </Button>
-    );
-  };
+    return <Button
+      size="xs"
+      variant="light"
+      onClick={(e) => {
+        e.stopPropagation();
+        handleWatchLive();
+      }}
+    >
+      Watch Live
+    </Button>;
+  }
 
   const WatchRecording = () => {
-    return (
-      <Tooltip
-        label={
-          customProps.file_url || customProps.output_file_url
-            ? isInProgress
-              ? 'Watch in progress recording'
-              : 'Watch recording'
-            : 'Recording playback not available yet'
+    return <Tooltip
+      label={
+        customProps.file_url || customProps.output_file_url
+          ? 'Watch recording'
+          : 'Recording playback not available yet'
+      }
+    >
+      <Button
+        size="xs"
+        variant="default"
+        onClick={(e) => {
+          e.stopPropagation();
+          handleWatchRecording();
+        }}
+        disabled={
+          customProps.status === 'recording' || !(customProps.file_url || customProps.output_file_url)
         }
       >
-        <Button
-          size="xs"
-          variant="default"
-          onClick={(e) => {
-            e.stopPropagation();
-            handleWatchRecording();
-          }}
-          disabled={!(customProps.file_url || customProps.output_file_url)}
-        >
-          Watch
-        </Button>
-      </Tooltip>
-    );
-  };
+        Watch
+      </Button>
+    </Tooltip>;
+  }
 
   const MainCard = (
     <Card
@@ -317,8 +211,6 @@ const RecordingCard = ({
         backgroundColor: isInterrupted ? '#2b1f20' : '#27272A',
         borderColor: isInterrupted ? '#a33' : undefined,
         height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
         cursor: 'pointer',
       }}
       onClick={handleOnMainCardClick}
@@ -360,75 +252,30 @@ const RecordingCard = ({
                   Recurring
                 </Badge>
               )}
+              {seLabel && !isSeriesGroup && (
+                <Badge color="gray" variant="light">
+                  {seLabel}
+                </Badge>
+              )}
             </Group>
           </Stack>
         </Group>
 
-        <Group gap={4}>
-          {isInProgress && (
-            <Tooltip label="Extend recording">
-              <Box display="inline-flex">
-                <Menu withinPortal position="bottom-end" shadow="md">
-                  <Menu.Target>
-                    <ActionIcon
-                      variant="transparent"
-                      color="teal.5"
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <Plus size={20} />
-                    </ActionIcon>
-                  </Menu.Target>
-                  <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
-                    <Menu.Label>Extend recording by</Menu.Label>
-                    <Menu.Item onClick={(e) => handleExtend(15, e)}>
-                      +15 minutes
-                    </Menu.Item>
-                    <Menu.Item onClick={(e) => handleExtend(30, e)}>
-                      +30 minutes
-                    </Menu.Item>
-                    <Menu.Item onClick={(e) => handleExtend(60, e)}>
-                      +1 hour
-                    </Menu.Item>
-                  </Menu.Dropdown>
-                </Menu>
-              </Box>
-            </Tooltip>
-          )}
-          {isInProgress && (
-            <Tooltip label="Stop recording (keep partial content)">
-              <ActionIcon
-                variant="transparent"
-                color="yellow.6"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={handleStopClick}
-              >
-                <Square size="20" fill="currentColor" />
-              </ActionIcon>
-            </Tooltip>
-          )}
-          <Tooltip
-            label={
-              isInProgress
-                ? 'Cancel & delete'
-                : isUpcoming
-                  ? 'Cancel'
-                  : 'Delete'
-            }
-          >
+        <Center>
+          <Tooltip label={isUpcoming || isInProgress ? 'Cancel' : 'Delete'}>
             <ActionIcon
               variant="transparent"
               color="red.9"
               onMouseDown={(e) => e.stopPropagation()}
-              onClick={handleDeleteClick}
+              onClick={handleCancelClick}
             >
               <SquareX size="20" />
             </ActionIcon>
           </Tooltip>
-        </Group>
+        </Center>
       </Flex>
 
-      <Flex gap="sm" align="flex-start" style={{ flex: 1 }}>
+      <Flex gap="sm" align="center">
         <Image
           src={posterUrl}
           w={64}
@@ -436,26 +283,16 @@ const RecordingCard = ({
           fit="contain"
           radius="sm"
           alt={recordingName}
-          fallbackSrc={getChannelLogoUrl(channel) || defaultLogo}
+          fallbackSrc="/logo.png"
         />
-        <Stack gap={6} flex={1} style={{ alignSelf: 'stretch' }}>
-          {subTitle && (
+        <Stack gap={6} flex={1}>
+          {!isSeriesGroup && subTitle && (
             <Group justify="space-between">
               <Text size="sm" c="dimmed">
                 Episode
               </Text>
               <Text size="sm" fw={700} title={subTitle}>
                 {subTitle}
-              </Text>
-            </Group>
-          )}
-          {seLabel && (
-            <Group justify="space-between">
-              <Text size="sm" c="dimmed">
-                Season/Episode
-              </Text>
-              <Text size="sm" fw={700}>
-                {seLabel}
               </Text>
             </Group>
           )}
@@ -473,8 +310,7 @@ const RecordingCard = ({
               {isSeriesGroup ? 'Next recording' : 'Time'}
             </Text>
             <Text size="sm">
-              {format(start, `${dateformat}, YYYY ${timeformat}`)} –{' '}
-              {format(end, timeformat)}
+              {start.format(`${dateformat}, YYYY ${timeformat}`)} – {end.format(timeformat)}
             </Text>
           </Group>
 
@@ -491,19 +327,12 @@ const RecordingCard = ({
             </Text>
           )}
 
-          <Group
-            justify="flex-end"
-            gap="xs"
-            pt={4}
-            style={{ marginTop: 'auto' }}
-          >
+          <Group justify="flex-end" gap="xs" pt={4}>
             {isInProgress && <WatchLive />}
 
             {!isUpcoming && <WatchRecording />}
             {!isUpcoming &&
-              (customProps?.status === 'completed' ||
-                customProps?.status === 'stopped' ||
-                customProps?.status === 'interrupted') &&
+              customProps?.status === 'completed' &&
               (!customProps?.comskip ||
                 customProps?.comskip?.status !== 'completed') && (
                 <Button
@@ -530,89 +359,11 @@ const RecordingCard = ({
       )}
     </Card>
   );
-
-  // Confirmation modals for stop and cancel/delete
-  const ConfirmModals = (
-    <>
-      <Modal
-        opened={stopConfirmOpen}
-        onClose={() => setStopConfirmOpen(false)}
-        title="Stop Recording"
-        centered
-        size="md"
-        zIndex={9999}
-      >
-        <Stack gap="sm">
-          <Text>
-            The recording will be stopped early. The portion already recorded
-            will be saved and available for playback.
-          </Text>
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              onClick={() => setStopConfirmOpen(false)}
-              disabled={busy}
-            >
-              Go Back
-            </Button>
-            <Button color="yellow" loading={busy} onClick={confirmStop}>
-              Stop Recording
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
-
-      <Modal
-        opened={deleteConfirmOpen}
-        onClose={() => setDeleteConfirmOpen(false)}
-        title={
-          isInProgress || isUpcoming ? 'Cancel Recording' : 'Delete Recording'
-        }
-        centered
-        size="md"
-        zIndex={9999}
-      >
-        <Stack gap="sm">
-          <Text>
-            {isInProgress
-              ? 'The recording will be cancelled and all recorded content will be permanently deleted.'
-              : isUpcoming
-                ? 'This scheduled recording will be cancelled.'
-                : 'This recording and all associated files will be permanently deleted.'}
-          </Text>
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              onClick={() => setDeleteConfirmOpen(false)}
-              disabled={busy}
-            >
-              Go Back
-            </Button>
-            <Button color="red" loading={busy} onClick={confirmDelete}>
-              {isInProgress
-                ? 'Cancel & Delete'
-                : isUpcoming
-                  ? 'Cancel'
-                  : 'Delete'}
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
-    </>
-  );
-
-  if (!isSeriesGroup)
-    return (
-      <>
-        {ConfirmModals}
-        {MainCard}
-      </>
-    );
+  if (!isSeriesGroup) return MainCard;
 
   // Stacked look for series groups: render two shadow layers behind the main card
   return (
     <Box style={{ position: 'relative' }}>
-      {ConfirmModals}
       <Modal
         opened={cancelOpen}
         onClose={() => setCancelOpen(false)}
@@ -668,4 +419,4 @@ const RecordingCard = ({
   );
 };
 
-export default React.memo(RecordingCard, areRecordingPropsEqual);
+export default RecordingCard;

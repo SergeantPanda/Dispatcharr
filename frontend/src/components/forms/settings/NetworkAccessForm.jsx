@@ -1,41 +1,28 @@
 import { NETWORK_ACCESS_OPTIONS } from '../../../constants.js';
 import useSettingsStore from '../../../store/settings.jsx';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useForm } from '@mantine/form';
 import {
   checkSetting,
   updateSetting,
 } from '../../../utils/pages/SettingsUtils.js';
-import { Alert, Button, Flex, Stack, TagsInput, Text } from '@mantine/core';
+import { Alert, Button, Flex, Stack, Text, TextInput } from '@mantine/core';
 import ConfirmationDialog from '../../ConfirmationDialog.jsx';
 import {
   getNetworkAccessFormInitialValues,
   getNetworkAccessFormValidation,
-  getNetworkAccessDefaults,
 } from '../../../utils/forms/settings/NetworkAccessFormUtils.js';
-
-const toTags = (str) =>
-  str
-    ? str
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : [];
-const toStr = (tags) => (tags || []).join(',');
 
 const NetworkAccessForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
 
   const [networkAccessError, setNetworkAccessError] = useState(null);
   const [saved, setSaved] = useState(false);
-  const [restoredDefaults, setRestoredDefaults] = useState([]);
   const [networkAccessConfirmOpen, setNetworkAccessConfirmOpen] =
     useState(false);
-  const [saving, setSaving] = useState(false);
   const [netNetworkAccessConfirmCIDRs, setNetNetworkAccessConfirmCIDRs] =
     useState([]);
   const [clientIpAddress, setClientIpAddress] = useState(null);
-  const pendingSaveValuesRef = useRef(null);
 
   const networkAccessForm = useForm({
     mode: 'controlled',
@@ -44,61 +31,27 @@ const NetworkAccessForm = React.memo(({ active }) => {
   });
 
   useEffect(() => {
-    if (!active) {
-      setSaved(false);
-      setRestoredDefaults([]);
-    }
+    if(!active) setSaved(false);
   }, [active]);
 
   useEffect(() => {
-    const networkAccessSettings = settings['network_access']?.value || {};
-    const defaults = getNetworkAccessDefaults();
+    const networkAccessSettings = JSON.parse(
+      settings['network-access'].value || '{}'
+    );
     networkAccessForm.setValues(
       Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
-        acc[key] = networkAccessSettings[key]
-          ? toTags(networkAccessSettings[key])
-          : defaults[key];
+        acc[key] = networkAccessSettings[key] || '0.0.0.0/0,::/0';
         return acc;
       }, {})
     );
   }, [settings]);
 
-  const resetNetworkAccessToDefaults = () => {
-    networkAccessForm.setValues(getNetworkAccessDefaults());
-  };
-
   const onNetworkAccessSubmit = async () => {
     setSaved(false);
     setNetworkAccessError(null);
-    setRestoredDefaults([]);
-
-    const currentValues = networkAccessForm.getValues();
-    const defaults = getNetworkAccessDefaults();
-    const restoredLabels = [];
-    const tagValues = { ...currentValues };
-
-    Object.keys(currentValues).forEach((key) => {
-      if (!currentValues[key] || currentValues[key].length === 0) {
-        tagValues[key] = defaults[key];
-        restoredLabels.push(NETWORK_ACCESS_OPTIONS[key]?.label || key);
-      }
-    });
-
-    if (restoredLabels.length > 0) {
-      networkAccessForm.setValues(tagValues);
-      setRestoredDefaults(restoredLabels);
-    }
-
-    // Backend expects comma-separated strings
-    const submitValues = Object.fromEntries(
-      Object.entries(tagValues).map(([k, v]) => [k, toStr(v)])
-    );
-
-    pendingSaveValuesRef.current = submitValues;
-
     const check = await checkSetting({
-      ...settings['network_access'],
-      value: submitValues,
+      ...settings['network-access'],
+      value: JSON.stringify(networkAccessForm.getValues()),
     });
 
     if (check.error && check.message) {
@@ -121,30 +74,19 @@ const NetworkAccessForm = React.memo(({ active }) => {
 
   const saveNetworkAccess = async () => {
     setSaved(false);
-    setSaving(true);
-    const values =
-      pendingSaveValuesRef.current ||
-      Object.fromEntries(
-        Object.entries(networkAccessForm.getValues()).map(([k, v]) => [
-          k,
-          toStr(v),
-        ])
-      );
     try {
       await updateSetting({
-        ...settings['network_access'],
-        value: values,
+        ...settings['network-access'],
+        value: JSON.stringify(networkAccessForm.getValues()),
       });
       setSaved(true);
+      setNetworkAccessConfirmOpen(false);
     } catch (e) {
       const errors = {};
       for (const key in e.body.value) {
         errors[key] = `Invalid CIDR(s): ${e.body.value[key]}`;
       }
       networkAccessForm.setErrors(errors);
-    } finally {
-      setSaving(false);
-      setNetworkAccessConfirmOpen(false);
     }
   };
 
@@ -153,34 +95,35 @@ const NetworkAccessForm = React.memo(({ active }) => {
       <form onSubmit={networkAccessForm.onSubmit(onNetworkAccessSubmit)}>
         <Stack gap="sm">
           {saved && (
-            <Alert variant="light" color="green" title="Saved Successfully" />
-          )}
-          {restoredDefaults.length > 0 && (
-            <Alert variant="light" color="yellow" title="Defaults Restored">
-              The following fields were empty and have been restored to their
-              defaults: {restoredDefaults.join(', ')}
-            </Alert>
+            <Alert
+              variant="light"
+              color="green"
+              title="Saved Successfully"
+            ></Alert>
           )}
           {networkAccessError && (
-            <Alert variant="light" color="red" title={networkAccessError} />
+            <Alert
+              variant="light"
+              color="red"
+              title={networkAccessError}
+            ></Alert>
           )}
 
           {Object.entries(NETWORK_ACCESS_OPTIONS).map(([key, config]) => (
-            <TagsInput
+            <TextInput
               label={config.label}
-              description={config.description}
-              placeholder="e.g. 192.168.1.1 or 192.168.1.0/24"
-              splitChars={[',', ' ']}
               {...networkAccessForm.getInputProps(key)}
               key={networkAccessForm.key(key)}
+              description={config.description}
             />
           ))}
 
-          <Flex mih={50} gap="xs" justify="space-between" align="flex-end">
-            <Button variant="subtle" color="gray" onClick={resetNetworkAccessToDefaults}>
-              Reset to Defaults
-            </Button>
-            <Button type="submit" disabled={networkAccessForm.submitting} variant="default">
+          <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+            <Button
+              type="submit"
+              disabled={networkAccessForm.submitting}
+              variant="default"
+            >
               Save
             </Button>
           </Flex>
@@ -191,8 +134,7 @@ const NetworkAccessForm = React.memo(({ active }) => {
         opened={networkAccessConfirmOpen}
         onClose={() => setNetworkAccessConfirmOpen(false)}
         onConfirm={saveNetworkAccess}
-        title="Confirm Network Access Blocks"
-        loading={saving}
+        title={`Confirm Network Access Blocks`}
         message={
           <>
             <Text>
@@ -200,9 +142,10 @@ const NetworkAccessForm = React.memo(({ active }) => {
               included in the allowed networks for the web UI. Are you sure you
               want to proceed?
             </Text>
+
             <ul>
               {netNetworkAccessConfirmCIDRs.map((cidr) => (
-                <li key={cidr}>{cidr}</li>
+                <li>{cidr}</li>
               ))}
             </ul>
           </>

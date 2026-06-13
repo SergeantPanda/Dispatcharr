@@ -3,7 +3,7 @@ import json
 import ipaddress
 from django.http import JsonResponse
 from django.core.exceptions import ValidationError
-from core.models import CoreSettings, NETWORK_ACCESS_KEY
+from core.models import CoreSettings, NETWORK_ACCESS
 
 
 def json_error_response(message, status=400):
@@ -29,27 +29,22 @@ def validate_logo_file(file):
 
 
 def get_client_ip(request):
-    return request.META.get("HTTP_X_REAL_IP") or request.META.get("REMOTE_ADDR")
-
-
-def network_access_allowed(request, settings_key, user=None):
-    try:
-        network_access = CoreSettings.objects.get(key=NETWORK_ACCESS_KEY).value
-    except CoreSettings.DoesNotExist:
-        network_access = {}
-    local_cidrs = ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7", "fe80::/10"]
-    # Set defaults based on endpoint type
-    if settings_key == "M3U_EPG":
-        # M3U/EPG endpoints: local IPv4 and IPv6 only by default
-        default_cidrs = local_cidrs
+    x_forwarded_for = request.META.get("HTTP_X_REAL_IP")
+    if x_forwarded_for:
+        # X-Forwarded-For can be a comma-separated list of IPs
+        ip = x_forwarded_for.split(",")[0].strip()
     else:
-        # Other endpoints: allow all by default
-        default_cidrs = ["0.0.0.0/0", "::/0"]
+        ip = request.META.get("REMOTE_ADDR")
+    return ip
+
+
+def network_access_allowed(request, settings_key):
+    network_access = json.loads(CoreSettings.objects.get(key=NETWORK_ACCESS).value)
 
     cidrs = (
         network_access[settings_key].split(",")
         if settings_key in network_access
-        else default_cidrs
+        else ["0.0.0.0/0", "::/0"]
     )
 
     network_allowed = False
@@ -60,19 +55,4 @@ def network_access_allowed(request, settings_key, user=None):
             network_allowed = True
             break
 
-    if not network_allowed:
-        return False
-
-    if user is not None:
-        user_networks = (getattr(user, 'custom_properties', None) or {}).get('allowed_networks', {})
-        raw = user_networks.get(settings_key, '')
-        if raw:
-            for cidr in (c.strip() for c in raw.split(',') if c.strip()):
-                try:
-                    if client_ip in ipaddress.ip_network(cidr, strict=False):
-                        return True
-                except ValueError:
-                    continue
-            return False
-
-    return True
+    return network_allowed

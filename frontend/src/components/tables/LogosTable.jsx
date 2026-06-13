@@ -189,12 +189,12 @@ const LogosTable = () => {
           color: 'red',
         });
       } finally {
+        setIsLoading(false);
         setConfirmDeleteOpen(false);
         setDeleteTarget(null);
         setLogoToDelete(null);
         setIsBulkDelete(false);
         clearSelections(); // Clear selections
-        setIsLoading(false);
       }
     },
     [fetchAllLogos, clearSelections]
@@ -221,10 +221,10 @@ const LogosTable = () => {
           color: 'red',
         });
       } finally {
+        setIsLoading(false);
         setConfirmDeleteOpen(false);
         setIsBulkDelete(false);
         clearSelections(); // Clear selections
-        setIsLoading(false);
       }
     },
     [selectedRows, fetchAllLogos, clearSelections]
@@ -805,7 +805,6 @@ const LogosTable = () => {
       <ConfirmationDialog
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
-        loading={isLoading}
         onConfirm={(deleteFiles) => {
           if (isBulkDelete) {
             executeBulkDelete(deleteFiles);
@@ -868,7 +867,6 @@ const LogosTable = () => {
       <ConfirmationDialog
         opened={confirmCleanupOpen}
         onClose={() => setConfirmCleanupOpen(false)}
-        loading={isCleaningUp}
         onConfirm={executeCleanupUnused}
         title="Cleanup Unused Logos"
         message={

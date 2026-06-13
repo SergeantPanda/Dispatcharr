@@ -3,8 +3,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from apps.accounts.permissions import Authenticated, permission_classes_by_action
 from django.http import JsonResponse, HttpResponseForbidden, HttpResponse
-from drf_spectacular.utils import extend_schema, OpenApiParameter
-from drf_spectacular.types import OpenApiTypes
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
 from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel
 from .models import HDHRDevice
@@ -15,7 +15,6 @@ from django.views import View
 from django.utils.decorators import method_decorator
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.csrf import csrf_exempt
-from core.utils import build_absolute_uri_with_port
 
 
 @login_required
@@ -43,11 +42,12 @@ class HDHRDeviceViewSet(viewsets.ModelViewSet):
 class DiscoverAPIView(APIView):
     """Returns device discovery information"""
 
-    @extend_schema(
-        description="Retrieve HDHomeRun device discovery information",
+    @swagger_auto_schema(
+        operation_description="Retrieve HDHomeRun device discovery information",
+        responses={200: openapi.Response("HDHR Discovery JSON")},
     )
     def get(self, request):
-        base_url = build_absolute_uri_with_port(request, "/hdhr/").rstrip("/")
+        base_url = request.build_absolute_uri("/hdhr/").rstrip("/")
         device = HDHRDevice.objects.first()
 
         if not device:
@@ -81,33 +81,20 @@ class DiscoverAPIView(APIView):
 class LineupAPIView(APIView):
     """Returns available channel lineup"""
 
-    @extend_schema(
-        description="Retrieve the available channel lineup",
+    @swagger_auto_schema(
+        operation_description="Retrieve the available channel lineup",
+        responses={200: openapi.Response("Channel Lineup JSON")},
     )
     def get(self, request):
-        from apps.channels.managers import with_effective_values
-        from apps.channels.utils import format_channel_number
-
-        channels = (
-            with_effective_values(Channel.objects.all())
-            .exclude(hidden_from_output=True)
-            .order_by("effective_channel_number")
-        )
-        _stream_url_prefix = build_absolute_uri_with_port(request, "/proxy/ts/stream/")
-
-        lineup = []
-        for ch in channels:
-            formatted = format_channel_number(ch.effective_channel_number, empty=None)
-            if formatted is None:
-                continue
-            formatted_channel_number = str(formatted)
-            lineup.append(
-                {
-                    "GuideNumber": formatted_channel_number,
-                    "GuideName": ch.effective_name,
-                    "URL": f"{_stream_url_prefix}{ch.uuid}",
-                }
-            )
+        channels = Channel.objects.all().order_by("channel_number")
+        lineup = [
+            {
+                "GuideNumber": str(ch.channel_number),
+                "GuideName": ch.name,
+                "URL": request.build_absolute_uri(f"/proxy/ts/stream/{ch.uuid}"),
+            }
+            for ch in channels
+        ]
         return JsonResponse(lineup, safe=False)
 
 
@@ -115,8 +102,9 @@ class LineupAPIView(APIView):
 class LineupStatusAPIView(APIView):
     """Returns the current status of the HDHR lineup"""
 
-    @extend_schema(
-        description="Retrieve the HDHomeRun lineup status",
+    @swagger_auto_schema(
+        operation_description="Retrieve the HDHomeRun lineup status",
+        responses={200: openapi.Response("Lineup Status JSON")},
     )
     def get(self, request):
         data = {
@@ -132,11 +120,12 @@ class LineupStatusAPIView(APIView):
 class HDHRDeviceXMLAPIView(APIView):
     """Returns HDHomeRun device configuration in XML"""
 
-    @extend_schema(
-        description="Retrieve the HDHomeRun device XML configuration",
+    @swagger_auto_schema(
+        operation_description="Retrieve the HDHomeRun device XML configuration",
+        responses={200: openapi.Response("HDHR Device XML")},
     )
     def get(self, request):
-        base_url = build_absolute_uri_with_port(request, "/hdhr/").rstrip("/")
+        base_url = request.build_absolute_uri("/hdhr/").rstrip("/")
 
         xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
         <root>

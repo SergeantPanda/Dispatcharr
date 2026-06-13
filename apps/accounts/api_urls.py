@@ -4,7 +4,6 @@ from .api_views import (
     AuthViewSet,
     UserViewSet,
     GroupViewSet,
-    APIKeyViewSet,
     TokenObtainPairView,
     TokenRefreshView,
     list_permissions,
@@ -18,7 +17,6 @@ app_name = "accounts"
 router = DefaultRouter()
 router.register(r"users", UserViewSet, basename="user")
 router.register(r"groups", GroupViewSet, basename="group")
-router.register(r"api-keys", APIKeyViewSet, basename="api-key")
 
 # 🔹 Custom Authentication Endpoints
 auth_view = AuthViewSet.as_view({"post": "login"})

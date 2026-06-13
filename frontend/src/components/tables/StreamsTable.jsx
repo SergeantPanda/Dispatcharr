@@ -10,7 +10,6 @@ import StreamForm from '../forms/Stream';
 import usePlaylistsStore from '../../store/playlists';
 import useChannelsStore from '../../store/channels';
 import { copyToClipboard, useDebounce } from '../../utils';
-import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 import {
   SquarePlus,
   ListPlus,
@@ -21,12 +20,6 @@ import {
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   Search,
-  Filter,
-  Square,
-  SquareCheck,
-  Eye,
-  EyeOff,
-  RotateCcw,
 } from 'lucide-react';
 import {
   TextInput,
@@ -50,14 +43,13 @@ import {
   MultiSelect,
   useMantineTheme,
   UnstyledButton,
+  LoadingOverlay,
   Skeleton,
   Modal,
   NumberInput,
   Radio,
-  LoadingOverlay,
-  Pill,
+  Checkbox,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import { useNavigate } from 'react-router-dom';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
@@ -66,8 +58,6 @@ import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import ConfirmationDialog from '../ConfirmationDialog';
-import CreateChannelModal from '../modals/CreateChannelModal';
-import useStreamsTableStore from '../../store/streamsTable';
 
 const StreamRowActions = ({
   theme,
@@ -75,24 +65,25 @@ const StreamRowActions = ({
   editStream,
   deleteStream,
   handleWatchStream,
+  selectedChannelIds,
   createChannelFromStream,
-  table,
 }) => {
-  const tableSize = table?.tableSize ?? 'default';
-  const expandedChannelId = useChannelsTableStore((s) => s.expandedChannelId);
-  const selectedChannelIds = useChannelsTableStore((s) => s.selectedChannelIds);
-  const targetChannelId =
-    expandedChannelId ||
-    (selectedChannelIds.length === 1 ? selectedChannelIds[0] : null);
+  const [tableSize, _] = useLocalStorage('table-size', 'default');
   const channelSelectionStreams = useChannelsTableStore(
     (state) =>
-      state.channels.find((chan) => chan.id === targetChannelId)?.streams
+      state.channels.find((chan) => chan.id === selectedChannelIds[0])?.streams
   );
 
   const addStreamToChannel = async () => {
-    await API.addStreamsToChannel(targetChannelId, channelSelectionStreams, [
-      row.original,
-    ]);
+    await API.updateChannel({
+      id: selectedChannelIds[0],
+      streams: [
+        ...new Set(
+          channelSelectionStreams.map((s) => s.id).concat([row.original.id])
+        ),
+      ],
+    });
+    await API.requeryChannels();
   };
 
   const onEdit = useCallback(() => {
@@ -112,7 +103,7 @@ const StreamRowActions = ({
       'Hash:',
       row.original.stream_hash
     );
-    handleWatchStream(row.original.stream_hash, row.original.name);
+    handleWatchStream(row.original.stream_hash);
   }, [row.original, handleWatchStream]); // Add proper dependencies to ensure correct stream
 
   const iconSize =
@@ -120,7 +111,7 @@ const StreamRowActions = ({
 
   return (
     <>
-      <Tooltip label="Add to Channel" openDelay={500}>
+      <Tooltip label="Add to Channel">
         <ActionIcon
           size={iconSize}
           color={theme.tailwind.blue[6]}
@@ -128,7 +119,7 @@ const StreamRowActions = ({
           onClick={addStreamToChannel}
           style={{ background: 'none' }}
           disabled={
-            !targetChannelId ||
+            selectedChannelIds.length !== 1 ||
             (channelSelectionStreams &&
               channelSelectionStreams
                 .map((s) => s.id)
@@ -139,7 +130,7 @@ const StreamRowActions = ({
         </ActionIcon>
       </Tooltip>
 
-      <Tooltip label="Create New Channel" openDelay={500}>
+      <Tooltip label="Create New Channel">
         <ActionIcon
           size={iconSize}
           color={theme.tailwind.green[5]}
@@ -185,50 +176,42 @@ const StreamRowActions = ({
 const StreamsTable = ({ onReady }) => {
   const theme = useMantineTheme();
   const hasSignaledReady = useRef(false);
-  const hasFetchedOnce = useRef(false);
-  const hasFetchedPlaylists = useRef(false);
-  const hasFetchedChannelGroups = useRef(false);
 
   /**
    * useState
    */
+  const [allRowIds, setAllRowIds] = useState([]);
   const [stream, setStream] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [groupOptions, setGroupOptions] = useState([]);
-  const [m3uOptions, setM3uOptions] = useState([]);
   const [initialDataCount, setInitialDataCount] = useState(null);
 
+  const [data, setData] = useState([]); // Holds fetched data
+  const [pageCount, setPageCount] = useState(0);
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
-  const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
-  const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
-  const initialDataCountRef = useRef(null); // First page count, kept in a ref so the page fetcher doesn't recreate when set
-  const lastIdsParamsRef = useRef(null); // De-dupe StrictMode double-fire of the IDs fetch
-  const lastFilterOptionsParamsRef = useRef(null); // De-dupe StrictMode double-fire of the filter-options fetch
+  const [sorting, setSorting] = useState([{ id: 'name', desc: false }]);
+  const [selectedStreamIds, setSelectedStreamIds] = useState([]);
 
-  // Channel creation modal state (bulk)
+  // Channel numbering modal state
   const [channelNumberingModalOpen, setChannelNumberingModalOpen] =
     useState(false);
-  const [numberingMode, setNumberingMode] = useState('provider'); // 'provider', 'auto', 'highest', or 'custom'
+  const [numberingMode, setNumberingMode] = useState('provider'); // 'provider', 'auto', or 'custom'
   const [customStartNumber, setCustomStartNumber] = useState(1);
   const [rememberChoice, setRememberChoice] = useState(false);
-  const [bulkSelectedProfileIds, setBulkSelectedProfileIds] = useState([]);
 
-  // Channel creation modal state (single)
+  // Single channel numbering modal state
   const [singleChannelModalOpen, setSingleChannelModalOpen] = useState(false);
-  const [singleChannelMode, setSingleChannelMode] = useState('provider'); // 'provider', 'auto', 'highest', or 'specific'
+  const [singleChannelMode, setSingleChannelMode] = useState('provider'); // 'provider', 'auto', or 'specific'
   const [specificChannelNumber, setSpecificChannelNumber] = useState(1);
   const [rememberSingleChoice, setRememberSingleChoice] = useState(false);
   const [currentStreamForChannel, setCurrentStreamForChannel] = useState(null);
-  const [singleSelectedProfileIds, setSingleSelectedProfileIds] = useState([]);
 
   // Confirmation dialog state
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [streamToDelete, setStreamToDelete] = useState(null);
   const [isBulkDelete, setIsBulkDelete] = useState(false);
-  const [deleting, setDeleting] = useState(false);
 
   // const [allRowsSelected, setAllRowsSelected] = useState(false);
 
@@ -237,88 +220,29 @@ const StreamsTable = ({ onReady }) => {
     'streams-page-size',
     50
   );
+  const [pagination, setPagination] = useState({
+    pageIndex: 0,
+    pageSize: storedPageSize,
+  });
   const [filters, setFilters] = useState({
     name: '',
     channel_group: '',
     m3u_account: '',
-    unassigned: false,
-    hide_stale: false,
   });
   const [columnSizing, setColumnSizing] = useLocalStorage(
     'streams-table-column-sizing',
     {}
   );
-
-  // Column visibility - persisted to localStorage
-  // Default visible: name, group, m3u
-  // Default hidden: tvg_id, stats
-  const DEFAULT_COLUMN_VISIBILITY = {
-    actions: true,
-    select: true,
-    name: true,
-    group: true,
-    m3u: true,
-    tvg_id: false,
-    stats: false,
-  };
-
-  const [storedColumnVisibility, setStoredColumnVisibility] = useLocalStorage(
-    'streams-table-column-visibility',
-    null // Use null as default to detect fresh install
-  );
-
-  // Merge defaults with stored values, ensuring all columns have values
-  // - Fresh install (null): use defaults
-  // - Existing users: merge settings with defaults for any new columns
-  const columnVisibility = useMemo(() => {
-    if (!storedColumnVisibility || typeof storedColumnVisibility !== 'object') {
-      return DEFAULT_COLUMN_VISIBILITY;
-    }
-    // Merge: start with defaults, overlay stored values only for keys that exist in defaults
-    const merged = { ...DEFAULT_COLUMN_VISIBILITY };
-    for (const key of Object.keys(DEFAULT_COLUMN_VISIBILITY)) {
-      if (
-        key in storedColumnVisibility &&
-        typeof storedColumnVisibility[key] === 'boolean'
-      ) {
-        merged[key] = storedColumnVisibility[key];
-      }
-    }
-    return merged;
-  }, [storedColumnVisibility]);
-
-  const setColumnVisibility = (newValue) => {
-    if (typeof newValue === 'function') {
-      setStoredColumnVisibility((prev) => {
-        const prevMerged =
-          prev && typeof prev === 'object'
-            ? { ...DEFAULT_COLUMN_VISIBILITY, ...prev }
-            : DEFAULT_COLUMN_VISIBILITY;
-        return newValue(prevMerged);
-      });
-    } else {
-      setStoredColumnVisibility(newValue);
-    }
-  };
-
-  const toggleColumnVisibility = (columnId) => {
-    setColumnVisibility((prev) => ({
-      ...prev,
-      [columnId]: !prev[columnId],
-    }));
-  };
-
-  const resetColumnVisibility = () => {
-    setStoredColumnVisibility(DEFAULT_COLUMN_VISIBILITY);
-  };
-
   const debouncedFilters = useDebounce(filters, 500, () => {
     // Reset to first page whenever filters change to avoid "Invalid page" errors
-    setPagination({
-      ...pagination,
+    setPagination((prev) => ({
+      ...prev,
       pageIndex: 0,
-    });
+    }));
   });
+
+  // Add state to track if stream groups are loaded
+  const [groupsLoaded, setGroupsLoaded] = useState(false);
 
   const navigate = useNavigate();
 
@@ -326,41 +250,19 @@ const StreamsTable = ({ onReady }) => {
    * Stores
    */
   const playlists = usePlaylistsStore((s) => s.playlists);
-  const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
-  const playlistsLoading = usePlaylistsStore((s) => s.isLoading);
 
   // Get direct access to channel groups without depending on other data
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
   const channelGroups = useChannelsStore((s) => s.channelGroups);
 
-  const expandedChannelId = useChannelsTableStore((s) => s.expandedChannelId);
   const selectedChannelIds = useChannelsTableStore((s) => s.selectedChannelIds);
-  const targetChannelId =
-    expandedChannelId ||
-    (selectedChannelIds.length === 1 ? selectedChannelIds[0] : null);
   const channelSelectionStreams = useChannelsTableStore(
     (state) =>
-      state.channels.find((chan) => chan.id === targetChannelId)?.streams
+      state.channels.find((chan) => chan.id === selectedChannelIds[0])?.streams
   );
-  const channelProfiles = useChannelsStore((s) => s.profiles);
-  const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
-  const videoIsVisible = useVideoStore((s) => s.isVisible);
-
-  const data = useStreamsTableStore((s) => s.streams);
-  const pageCount = useStreamsTableStore((s) => s.pageCount);
-  const totalCount = useStreamsTableStore((s) => s.totalCount);
-  const allRowIds = useStreamsTableStore((s) => s.allQueryIds);
-  const setAllRowIds = useStreamsTableStore((s) => s.setAllQueryIds);
-  const pagination = useStreamsTableStore((s) => s.pagination);
-  const setPagination = useStreamsTableStore((s) => s.setPagination);
-  const sorting = useStreamsTableStore((s) => s.sorting);
-  const setSorting = useStreamsTableStore((s) => s.setSorting);
-  const selectedStreamIds = useStreamsTableStore((s) => s.selectedStreamIds);
-  const setSelectedStreamIds = useStreamsTableStore(
-    (s) => s.setSelectedStreamIds
-  );
+  const [tableSize, _] = useLocalStorage('table-size', 'default');
 
   // Warnings store for "remember choice" functionality
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -378,20 +280,17 @@ const StreamsTable = ({ onReady }) => {
     () => [
       {
         id: 'actions',
-        size: columnSizing.actions || 75,
-        minSize: 65,
+        size: columnSizing.actions || (tableSize == 'compact' ? 60 : 80),
       },
       {
         id: 'select',
         size: columnSizing.select || 30,
-        minSize: 30,
       },
       {
         header: 'Name',
         accessorKey: 'name',
         grow: true,
         size: columnSizing.name || 200,
-        minSize: 100,
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -414,7 +313,6 @@ const StreamsTable = ({ onReady }) => {
             ? channelGroups[row.channel_group].name
             : '',
         size: columnSizing.group || 150,
-        minSize: 75,
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -433,7 +331,6 @@ const StreamsTable = ({ onReady }) => {
         header: 'M3U',
         id: 'm3u',
         size: columnSizing.m3u || 150,
-        minSize: 75,
         accessorFn: (row) =>
           playlists.find((playlist) => playlist.id === row.m3u_account)?.name,
         cell: ({ getValue }) => (
@@ -450,105 +347,8 @@ const StreamsTable = ({ onReady }) => {
           </Tooltip>
         ),
       },
-      {
-        header: 'TVG-ID',
-        id: 'tvg_id',
-        accessorKey: 'tvg_id',
-        size: columnSizing.tvg_id || 120,
-        minSize: 75,
-        cell: ({ getValue }) => (
-          <Tooltip label={getValue()} openDelay={500}>
-            <Box
-              style={{
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {getValue()}
-            </Box>
-          </Tooltip>
-        ),
-      },
-      {
-        header: 'Stats',
-        id: 'stats',
-        accessorKey: 'stream_stats',
-        size: columnSizing.stats || 120,
-        minSize: 75,
-        cell: ({ getValue }) => {
-          const stats = getValue();
-          if (!stats)
-            return (
-              <Text size="xs" c="dimmed">
-                -
-              </Text>
-            );
-
-          // Build compact display (resolution + video codec)
-          const parts = [];
-          if (stats.resolution) {
-            // Convert "1920x1080" to "1080p" format
-            const height = stats.resolution.split('x')[1];
-            if (height) parts.push(`${height}p`);
-          }
-          if (stats.video_codec) {
-            parts.push(stats.video_codec.toUpperCase());
-          }
-          const compactDisplay = parts.length > 0 ? parts.join(' ') : '-';
-
-          // Build tooltip content with friendly labels
-          const tooltipLines = [];
-          if (stats.resolution)
-            tooltipLines.push(`Resolution: ${stats.resolution}`);
-          if (stats.video_codec)
-            tooltipLines.push(
-              `Video Codec: ${stats.video_codec.toUpperCase()}`
-            );
-          if (stats.video_bitrate)
-            tooltipLines.push(`Video Bitrate: ${stats.video_bitrate} kbps`);
-          if (stats.source_fps)
-            tooltipLines.push(`Frame Rate: ${stats.source_fps} FPS`);
-          if (stats.audio_codec)
-            tooltipLines.push(
-              `Audio Codec: ${stats.audio_codec.toUpperCase()}`
-            );
-          if (stats.audio_channels)
-            tooltipLines.push(`Audio Channels: ${stats.audio_channels}`);
-          if (stats.audio_bitrate)
-            tooltipLines.push(`Audio Bitrate: ${stats.audio_bitrate} kbps`);
-
-          const tooltipContent =
-            tooltipLines.length > 0
-              ? tooltipLines.join('\n')
-              : 'No source info available';
-
-          return (
-            <Tooltip
-              label={
-                <Text size="xs" style={{ whiteSpace: 'pre-line' }}>
-                  {tooltipContent}
-                </Text>
-              }
-              openDelay={500}
-              multiline
-              w={220}
-            >
-              <Box
-                style={{
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                <Text size="xs">{compactDisplay}</Text>
-              </Box>
-            </Tooltip>
-          );
-        },
-      },
     ],
-    [channelGroups, playlists, columnSizing]
+    [channelGroups, playlists, columnSizing, tableSize]
   );
 
   /**
@@ -565,131 +365,102 @@ const StreamsTable = ({ onReady }) => {
   const handleGroupChange = (value) => {
     setFilters((prev) => ({
       ...prev,
-      channel_group: value && value.length > 0 ? value.join(',') : '',
+      channel_group: value ? value : '',
     }));
   };
 
   const handleM3UChange = (value) => {
     setFilters((prev) => ({
       ...prev,
-      m3u_account: value && value.length > 0 ? value.join(',') : '',
+      m3u_account: value ? value : '',
     }));
   };
 
-  const toggleUnassignedOnly = () => {
-    setFilters((prev) => ({
-      ...prev,
-      unassigned: !prev.unassigned,
-    }));
-  };
+  const fetchData = useCallback(async () => {
+    setIsLoading(true);
 
-  const toggleHideStale = () => {
-    setFilters((prev) => ({
-      ...prev,
-      hide_stale: !prev.hide_stale,
-    }));
-  };
-
-  // Build a URLSearchParams object containing only the filter portion of the
-  // query. Page-rows fetches add page/page_size/ordering on top of this.
-  const buildFilterParams = useCallback(() => {
-    const params = new URLSearchParams();
-    Object.entries(debouncedFilters).forEach(([key, value]) => {
-      if (typeof value === 'boolean') {
-        if (value) params.append(key, 'true');
-      } else if (value !== null && value !== undefined && value !== '') {
-        params.append(key, String(value));
-      }
-    });
-    return params;
-  }, [debouncedFilters]);
-
-  // Fetch the visible page of stream rows. Depends on pagination, sorting,
-  // and filters.
-  const fetchPageData = useCallback(
-    async ({ showLoader = true } = {}) => {
-      const params = buildFilterParams();
-      params.append('page', pagination.pageIndex + 1);
-      params.append('page_size', pagination.pageSize);
-
-      if (sorting.length > 0) {
-        const columnId = sorting[0].id;
-        const fieldMapping = {
-          name: 'name',
-          group: 'channel_group__name',
-          m3u: 'm3u_account__name',
-          tvg_id: 'tvg_id',
-        };
-        const sortField = fieldMapping[columnId] || columnId;
-        const sortDirection = sorting[0].desc ? '-' : '';
-        params.append('ordering', `${sortDirection}${sortField}`);
-      }
-
-      const paramsString = params.toString();
-
-      // Skip if same fetch is already in progress (prevents StrictMode double-fetch)
-      if (
-        fetchInProgressRef.current &&
-        lastFetchParamsRef.current === paramsString
-      ) {
-        return;
-      }
-
-      const currentFetchVersion = ++fetchVersionRef.current;
-      lastFetchParamsRef.current = paramsString;
-      fetchInProgressRef.current = true;
-
-      if (showLoader) {
-        setIsLoading(true);
-      }
-
+    // Ensure we have channel groups first (if not already loaded)
+    if (!groupsLoaded && Object.keys(channelGroups).length === 0) {
       try {
-        const result = await API.queryStreamsTable(params);
-
-        fetchInProgressRef.current = false;
-
-        if (currentFetchVersion !== fetchVersionRef.current) {
-          return;
-        }
-
-        if (initialDataCountRef.current === null) {
-          initialDataCountRef.current = result.count;
-          setInitialDataCount(result.count);
-        }
-
-        if (!hasSignaledReady.current && onReady) {
-          hasSignaledReady.current = true;
-          onReady();
-        }
+        await fetchChannelGroups();
+        setGroupsLoaded(true);
       } catch (error) {
-        fetchInProgressRef.current = false;
+        console.error('Error fetching channel groups:', error);
+      }
+    }
 
-        if (currentFetchVersion !== fetchVersionRef.current) {
-          return;
-        }
-        console.error('Error fetching data:', error);
+    const params = new URLSearchParams();
+    params.append('page', pagination.pageIndex + 1);
+    params.append('page_size', pagination.pageSize);
+
+    // Apply sorting
+    if (sorting.length > 0) {
+      const columnId = sorting[0].id;
+      // Map frontend column IDs to backend field names
+      const fieldMapping = {
+        name: 'name',
+        group: 'channel_group__name',
+        m3u: 'm3u_account__name',
+      };
+      const sortField = fieldMapping[columnId] || columnId;
+      const sortDirection = sorting[0].desc ? '-' : '';
+      params.append('ordering', `${sortDirection}${sortField}`);
+    }
+
+    // Apply debounced filters
+    Object.entries(debouncedFilters).forEach(([key, value]) => {
+      if (value) params.append(key, value);
+    });
+
+    try {
+      const [result, ids, groups] = await Promise.all([
+        API.queryStreams(params),
+        API.getAllStreamIds(params),
+        API.getStreamGroups(),
+      ]);
+
+      setAllRowIds(ids);
+      setData(result.results);
+      setPageCount(Math.ceil(result.count / pagination.pageSize));
+      setGroupOptions(groups);
+
+      // Calculate the starting and ending item indexes
+      const startItem = pagination.pageIndex * pagination.pageSize + 1; // +1 to start from 1, not 0
+      const endItem = Math.min(
+        (pagination.pageIndex + 1) * pagination.pageSize,
+        result.count
+      );
+
+      if (initialDataCount === null) {
+        setInitialDataCount(result.count);
       }
 
-      if (currentFetchVersion !== fetchVersionRef.current) {
-        return;
-      }
+      // Generate the string
+      setPaginationString(`${startItem} to ${endItem} of ${result.count}`);
 
-      hasFetchedOnce.current = true;
-      if (showLoader) {
-        setIsLoading(false);
+      // Signal that initial data load is complete
+      if (!hasSignaledReady.current && onReady) {
+        hasSignaledReady.current = true;
+        onReady();
       }
-    },
-    [pagination, sorting, buildFilterParams, onReady]
-  );
+    } catch (error) {
+      console.error('Error fetching data:', error);
+    }
+
+    setIsLoading(false);
+  }, [
+    pagination,
+    sorting,
+    debouncedFilters,
+    groupsLoaded,
+    channelGroups,
+    fetchChannelGroups,
+    onReady,
+  ]);
 
   // Bulk creation: create channels from selected streams asynchronously
   const createChannelsFromStreams = async () => {
     if (selectedStreamIds.length === 0) return;
-
-    // Set default profile selection based on current profile filter
-    const defaultProfileIds =
-      selectedProfileId === '0' ? ['all'] : [selectedProfileId];
-    setBulkSelectedProfileIds(defaultProfileIds);
 
     // Check if user has suppressed the channel numbering dialog
     const actionKey = 'channel-numbering-choice';
@@ -700,88 +471,30 @@ const StreamsTable = ({ onReady }) => {
       const savedStartNumber =
         localStorage.getItem('channel-numbering-start') || '1';
 
-      let startingChannelNumberValue;
-      if (savedMode === 'provider') {
-        startingChannelNumberValue = null;
-      } else if (savedMode === 'auto') {
-        startingChannelNumberValue = 0;
-      } else if (savedMode === 'highest') {
-        startingChannelNumberValue = -1;
-      } else {
-        startingChannelNumberValue = Number(savedStartNumber);
-      }
+      const startingChannelNumberValue =
+        savedMode === 'provider'
+          ? null
+          : savedMode === 'auto'
+            ? 0
+            : Number(savedStartNumber);
 
-      await executeChannelCreation(
-        startingChannelNumberValue,
-        defaultProfileIds
-      );
+      await executeChannelCreation(startingChannelNumberValue);
     } else {
+      // Show the modal to let user choose
       setChannelNumberingModalOpen(true);
     }
   };
 
-  const resolveSelectedStream = async (streamId) => {
-    const streamFromCurrentPage = data.find(
-      (candidate) => Number(candidate.id) === Number(streamId)
-    );
-    if (streamFromCurrentPage) {
-      return streamFromCurrentPage;
-    }
-
-    const response = await API.getStreams([streamId]);
-    return (
-      response?.find(
-        (candidate) => Number(candidate.id) === Number(streamId)
-      ) ?? null
-    );
-  };
-
-  const createChannelsFromSelection = async () => {
-    if (selectedStreamIds.length === 1) {
-      const selectedStream = await resolveSelectedStream(selectedStreamIds[0]);
-      if (selectedStream) {
-        await createChannelFromStream(selectedStream);
-      } else {
-        notifications.show({
-          color: 'red',
-          title: 'Stream not found',
-          message:
-            'The selected stream could not be resolved. Please refresh and try again.',
-        });
-      }
-      return;
-    }
-
-    await createChannelsFromStreams();
-  };
-
   // Separate function to actually execute the channel creation
-  const executeChannelCreation = async (
-    startingChannelNumberValue,
-    profileIds = null
-  ) => {
+  const executeChannelCreation = async (startingChannelNumberValue) => {
     try {
-      // Convert profile selection: 'all' means all profiles (null), 'none' means no profiles ([]), specific IDs otherwise
-      let channelProfileIds;
-      if (profileIds) {
-        if (profileIds.includes('none')) {
-          channelProfileIds = [];
-        } else if (profileIds.includes('all')) {
-          channelProfileIds = null;
-        } else {
-          channelProfileIds = profileIds
-            .filter((id) => id !== 'all' && id !== 'none')
-            .map((id) => parseInt(id));
-        }
-      } else {
-        channelProfileIds =
-          selectedProfileId !== '0' ? [parseInt(selectedProfileId)] : null;
-      }
+      const selectedChannelProfileId =
+        useChannelsStore.getState().selectedProfileId;
 
       // Use the async API for all bulk operations
       const response = await API.createChannelsFromStreamsAsync(
         selectedStreamIds,
-        channelProfileIds,
+        selectedChannelProfileId !== '0' ? [selectedChannelProfileId] : null,
         startingChannelNumberValue
       );
 
@@ -791,8 +504,6 @@ const StreamsTable = ({ onReady }) => {
 
       // Clear selection since the task has started
       setSelectedStreamIds([]);
-
-      // Note: This is a background task, so the update happens on WebSocket completion
     } catch (error) {
       console.error('Error starting bulk channel creation:', error);
       // Error notifications will be handled by WebSocket
@@ -819,19 +530,10 @@ const StreamsTable = ({ onReady }) => {
         ? null
         : numberingMode === 'auto'
           ? 0
-          : numberingMode === 'highest'
-            ? -1
-            : Number(customStartNumber);
+          : Number(customStartNumber);
 
     setChannelNumberingModalOpen(false);
-    await executeChannelCreation(
-      startingChannelNumberValue,
-      bulkSelectedProfileIds
-    );
-  };
-
-  const handleBulkNumberingModeChange = (nextMode) => {
-    setNumberingMode(nextMode);
+    await executeChannelCreation(startingChannelNumberValue);
   };
 
   const editStream = async (stream = null) => {
@@ -855,18 +557,12 @@ const StreamsTable = ({ onReady }) => {
   };
 
   const executeDeleteStream = async (id) => {
-    setDeleting(true);
-    setIsLoading(true);
-    try {
-      await API.deleteStream(id);
-      // Clear the selection for the deleted stream
-      setSelectedStreamIds([]);
-      table.setSelectedTableIds([]);
-    } finally {
-      setDeleting(false);
-      setIsLoading(false);
-      setConfirmDeleteOpen(false);
-    }
+    await API.deleteStream(id);
+    fetchData();
+    // Clear the selection for the deleted stream
+    setSelectedStreamIds([]);
+    table.setSelectedTableIds([]);
+    setConfirmDeleteOpen(false);
   };
 
   const deleteStreams = async () => {
@@ -882,37 +578,23 @@ const StreamsTable = ({ onReady }) => {
   };
 
   const executeDeleteStreams = async () => {
-    setDeleting(true);
     setIsLoading(true);
-    try {
-      await API.deleteStreams(selectedStreamIds);
-      setSelectedStreamIds([]);
-      table.setSelectedTableIds([]);
-    } finally {
-      setDeleting(false);
-      setIsLoading(false);
-      setConfirmDeleteOpen(false);
-    }
+    await API.deleteStreams(selectedStreamIds);
+    setIsLoading(false);
+    fetchData();
+    setSelectedStreamIds([]);
+    table.setSelectedTableIds([]);
+    setConfirmDeleteOpen(false);
   };
 
-  const closeStreamForm = async () => {
+  const closeStreamForm = () => {
     setStream(null);
     setModalOpen(false);
-    setIsLoading(true);
-    try {
-      await API.requeryStreams();
-    } finally {
-      setIsLoading(false);
-    }
+    fetchData();
   };
 
   // Single channel creation functions
   const createChannelFromStream = async (stream) => {
-    // Set default profile selection based on current profile filter
-    const defaultProfileIds =
-      selectedProfileId === '0' ? ['all'] : [selectedProfileId];
-    setSingleSelectedProfileIds(defaultProfileIds);
-
     // Check if user has suppressed the single channel numbering dialog
     const actionKey = 'single-channel-numbering-choice';
     if (isWarningSuppressed(actionKey)) {
@@ -922,22 +604,14 @@ const StreamsTable = ({ onReady }) => {
       const savedChannelNumber =
         localStorage.getItem('single-channel-numbering-specific') || '1';
 
-      let channelNumberValue;
-      if (savedMode === 'provider') {
-        channelNumberValue = null;
-      } else if (savedMode === 'auto') {
-        channelNumberValue = 0;
-      } else if (savedMode === 'highest') {
-        channelNumberValue = -1;
-      } else {
-        channelNumberValue = Number(savedChannelNumber);
-      }
+      const channelNumberValue =
+        savedMode === 'provider'
+          ? null
+          : savedMode === 'auto'
+            ? 0
+            : Number(savedChannelNumber);
 
-      await executeSingleChannelCreation(
-        stream,
-        channelNumberValue,
-        defaultProfileIds
-      );
+      await executeSingleChannelCreation(stream, channelNumberValue);
     } else {
       // Show the modal to let user choose
       setCurrentStreamForChannel(stream);
@@ -946,35 +620,22 @@ const StreamsTable = ({ onReady }) => {
   };
 
   // Separate function to actually execute single channel creation
-  const executeSingleChannelCreation = async (
-    stream,
-    channelNumber = null,
-    profileIds = null
-  ) => {
-    // Convert profile selection: 'all' means all profiles (null), 'none' means no profiles ([]), specific IDs otherwise
-    let channelProfileIds;
-    if (profileIds) {
-      if (profileIds.includes('none')) {
-        channelProfileIds = [];
-      } else if (profileIds.includes('all')) {
-        channelProfileIds = null;
-      } else {
-        channelProfileIds = profileIds
-          .filter((id) => id !== 'all' && id !== 'none')
-          .map((id) => parseInt(id));
-      }
-    } else {
-      channelProfileIds =
-        selectedProfileId !== '0' ? [parseInt(selectedProfileId)] : null;
-    }
+  const executeSingleChannelCreation = async (stream, channelNumber = null) => {
+    const selectedChannelProfileId =
+      useChannelsStore.getState().selectedProfileId;
 
     await API.createChannelFromStream({
       name: stream.name,
       channel_number: channelNumber,
       stream_id: stream.id,
-      channel_profile_ids: channelProfileIds,
+      // Only pass channel_profile_ids if a specific profile is selected (not "All")
+      ...(selectedChannelProfileId !== '0' && {
+        channel_profile_ids: selectedChannelProfileId,
+      }),
     });
     await API.requeryChannels();
+    const fetchLogos = useChannelsStore.getState().fetchLogos;
+    fetchLogos();
   };
 
   // Handle confirming the single channel numbering modal
@@ -997,31 +658,25 @@ const StreamsTable = ({ onReady }) => {
         ? null
         : singleChannelMode === 'auto'
           ? 0
-          : singleChannelMode === 'highest'
-            ? -1
-            : Number(specificChannelNumber);
+          : Number(specificChannelNumber);
 
     setSingleChannelModalOpen(false);
     await executeSingleChannelCreation(
       currentStreamForChannel,
-      channelNumberValue,
-      singleSelectedProfileIds
+      channelNumberValue
     );
-  };
-
-  const handleSingleNumberingModeChange = (nextMode) => {
-    setSingleChannelMode(nextMode);
   };
 
   const addStreamsToChannel = async () => {
-    // Look up full stream objects from the current page data
-    const selectedIdSet = new Set(selectedStreamIds);
-    const newStreams = data.filter((s) => selectedIdSet.has(s.id));
-    await API.addStreamsToChannel(
-      targetChannelId,
-      channelSelectionStreams,
-      newStreams
-    );
+    await API.updateChannel({
+      id: selectedChannelIds[0],
+      streams: [
+        ...new Set(
+          channelSelectionStreams.map((s) => s.id).concat(selectedStreamIds)
+        ),
+      ],
+    });
+    await API.requeryChannels();
   };
 
   const onRowSelectionChange = (updatedIds) => {
@@ -1048,12 +703,12 @@ const StreamsTable = ({ onReady }) => {
     });
   };
 
-  function handleWatchStream(streamHash, streamName) {
-    let vidUrl = buildLiveStreamUrl(`/proxy/ts/stream/${streamHash}`);
+  function handleWatchStream(streamHash) {
+    let vidUrl = `/proxy/ts/stream/${streamHash}`;
     if (env_mode == 'dev') {
       vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
     }
-    showVideo(vidUrl, 'live', streamName ? { name: streamName } : null);
+    showVideo(vidUrl);
   }
 
   const onSortingChange = (column) => {
@@ -1120,44 +775,38 @@ const StreamsTable = ({ onReady }) => {
           </Flex>
         );
 
-      case 'group': {
-        const selectedGroups = filters.channel_group
-          ? filters.channel_group.split(',').filter(Boolean)
-          : [];
-        return (
-          <MultiSelect
-            placeholder="Group"
-            searchable
-            size="xs"
-            nothingFoundMessage="No options"
-            onClick={handleSelectClick}
-            onChange={handleGroupChange}
-            value={selectedGroups}
-            data={groupOptions}
-            variant="unstyled"
-            className="table-input-header custom-multiselect"
-            clearable
-            style={{ width: '100%' }}
-            rightSectionPointerEvents="auto"
-            rightSection={React.createElement(sortingIcon, {
-              onClick: (e) => {
-                e.stopPropagation();
-                onSortingChange('group');
-              },
-              size: 14,
-              style: { cursor: 'pointer' },
-            })}
-          />
-        );
-      }
-
-      case 'm3u': {
-        const selectedM3Us = filters.m3u_account
-          ? filters.m3u_account.split(',').filter(Boolean)
-          : [];
+      case 'group':
         return (
           <Flex align="center" style={{ width: '100%', flex: 1 }}>
             <MultiSelect
+              placeholder="Group"
+              searchable
+              size="xs"
+              nothingFoundMessage="No options"
+              onClick={handleSelectClick}
+              onChange={handleGroupChange}
+              data={groupOptions}
+              variant="unstyled"
+              className="table-input-header custom-multiselect"
+              clearable
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('group');
+                },
+                size: 14,
+                style: { cursor: 'pointer' },
+              })}
+            />
+          </Flex>
+        );
+
+      case 'm3u':
+        return (
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
+            <Select
               placeholder="M3U"
               searchable
               clearable
@@ -1165,10 +814,12 @@ const StreamsTable = ({ onReady }) => {
               nothingFoundMessage="No options"
               onClick={handleSelectClick}
               onChange={handleM3UChange}
-              value={selectedM3Us}
-              data={m3uOptions}
+              data={playlists.map((playlist) => ({
+                label: playlist.name,
+                value: `${playlist.id}`,
+              }))}
               variant="unstyled"
-              className="table-input-header custom-multiselect"
+              className="table-input-header"
               style={{ flex: 1, minWidth: 0 }}
               rightSectionPointerEvents="auto"
               rightSection={React.createElement(sortingIcon, {
@@ -1180,58 +831,6 @@ const StreamsTable = ({ onReady }) => {
                 style: { cursor: 'pointer' },
               })}
             />
-          </Flex>
-        );
-      }
-
-      case 'tvg_id':
-        return (
-          <Flex align="center" style={{ width: '100%', flex: 1 }}>
-            <TextInput
-              name="tvg_id"
-              placeholder="TVG-ID"
-              value={filters.tvg_id || ''}
-              onClick={(e) => e.stopPropagation()}
-              onChange={handleFilterChange}
-              size="xs"
-              variant="unstyled"
-              className="table-input-header"
-              leftSection={<Search size={14} opacity={0.5} />}
-              style={{ flex: 1, minWidth: 0 }}
-              rightSectionPointerEvents="auto"
-              rightSection={React.createElement(sortingIcon, {
-                onClick: (e) => {
-                  e.stopPropagation();
-                  onSortingChange('tvg_id');
-                },
-                size: 14,
-                style: { cursor: 'pointer' },
-              })}
-            />
-          </Flex>
-        );
-
-      case 'stats':
-        return (
-          <Flex align="center" style={{ width: '100%', flex: 1 }}>
-            <div
-              className="table-input-header"
-              style={{
-                flex: 1,
-                minWidth: 75,
-                display: 'flex',
-                alignItems: 'center',
-                pointerEvents: 'none',
-                userSelect: 'none',
-                cursor: 'default',
-                color: '#cfcfcf',
-                fontWeight: 400,
-                fontSize: 14,
-                lineHeight: '1',
-              }}
-            >
-              <span style={{ width: '100%' }}>Stats</span>
-            </div>
           </Flex>
         );
     }
@@ -1248,12 +847,20 @@ const StreamsTable = ({ onReady }) => {
               editStream={editStream}
               deleteStream={deleteStream}
               handleWatchStream={handleWatchStream}
+              selectedChannelIds={selectedChannelIds}
               createChannelFromStream={createChannelFromStream}
             />
           );
       }
     },
-    [theme, editStream, deleteStream, handleWatchStream]
+    [
+      selectedChannelIds,
+      channelSelectionStreams,
+      theme,
+      editStream,
+      deleteStream,
+      handleWatchStream,
+    ]
   );
 
   const table = useTable({
@@ -1265,34 +872,18 @@ const StreamsTable = ({ onReady }) => {
     sorting,
     columnSizing,
     setColumnSizing,
-    onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: onRowSelectionChange,
     manualPagination: true,
     manualSorting: true,
     manualFiltering: true,
     enableRowSelection: true,
-    state: {
-      pagination,
-      sorting,
-      columnVisibility,
-    },
     headerCellRenderFns: {
       name: renderHeaderCell,
       group: renderHeaderCell,
       m3u: renderHeaderCell,
-      tvg_id: renderHeaderCell,
-      stats: renderHeaderCell,
     },
     bodyCellRenderFns: {
       actions: renderBodyCell,
-    },
-    getRowStyles: (row) => {
-      if (row.original.is_stale) {
-        return {
-          className: 'stale-stream-row',
-        };
-      }
-      return {};
     },
   });
 
@@ -1300,156 +891,9 @@ const StreamsTable = ({ onReady }) => {
    * useEffects
    */
   useEffect(() => {
-    // Load page rows independently, don't wait for logos or other data
-    fetchPageData();
-  }, [fetchPageData]);
-
-  // The full ID list and filter options only depend on filters, not pagination
-  // or sort order, so they get their own effects to avoid refetching on every
-  // page change or sort toggle.
-  useEffect(() => {
-    const params = buildFilterParams();
-    const paramsString = params.toString();
-    if (lastIdsParamsRef.current === paramsString) {
-      return;
-    }
-    lastIdsParamsRef.current = paramsString;
-    let cancelled = false;
-    (async () => {
-      const ids = await API.getAllStreamIds(params);
-      if (!cancelled && ids) {
-        setAllRowIds(ids);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [buildFilterParams, setAllRowIds]);
-
-  useEffect(() => {
-    const params = buildFilterParams();
-    const paramsString = params.toString();
-    if (lastFilterOptionsParamsRef.current === paramsString) {
-      return;
-    }
-    lastFilterOptionsParamsRef.current = paramsString;
-    let cancelled = false;
-    (async () => {
-      const filterOptions = await API.getStreamFilterOptions(params);
-      if (cancelled || !filterOptions || typeof filterOptions !== 'object') {
-        return;
-      }
-      setGroupOptions(
-        (filterOptions.groups || [])
-          .filter((group) => group != null && group !== '')
-          .map((group) => String(group))
-      );
-      setM3uOptions(
-        (filterOptions.m3u_accounts || [])
-          .filter((m3u) => m3u && m3u.id != null && m3u.name)
-          .map((m3u) => ({
-            label: String(m3u.name),
-            value: String(m3u.id),
-          }))
-      );
-    })();
-    return () => {
-      cancelled = true;
-      lastFilterOptionsParamsRef.current = null;
-    };
-  }, [buildFilterParams]);
-
-  // Refetch page rows when video player closes to update stream stats
-  const prevVideoVisible = useRef(false);
-  useEffect(() => {
-    if (prevVideoVisible.current && !videoIsVisible) {
-      // Video was closed, refetch to get updated stream stats
-      fetchPageData({ showLoader: false });
-    }
-    prevVideoVisible.current = videoIsVisible;
-  }, [videoIsVisible, fetchPageData]);
-
-  useEffect(() => {
-    if (
-      Object.keys(channelGroups).length > 0 ||
-      hasFetchedChannelGroups.current
-    ) {
-      return;
-    }
-
-    const loadGroups = async () => {
-      hasFetchedChannelGroups.current = true;
-      try {
-        await fetchChannelGroups();
-      } catch (error) {
-        console.error('Error fetching channel groups:', error);
-      }
-    };
-
-    loadGroups();
-  }, [channelGroups, fetchChannelGroups]);
-
-  useEffect(() => {
-    if (
-      playlists.length > 0 ||
-      hasFetchedPlaylists.current ||
-      playlistsLoading
-    ) {
-      return;
-    }
-
-    const loadPlaylists = async () => {
-      hasFetchedPlaylists.current = true;
-      try {
-        await fetchPlaylists();
-      } catch (error) {
-        console.error('Error fetching playlists:', error);
-      }
-    };
-
-    loadPlaylists();
-  }, [playlists, fetchPlaylists, playlistsLoading]);
-
-  useEffect(() => {
-    const startItem = pagination.pageIndex * pagination.pageSize + 1;
-    const endItem = Math.min(
-      (pagination.pageIndex + 1) * pagination.pageSize,
-      totalCount
-    );
-    setPaginationString(`${startItem} to ${endItem} of ${totalCount}`);
-  }, [pagination.pageIndex, pagination.pageSize, totalCount]);
-
-  // Clear dependent filters if selected values are no longer in filtered options
-  useEffect(() => {
-    // Clear group filter if the selected groups are no longer available
-    if (filters.channel_group) {
-      const selectedGroups = filters.channel_group.split(',').filter(Boolean);
-      const stillValid = selectedGroups.filter((group) =>
-        groupOptions.includes(group)
-      );
-
-      if (stillValid.length !== selectedGroups.length) {
-        setFilters((prev) => ({
-          ...prev,
-          channel_group: stillValid.join(','),
-        }));
-      }
-    }
-
-    // Clear M3U filter if the selected M3Us are no longer available
-    if (filters.m3u_account) {
-      const selectedIds = filters.m3u_account.split(',').filter(Boolean);
-      const availableIds = m3uOptions.map((opt) => opt.value);
-      const stillValid = selectedIds.filter((id) => availableIds.includes(id));
-
-      if (stillValid.length !== selectedIds.length) {
-        setFilters((prev) => ({
-          ...prev,
-          m3u_account: stillValid.join(','),
-        }));
-      }
-    }
-  }, [groupOptions, m3uOptions, filters.channel_group, filters.m3u_account]);
+    // Load data independently, don't wait for logos or other data
+    fetchData();
+  }, [fetchData]);
 
   return (
     <>
@@ -1489,207 +933,78 @@ const StreamsTable = ({ onReady }) => {
           gap={6}
         >
           <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
-            <Tooltip
-              label="Add selected stream(s) to the target channel"
-              openDelay={500}
+            <Button
+              leftSection={<SquarePlus size={18} />}
+              variant={
+                selectedStreamIds.length > 0 && selectedChannelIds.length === 1
+                  ? 'light'
+                  : 'default'
+              }
+              size="xs"
+              onClick={addStreamsToChannel}
+              p={5}
+              color={
+                selectedStreamIds.length > 0 && selectedChannelIds.length === 1
+                  ? theme.tailwind.green[5]
+                  : undefined
+              }
+              style={
+                selectedStreamIds.length > 0 && selectedChannelIds.length === 1
+                  ? {
+                      borderWidth: '1px',
+                      borderColor: theme.tailwind.green[5],
+                      color: 'white',
+                    }
+                  : undefined
+              }
+              disabled={
+                !(
+                  selectedStreamIds.length > 0 &&
+                  selectedChannelIds.length === 1
+                )
+              }
             >
-              <Button
-                leftSection={<SquarePlus size={18} />}
-                variant={
-                  selectedStreamIds.length > 0 && targetChannelId
-                    ? 'light'
-                    : 'default'
-                }
-                size="xs"
-                onClick={addStreamsToChannel}
-                p={5}
-                color={
-                  selectedStreamIds.length > 0 && targetChannelId
-                    ? theme.tailwind.green[5]
-                    : undefined
-                }
-                style={
-                  selectedStreamIds.length > 0 && targetChannelId
-                    ? {
-                        borderWidth: '1px',
-                        borderColor: theme.tailwind.green[5],
-                        color: 'white',
-                      }
-                    : undefined
-                }
-                disabled={!(selectedStreamIds.length > 0 && targetChannelId)}
-              >
-                Add to Channel
-              </Button>
-            </Tooltip>
+              Add Streams to Channel
+            </Button>
 
-            <Tooltip
-              label={`Create channels from ${selectedStreamIds.length} stream(s)`}
-              openDelay={500}
+            <Button
+              leftSection={<SquarePlus size={18} />}
+              variant="default"
+              size="xs"
+              onClick={createChannelsFromStreams}
+              p={5}
+              disabled={selectedStreamIds.length == 0}
             >
-              <Button
-                leftSection={<SquarePlus size={18} />}
-                variant="default"
-                size="xs"
-                onClick={createChannelsFromSelection}
-                p={5}
-                disabled={selectedStreamIds.length == 0}
-              >
-                {selectedStreamIds.length <= 1
-                  ? `Create Channel (${selectedStreamIds.length})`
-                  : `Create Channels (${selectedStreamIds.length})`}
-              </Button>
-            </Tooltip>
+              {`Create Channels (${selectedStreamIds.length})`}
+            </Button>
           </Flex>
 
           <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
-            <Menu shadow="md" width={200}>
-              <Menu.Target>
-                <Tooltip label="Filters" openDelay={500}>
-                  <Button size="xs" variant="default">
-                    <Filter size={18} />
-                  </Button>
-                </Tooltip>
-              </Menu.Target>
+            <Button
+              leftSection={<SquarePlus size={18} />}
+              variant="light"
+              size="xs"
+              onClick={() => editStream()}
+              p={5}
+              color={theme.tailwind.green[5]}
+              style={{
+                borderWidth: '1px',
+                borderColor: theme.tailwind.green[5],
+                color: 'white',
+              }}
+            >
+              Create Stream
+            </Button>
 
-              <Menu.Dropdown>
-                <Menu.Item
-                  onClick={toggleUnassignedOnly}
-                  leftSection={
-                    filters.unassigned === true ? (
-                      <SquareCheck size={18} />
-                    ) : (
-                      <Square size={18} />
-                    )
-                  }
-                >
-                  <Text size="xs">Only Unassociated</Text>
-                </Menu.Item>
-                <Menu.Item
-                  onClick={toggleHideStale}
-                  leftSection={
-                    filters.hide_stale === true ? (
-                      <SquareCheck size={18} />
-                    ) : (
-                      <Square size={18} />
-                    )
-                  }
-                >
-                  <Text size="xs">Hide Stale</Text>
-                </Menu.Item>
-              </Menu.Dropdown>
-            </Menu>
-
-            <Tooltip label="Create a new custom stream" openDelay={500}>
-              <Button
-                leftSection={<SquarePlus size={18} />}
-                variant="light"
-                size="xs"
-                onClick={() => editStream()}
-                p={5}
-                color={theme.tailwind.green[5]}
-                style={{
-                  borderWidth: '1px',
-                  borderColor: theme.tailwind.green[5],
-                  color: 'white',
-                }}
-              >
-                Create Stream
-              </Button>
-            </Tooltip>
-
-            <Tooltip label="Delete selected stream(s)" openDelay={500}>
-              <Button
-                leftSection={<SquareMinus size={18} />}
-                variant="default"
-                size="xs"
-                onClick={deleteStreams}
-                disabled={selectedStreamIds.length == 0}
-              >
-                Delete
-              </Button>
-            </Tooltip>
-
-            <Menu shadow="md" width={200}>
-              <Menu.Target>
-                <Tooltip label="Table Settings" openDelay={500}>
-                  <ActionIcon variant="default" size={30}>
-                    <EllipsisVertical size={18} />
-                  </ActionIcon>
-                </Tooltip>
-              </Menu.Target>
-
-              <Menu.Dropdown>
-                <Menu.Label>Toggle Columns</Menu.Label>
-                <Menu.Item
-                  onClick={() => toggleColumnVisibility('name')}
-                  leftSection={
-                    columnVisibility.name !== false ? (
-                      <Eye size={18} />
-                    ) : (
-                      <EyeOff size={18} />
-                    )
-                  }
-                >
-                  <Text size="xs">Name</Text>
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => toggleColumnVisibility('group')}
-                  leftSection={
-                    columnVisibility.group !== false ? (
-                      <Eye size={18} />
-                    ) : (
-                      <EyeOff size={18} />
-                    )
-                  }
-                >
-                  <Text size="xs">Group</Text>
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => toggleColumnVisibility('m3u')}
-                  leftSection={
-                    columnVisibility.m3u !== false ? (
-                      <Eye size={18} />
-                    ) : (
-                      <EyeOff size={18} />
-                    )
-                  }
-                >
-                  <Text size="xs">M3U</Text>
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => toggleColumnVisibility('tvg_id')}
-                  leftSection={
-                    columnVisibility.tvg_id !== false ? (
-                      <Eye size={18} />
-                    ) : (
-                      <EyeOff size={18} />
-                    )
-                  }
-                >
-                  <Text size="xs">TVG-ID</Text>
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => toggleColumnVisibility('stats')}
-                  leftSection={
-                    columnVisibility.stats !== false ? (
-                      <Eye size={18} />
-                    ) : (
-                      <EyeOff size={18} />
-                    )
-                  }
-                >
-                  <Text size="xs">Stats</Text>
-                </Menu.Item>
-                <Menu.Divider />
-                <Menu.Item
-                  onClick={resetColumnVisibility}
-                  leftSection={<RotateCcw size={18} />}
-                >
-                  <Text size="xs">Reset to Default</Text>
-                </Menu.Item>
-              </Menu.Dropdown>
-            </Menu>
+            <Button
+              leftSection={<SquareMinus size={18} />}
+              variant="default"
+              size="xs"
+              onClick={deleteStreams}
+              disabled={selectedStreamIds.length == 0}
+            >
+              Remove
+            </Button>
           </Flex>
         </Flex>
 
@@ -1811,41 +1126,145 @@ const StreamsTable = ({ onReady }) => {
         onClose={closeStreamForm}
       />
 
-      {/* Bulk Channel Creation Modal */}
-      <CreateChannelModal
+      {/* Channel Numbering Modal */}
+      <Modal
         opened={channelNumberingModalOpen}
         onClose={() => setChannelNumberingModalOpen(false)}
-        mode={numberingMode}
-        onModeChange={handleBulkNumberingModeChange}
-        numberValue={customStartNumber}
-        onNumberValueChange={setCustomStartNumber}
-        rememberChoice={rememberChoice}
-        onRememberChoiceChange={setRememberChoice}
-        onConfirm={handleChannelNumberingConfirm}
-        isBulk={true}
-        streamCount={selectedStreamIds.length}
-        selectedProfileIds={bulkSelectedProfileIds}
-        onProfileIdsChange={setBulkSelectedProfileIds}
-        channelProfiles={channelProfiles ? Object.values(channelProfiles) : []}
-      />
+        title="Channel Numbering Options"
+        size="md"
+        centered
+      >
+        <Stack spacing="md">
+          <Text size="sm" c="dimmed">
+            Choose how to assign channel numbers to the{' '}
+            {selectedStreamIds.length} selected streams:
+          </Text>
 
-      {/* Single Channel Creation Modal */}
-      <CreateChannelModal
+          <Radio.Group
+            value={numberingMode}
+            onChange={setNumberingMode}
+            label="Numbering Mode"
+          >
+            <Stack mt="xs" spacing="xs">
+              <Radio
+                value="provider"
+                label="Use Provider Numbers"
+                description="Use tvg-chno or channel-number from stream metadata, auto-assign for conflicts"
+              />
+              <Radio
+                value="auto"
+                label="Auto-Assign Sequential"
+                description="Start from the lowest available channel number and increment by 1"
+              />
+              <Radio
+                value="custom"
+                label="Start from Custom Number"
+                description="Start sequential numbering from a specific channel number"
+              />
+            </Stack>
+          </Radio.Group>
+
+          {numberingMode === 'custom' && (
+            <NumberInput
+              label="Starting Channel Number"
+              description="Channel numbers will be assigned starting from this number"
+              value={customStartNumber}
+              onChange={setCustomStartNumber}
+              min={1}
+              placeholder="Enter starting number..."
+            />
+          )}
+
+          <Checkbox
+            checked={rememberChoice}
+            onChange={(event) => setRememberChoice(event.currentTarget.checked)}
+            label="Remember this choice and don't ask again"
+          />
+
+          <Group justify="flex-end" mt="md">
+            <Button
+              variant="default"
+              onClick={() => setChannelNumberingModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleChannelNumberingConfirm}>
+              Create Channels
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* Single Channel Numbering Modal */}
+      <Modal
         opened={singleChannelModalOpen}
         onClose={() => setSingleChannelModalOpen(false)}
-        mode={singleChannelMode}
-        onModeChange={handleSingleNumberingModeChange}
-        numberValue={specificChannelNumber}
-        onNumberValueChange={setSpecificChannelNumber}
-        rememberChoice={rememberSingleChoice}
-        onRememberChoiceChange={setRememberSingleChoice}
-        onConfirm={handleSingleChannelNumberingConfirm}
-        isBulk={false}
-        streamName={currentStreamForChannel?.name}
-        selectedProfileIds={singleSelectedProfileIds}
-        onProfileIdsChange={setSingleSelectedProfileIds}
-        channelProfiles={channelProfiles ? Object.values(channelProfiles) : []}
-      />
+        title="Channel Number Assignment"
+        size="md"
+        centered
+      >
+        <Stack spacing="md">
+          <Text size="sm" c="dimmed">
+            Choose how to assign the channel number for "
+            {currentStreamForChannel?.name}":
+          </Text>
+
+          <Radio.Group
+            value={singleChannelMode}
+            onChange={setSingleChannelMode}
+            label="Number Assignment"
+          >
+            <Stack mt="xs" spacing="xs">
+              <Radio
+                value="provider"
+                label="Use Provider Number"
+                description="Use tvg-chno or channel-number from stream metadata, auto-assign if not available"
+              />
+              <Radio
+                value="auto"
+                label="Auto-Assign Next Available"
+                description="Automatically assign the next available channel number"
+              />
+              <Radio
+                value="specific"
+                label="Use Specific Number"
+                description="Use a specific channel number"
+              />
+            </Stack>
+          </Radio.Group>
+
+          {singleChannelMode === 'specific' && (
+            <NumberInput
+              label="Channel Number"
+              description="The specific channel number to assign"
+              value={specificChannelNumber}
+              onChange={setSpecificChannelNumber}
+              min={1}
+              placeholder="Enter channel number..."
+            />
+          )}
+
+          <Checkbox
+            checked={rememberSingleChoice}
+            onChange={(event) =>
+              setRememberSingleChoice(event.currentTarget.checked)
+            }
+            label="Remember this choice and don't ask again"
+          />
+
+          <Group justify="flex-end" mt="md">
+            <Button
+              variant="default"
+              onClick={() => setSingleChannelModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleSingleChannelNumberingConfirm}>
+              Create Channel
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
 
       <ConfirmationDialog
         opened={confirmDeleteOpen}
@@ -1877,7 +1296,6 @@ This action cannot be undone.`}
         cancelLabel="Cancel"
         actionKey={isBulkDelete ? 'delete-streams' : 'delete-stream'}
         onSuppressChange={suppressWarning}
-        loading={deleting}
         size="md"
       />
     </>

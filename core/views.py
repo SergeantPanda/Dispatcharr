@@ -1,10 +1,9 @@
 # core/views.py
 import os
-import signal
-from shlex import split as shlex_split
 import sys
+import subprocess
 import logging
-import regex
+import re
 import redis
 
 from django.conf import settings
@@ -40,17 +39,7 @@ def stream_view(request, channel_uuid):
         redis_host = getattr(settings, "REDIS_HOST", "localhost")
         redis_port = int(getattr(settings, "REDIS_PORT", 6379))
         redis_db = int(getattr(settings, "REDIS_DB", "0"))
-        redis_password = getattr(settings, "REDIS_PASSWORD", "")
-        redis_user = getattr(settings, "REDIS_USER", "")
-        ssl_params = getattr(settings, "REDIS_SSL_PARAMS", {})
-        redis_client = redis.Redis(
-            host=redis_host,
-            port=redis_port,
-            db=redis_db,
-            password=redis_password if redis_password else None,
-            username=redis_user if redis_user else None,
-            **ssl_params
-        )
+        redis_client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
 
         # Retrieve the channel by the provided stream_id.
         channel = Channel.objects.get(uuid=channel_uuid)
@@ -132,20 +121,17 @@ def stream_view(request, channel_uuid):
         # Prepare the pattern replacement.
         logger.debug("Executing the following pattern replacement:")
         logger.debug(f"  search: {active_profile.search_pattern}")
-        # Convert JS-style backreferences in replace: $<name> -> \g<name>, $1 -> \1
-        safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', active_profile.replace_pattern)
-        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
+        safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', active_profile.replace_pattern)
         logger.debug(f"  replace: {active_profile.replace_pattern}")
         logger.debug(f"  safe replace: {safe_replace_pattern}")
-        # regex module accepts JS-style (?<name>...) named groups natively
-        stream_url = regex.sub(active_profile.search_pattern, safe_replace_pattern, input_url)
+        stream_url = re.sub(active_profile.search_pattern, safe_replace_pattern, input_url)
         logger.debug(f"Generated stream url: {stream_url}")
 
         # Get the stream profile set on the channel.
         stream_profile = channel.stream_profile
         if not stream_profile:
             logger.error("No stream profile set for channel ID=%s, using default", channel.id)
-            stream_profile = StreamProfile.objects.get(id=CoreSettings.get_default_stream_profile_id())
+            stream_profile = StreamProfile.objects.get(id=CoreSettings.objects.get(key="default-stream-profile").value)
 
         logger.debug("Stream profile used: %s", stream_profile.name)
 
@@ -158,57 +144,38 @@ def stream_view(request, channel_uuid):
         logger.debug("Formatted parameters: %s", parameters)
 
         # Build the final command.
-        cmd = [stream_profile.command] + shlex_split(parameters)
+        cmd = [stream_profile.command] + parameters.split()
         logger.debug("Executing command: %s", cmd)
 
         try:
-            stdout_r, stdout_w = os.pipe()
-            devnull_r = os.open(os.devnull, os.O_RDONLY)
-            devnull_w = os.open(os.devnull, os.O_WRONLY)
-            file_actions = [
-                (os.POSIX_SPAWN_DUP2, devnull_r, 0),
-                (os.POSIX_SPAWN_DUP2, stdout_w, 1),
-                (os.POSIX_SPAWN_DUP2, devnull_w, 2),
-                (os.POSIX_SPAWN_CLOSE, devnull_r),
-                (os.POSIX_SPAWN_CLOSE, devnull_w),
-                (os.POSIX_SPAWN_CLOSE, stdout_w),
-                (os.POSIX_SPAWN_CLOSE, stdout_r),
-            ]
-            proc_pid = os.posix_spawn(cmd[0], cmd, dict(os.environ), file_actions=file_actions)
-            for fd in (devnull_r, devnull_w, stdout_w):
-                os.close(fd)
-            proc_stdout = os.fdopen(stdout_r, 'rb')
+            # Start the streaming process.
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except Exception as e:
-            persistent_lock.release()
-            logger.exception("Error starting stream for channel ID=%s", channel_uuid)
+            persistent_lock.release()  # Ensure the lock is released on error.
+            logger.exception("Error starting stream for channel ID=%s", stream_id)
             return HttpResponseServerError(f"Error starting stream: {e}")
 
     except Exception as e:
-        logger.exception("Error preparing stream for channel ID=%s", channel_uuid)
+        logger.exception("Error preparing stream for channel ID=%s", stream_id)
         return HttpResponseServerError(f"Error preparing stream: {e}")
 
-    def stream_generator(stdout_file, pid, persistent_lock):
+    def stream_generator(proc, s, persistent_lock):
         try:
             while True:
-                chunk = stdout_file.read(8192)
+                chunk = proc.stdout.read(8192)
                 if not chunk:
                     break
                 yield chunk
         finally:
             try:
-                os.kill(pid, signal.SIGTERM)
-                logger.debug("Streaming process terminated for channel ID=%s", channel.id)
-            except OSError:
-                pass
-            try:
-                os.waitpid(pid, os.WNOHANG)
-            except ChildProcessError:
-                pass
-            stdout_file.close()
+                proc.terminate()
+                logger.debug("Streaming process terminated for stream ID=%s", s.id)
+            except Exception as e:
+                logger.error("Error terminating process for stream ID=%s: %s", s.id, e)
             persistent_lock.release()
             logger.debug("Persistent lock released for channel ID=%s", channel.id)
 
-    return StreamingHttpResponse(
-        stream_generator(proc_stdout, proc_pid, persistent_lock),
-        content_type="video/MP2T"
-    )
+        return StreamingHttpResponse(
+            stream_generator(process, stream, persistent_lock),
+            content_type="video/MP2T"
+        )

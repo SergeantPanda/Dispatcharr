@@ -1,4 +1,4 @@
-import { Modal, Group, Button, Checkbox, Box } from '@mantine/core';
+import { Modal, Group, Text, Button, Checkbox, Box } from '@mantine/core';
 import React, { useState } from 'react';
 import useWarningsStore from '../store/warnings';
 
@@ -16,7 +16,6 @@ import useWarningsStore from '../store/warnings';
  * @param {string} props.actionKey - Unique key for this type of action (used for suppression)
  * @param {Function} props.onSuppressChange - Called when "don't show again" option changes
  * @param {string} [props.size='md'] - Size of the modal
- * @param {boolean} [props.loading=false] - Whether the confirm button should show loading state
  */
 const ConfirmationDialog = ({
   opened,
@@ -32,7 +31,6 @@ const ConfirmationDialog = ({
   zIndex = 1000,
   showDeleteFileOption = false,
   deleteFileLabel = 'Also delete files from disk',
-  loading = false,
 }) => {
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
@@ -95,16 +93,10 @@ const ConfirmationDialog = ({
       )}
 
       <Group justify="flex-end">
-        <Button variant="outline" onClick={handleClose} disabled={loading}>
+        <Button variant="outline" onClick={handleClose}>
           {cancelLabel}
         </Button>
-        <Button
-          color="red"
-          onClick={handleConfirm}
-          loading={loading}
-          disabled={loading}
-          loaderProps={{ type: 'dots' }}
-        >
+        <Button color="red" onClick={handleConfirm}>
           {confirmLabel}
         </Button>
       </Group>

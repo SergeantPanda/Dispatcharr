@@ -1,5 +1,5 @@
 import useSettingsStore from '../../../store/settings.jsx';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   getChangedSettings,
   parseSettings,
@@ -13,7 +13,6 @@ import {
   Flex,
   Group,
   NumberInput,
-  Select,
   Stack,
   Switch,
   Text,
@@ -35,7 +34,6 @@ const DvrSettingsForm = React.memo(({ active }) => {
     path: '',
     exists: false,
   });
-  const isSavingRef = useRef(false);
 
   const form = useForm({
     mode: 'controlled',
@@ -47,14 +45,14 @@ const DvrSettingsForm = React.memo(({ active }) => {
   }, [active]);
 
   useEffect(() => {
-    if (settings && !isSavingRef.current) {
+    if (settings) {
       const formValues = parseSettings(settings);
 
       form.setValues(formValues);
 
-      if (formValues['comskip_custom_path']) {
+      if (formValues['dvr-comskip-custom-path']) {
         setComskipConfig((prev) => ({
-          path: formValues['comskip_custom_path'],
+          path: formValues['dvr-comskip-custom-path'],
           exists: prev.exists,
         }));
       }
@@ -71,7 +69,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
             exists: Boolean(response.exists),
           });
           if (response.path) {
-            form.setFieldValue('comskip_custom_path', response.path);
+            form.setFieldValue('dvr-comskip-custom-path', response.path);
           }
         }
       } catch (error) {
@@ -96,10 +94,10 @@ const DvrSettingsForm = React.memo(({ active }) => {
           autoClose: 3000,
           color: 'green',
         });
-        form.setFieldValue('comskip_custom_path', response.path);
+        form.setFieldValue('dvr-comskip-custom-path', response.path);
         useSettingsStore.getState().updateSetting({
-          ...(settings['comskip_custom_path'] || {
-            key: 'comskip_custom_path',
+          ...(settings['dvr-comskip-custom-path'] || {
+            key: 'dvr-comskip-custom-path',
             name: 'DVR Comskip Custom Path',
           }),
           value: response.path,
@@ -116,27 +114,17 @@ const DvrSettingsForm = React.memo(({ active }) => {
 
   const onSubmit = async () => {
     setSaved(false);
-    isSavingRef.current = true;
 
     const changedSettings = getChangedSettings(form.getValues(), settings);
 
+    // Update each changed setting in the backend (create if missing)
     try {
       await saveChangedSettings(settings, changedSettings);
-      isSavingRef.current = false;
-      const latestSettings = useSettingsStore.getState().settings;
-      if (latestSettings) {
-        const formValues = parseSettings(latestSettings);
-        form.setValues(formValues);
-        if (formValues['comskip_custom_path']) {
-          setComskipConfig((prev) => ({
-            path: formValues['comskip_custom_path'],
-            exists: prev.exists,
-          }));
-        }
-      }
+
       setSaved(true);
     } catch (error) {
-      isSavingRef.current = false;
+      // Error notifications are already shown by API functions
+      // Just don't show the success message
       console.error('Error saving settings:', error);
     }
   };
@@ -148,46 +136,25 @@ const DvrSettingsForm = React.memo(({ active }) => {
           <Alert variant="light" color="green" title="Saved Successfully" />
         )}
         <Switch
-          label="Enable Comskip (commercial detection after recording)"
-          {...form.getInputProps('comskip_enabled', {
+          label="Enable Comskip (remove commercials after recording)"
+          {...form.getInputProps('dvr-comskip-enabled', {
             type: 'checkbox',
           })}
-          id="comskip_enabled"
-          name="comskip_enabled"
-        />
-        <Select
-          label="Comskip mode"
-          description="Cut: permanently removes commercials from the file. Mark: keeps the file intact and writes an EDL file for players that support EDL-based commercial skipping."
-          data={[
-            { value: 'cut', label: 'Cut (remove commercials from file)' },
-            {
-              value: 'mark',
-              label: 'Mark (store timestamps, keep file intact)',
-            },
-          ]}
-          {...form.getInputProps('comskip_mode')}
-          id="comskip_mode"
-          name="comskip_mode"
-        />
-        <Select
-          label="Hardware acceleration"
-          description="Offloads video decoding to a hardware decoder. Requires the corresponding driver/device to be available inside the container."
-          data={[
-            { value: 'none', label: 'None (software decode)' },
-            { value: 'cuvid', label: 'NVIDIA NVDEC (--cuvid)' },
-            { value: 'qsv', label: 'Intel Quick Sync (--qsv)' },
-          ]}
-          {...form.getInputProps('comskip_hw_accel')}
-          id="comskip_hw_accel"
-          name="comskip_hw_accel"
+          id={settings['dvr-comskip-enabled']?.id || 'dvr-comskip-enabled'}
+          name={settings['dvr-comskip-enabled']?.key || 'dvr-comskip-enabled'}
         />
         <TextInput
           label="Custom comskip.ini path"
           description="Leave blank to use the built-in defaults."
           placeholder="/app/docker/comskip.ini"
-          {...form.getInputProps('comskip_custom_path')}
-          id="comskip_custom_path"
-          name="comskip_custom_path"
+          {...form.getInputProps('dvr-comskip-custom-path')}
+          id={
+            settings['dvr-comskip-custom-path']?.id || 'dvr-comskip-custom-path'
+          }
+          name={
+            settings['dvr-comskip-custom-path']?.key ||
+            'dvr-comskip-custom-path'
+          }
         />
         <Group align="flex-end" gap="sm">
           <FileInput
@@ -217,50 +184,71 @@ const DvrSettingsForm = React.memo(({ active }) => {
           description="Begin recording this many minutes before the scheduled start."
           min={0}
           step={1}
-          {...form.getInputProps('pre_offset_minutes')}
-          id="pre_offset_minutes"
-          name="pre_offset_minutes"
+          {...form.getInputProps('dvr-pre-offset-minutes')}
+          id={
+            settings['dvr-pre-offset-minutes']?.id || 'dvr-pre-offset-minutes'
+          }
+          name={
+            settings['dvr-pre-offset-minutes']?.key || 'dvr-pre-offset-minutes'
+          }
         />
         <NumberInput
           label="End late (minutes)"
           description="Continue recording this many minutes after the scheduled end."
           min={0}
           step={1}
-          {...form.getInputProps('post_offset_minutes')}
-          id="post_offset_minutes"
-          name="post_offset_minutes"
+          {...form.getInputProps('dvr-post-offset-minutes')}
+          id={
+            settings['dvr-post-offset-minutes']?.id || 'dvr-post-offset-minutes'
+          }
+          name={
+            settings['dvr-post-offset-minutes']?.key ||
+            'dvr-post-offset-minutes'
+          }
         />
         <TextInput
           label="TV Path Template"
           description="Supports {show}, {season}, {episode}, {sub_title}, {channel}, {year}, {start}, {end}. Use format specifiers like {season:02d}. Relative paths are under your library dir."
           placeholder="TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv"
-          {...form.getInputProps('tv_template')}
-          id="tv_template"
-          name="tv_template"
+          {...form.getInputProps('dvr-tv-template')}
+          id={settings['dvr-tv-template']?.id || 'dvr-tv-template'}
+          name={settings['dvr-tv-template']?.key || 'dvr-tv-template'}
         />
         <TextInput
           label="TV Fallback Template"
           description="Template used when an episode has no season/episode. Supports {show}, {start}, {end}, {channel}, {year}."
           placeholder="TV_Shows/{show}/{start}.mkv"
-          {...form.getInputProps('tv_fallback_template')}
-          id="tv_fallback_template"
-          name="tv_fallback_template"
+          {...form.getInputProps('dvr-tv-fallback-template')}
+          id={
+            settings['dvr-tv-fallback-template']?.id ||
+            'dvr-tv-fallback-template'
+          }
+          name={
+            settings['dvr-tv-fallback-template']?.key ||
+            'dvr-tv-fallback-template'
+          }
         />
         <TextInput
           label="Movie Path Template"
           description="Supports {title}, {year}, {channel}, {start}, {end}. Relative paths are under your library dir."
           placeholder="Movies/{title} ({year}).mkv"
-          {...form.getInputProps('movie_template')}
-          id="movie_template"
-          name="movie_template"
+          {...form.getInputProps('dvr-movie-template')}
+          id={settings['dvr-movie-template']?.id || 'dvr-movie-template'}
+          name={settings['dvr-movie-template']?.key || 'dvr-movie-template'}
         />
         <TextInput
           label="Movie Fallback Template"
           description="Template used when movie metadata is incomplete. Supports {start}, {end}, {channel}."
           placeholder="Movies/{start}.mkv"
-          {...form.getInputProps('movie_fallback_template')}
-          id="movie_fallback_template"
-          name="movie_fallback_template"
+          {...form.getInputProps('dvr-movie-fallback-template')}
+          id={
+            settings['dvr-movie-fallback-template']?.id ||
+            'dvr-movie-fallback-template'
+          }
+          name={
+            settings['dvr-movie-fallback-template']?.key ||
+            'dvr-movie-fallback-template'
+          }
         />
         <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
           <Button type="submit" variant="default">

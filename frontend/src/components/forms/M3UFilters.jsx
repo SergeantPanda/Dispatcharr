@@ -1,18 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import API from '../../api';
 import usePlaylistsStore from '../../store/playlists';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import {
-  ActionIcon,
-  Alert,
-  Box,
-  Button,
-  Center,
   Flex,
-  Group,
   Modal,
+  Button,
+  Box,
+  ActionIcon,
   Text,
   useMantineTheme,
+  Center,
+  Group,
+  Alert,
 } from '@mantine/core';
 import { GripHorizontal, Info, SquareMinus, SquarePen } from 'lucide-react';
 import M3UFilter from './M3UFilter';
@@ -35,10 +36,6 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
-import {
-  deleteM3UFilter,
-  updateM3UFilter,
-} from '../../utils/forms/M3uFilterUtils.js';
 
 const RowDragHandleCell = ({ rowId }) => {
   const { attributes, listeners, setNodeRef } = useDraggable({
@@ -146,13 +143,14 @@ const DraggableRow = ({ filter, editFilter, onDelete }) => {
 };
 
 const M3UFilters = ({ playlist, isOpen, onClose }) => {
+  const theme = useMantineTheme();
+
   const [editorOpen, setEditorOpen] = useState(false);
   const [filter, setFilter] = useState(null);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [filterToDelete, setFilterToDelete] = useState(null);
   const [filters, setFilters] = useState([]);
-  const [deleting, setDeleting] = useState(false);
 
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -194,17 +192,16 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
 
   const deleteFilter = async (id) => {
     if (!playlist || !playlist.id) return;
-    setDeleting(true);
     try {
-      await deleteM3UFilter(playlist, id);
-      fetchPlaylist(playlist.id);
-      setFilters(filters.filter((f) => f.id !== id));
+      await API.deleteM3UFilter(playlist.id, id);
+      setConfirmDeleteOpen(false);
     } catch (error) {
       console.error('Error deleting profile:', error);
-    } finally {
-      setDeleting(false);
       setConfirmDeleteOpen(false);
     }
+
+    fetchPlaylist(playlist.id);
+    setFilters(filters.filter((f) => f.id !== id));
   };
 
   const closeEditor = (updatedPlaylist = null) => {
@@ -240,7 +237,7 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
     try {
       await Promise.all(
         changedFilters.map((f) =>
-          updateM3UFilter(playlist, f, { ...f, order: f.newOrder })
+          API.updateM3UFilter(playlist.id, f.id, { ...f, order: f.newOrder })
         )
       );
       await fetchPlaylist(playlist.id);
@@ -324,15 +321,14 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => deleteFilter(deleteTarget)}
-        loading={deleting}
         title="Confirm Filter Deletion"
         message={
           filterToDelete ? (
             <div style={{ whiteSpace: 'pre-line' }}>
               {`Are you sure you want to delete the following filter?
 
-Type: ${filterToDelete.filter_type}
-Pattern: ${filterToDelete.regex_pattern}
+Type: ${filterToDelete.type}
+Patter: ${filterToDelete.regex_pattern}
 
 This action cannot be undone.`}
             </div>

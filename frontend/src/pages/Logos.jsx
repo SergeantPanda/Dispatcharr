@@ -7,11 +7,12 @@ import VODLogosTable from '../components/tables/VODLogosTable';
 import { showNotification } from '../utils/notificationUtils.js';
 
 const LogosPage = () => {
-  const logos = useLogosStore((s) => s.logos);
-  const totalCount = useVODLogosStore((s) => s.totalCount);
+  const logos = useLogosStore(s => s.logos);
+  const totalCount = useVODLogosStore(s => s.totalCount);
   const [activeTab, setActiveTab] = useState('channel');
-  const logoCount =
-    activeTab === 'channel' ? Object.keys(logos).length : totalCount;
+  const logoCount = activeTab === 'channel'
+    ? Object.keys(logos).length
+    : totalCount;
 
   const loadChannelLogos = useCallback(async () => {
     try {
@@ -37,7 +38,11 @@ const LogosPage = () => {
   return (
     <Box>
       {/* Header with title and tabs */}
-      <Box style={{ justifyContent: 'center' }} display={'flex'} p={'10px 0'}>
+      <Box
+        style={{ justifyContent: 'center' }}
+        display={'flex'}
+        p={'10px 0'}
+      >
         <Flex
           style={{
             alignItems: 'center',
@@ -53,7 +58,7 @@ const LogosPage = () => {
               fz={'20px'}
               fw={500}
               lh={1}
-              c="white"
+              c='white'
               mb={0}
               lts={'-0.3px'}
             >

@@ -73,9 +73,7 @@ def refresh_vod_content(account_id):
         return f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds"
 
     except Exception as e:
-        import traceback
         logger.error(f"Error refreshing VOD for account {account_id}: {str(e)}")
-        logger.error(f"Full traceback:\n{traceback.format_exc()}")
 
         # Send error notification
         send_m3u_update(account_id, "vod_refresh", 100, status="error",
@@ -412,10 +410,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             tmdb_id = movie_data.get('tmdb_id') or movie_data.get('tmdb')
             imdb_id = movie_data.get('imdb_id') or movie_data.get('imdb')
 
-            # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
-            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
+            # Clean empty string IDs
+            if tmdb_id == '':
                 tmdb_id = None
-            if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
+            if imdb_id == '':
                 imdb_id = None
 
             # Create a unique key for this movie (priority: TMDB > IMDB > name+year)
@@ -439,26 +437,6 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             trailer = extract_string_from_array_or_string(trailer_raw) if trailer_raw else None
             logo_url = movie_data.get('stream_icon') or ''
 
-            director = extract_string_from_array_or_string(
-                movie_data.get('director') or ''
-            )
-            actors_raw = movie_data.get('actors') or movie_data.get('cast') or ''
-            if isinstance(actors_raw, list):
-                actors = ', '.join(s.strip() for s in actors_raw if s and str(s).strip()) or None
-            else:
-                actors = actors_raw.strip() if actors_raw else None
-            release_date = movie_data.get('release_date') or movie_data.get('releasedate') or ''
-
-            custom_props = {}
-            if trailer:
-                custom_props['youtube_trailer'] = trailer
-            if director:
-                custom_props['director'] = director
-            if actors:
-                custom_props['actors'] = actors
-            if release_date:
-                custom_props['release_date'] = release_date
-
             movie_props = {
                 'name': name,
                 'year': year,
@@ -468,7 +446,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 'rating': rating,
                 'genre': genre,
                 'duration_secs': duration_secs,
-                'custom_properties': custom_props or None,
+                'custom_properties': {'trailer': trailer} if trailer else None,
             }
 
             movie_keys[movie_key] = {
@@ -568,18 +546,8 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             for field, value in movie_props.items():
                 if field == 'custom_properties':
-                    # Merge: preserve advanced-refresh keys; don't overwrite director/actors/release_date if already set.
-                    existing_cp = movie.custom_properties or {}
-                    incoming_cp = value or {}
-                    merged = dict(existing_cp)
-                    for k, v in incoming_cp.items():
-                        if k in ('director', 'actors', 'release_date'):
-                            if not existing_cp.get(k):
-                                merged[k] = v
-                        else:
-                            merged[k] = v
-                    if merged != existing_cp:
-                        movie.custom_properties = merged
+                    if value != movie.custom_properties:
+                        movie.custom_properties = value
                         updated = True
                 elif getattr(movie, field) != value:
                     setattr(movie, field, value)
@@ -587,17 +555,12 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             # Handle logo assignment for existing movies
             logo_updated = False
-            if logo_url and len(logo_url) <= 500:
-                if logo_url in existing_logos:
-                    new_logo = existing_logos[logo_url]
-                    if movie.logo_id != new_logo.id:
-                        movie._logo_to_update = new_logo
-                        logo_updated = True
-                elif movie.logo_id:
-                    logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
-                    movie._logo_to_update = None
+            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
+                new_logo = existing_logos[logo_url]
+                if movie.logo != new_logo:
+                    movie._logo_to_update = new_logo
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and movie.logo_id:
+            elif (not logo_url or len(logo_url) > 500) and movie.logo:
                 # Clear logo if no logo URL provided or URL is too long
                 movie._logo_to_update = None
                 logo_updated = True
@@ -651,41 +614,26 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             # First, create new movies and get their IDs
             created_movies = {}
             if movies_to_create:
-                # Bulk query to check which movies already exist
-                tmdb_ids = [m.tmdb_id for m in movies_to_create if m.tmdb_id]
-                imdb_ids = [m.imdb_id for m in movies_to_create if m.imdb_id]
-                name_year_pairs = [(m.name, m.year) for m in movies_to_create if not m.tmdb_id and not m.imdb_id]
+                Movie.objects.bulk_create(movies_to_create, ignore_conflicts=True)
 
-                existing_by_tmdb = {m.tmdb_id: m for m in Movie.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
-                existing_by_imdb = {m.imdb_id: m for m in Movie.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
-
-                existing_by_name_year = {}
-                if name_year_pairs:
-                    for movie in Movie.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
-                        key = (movie.name, movie.year)
-                        if key in name_year_pairs:
-                            existing_by_name_year[key] = movie
-
-                # Check each movie against the bulk query results
-                movies_actually_created = []
+                # Get the newly created movies with their IDs
+                # We need to re-fetch them to get the primary keys
                 for movie in movies_to_create:
-                    existing = None
-                    if movie.tmdb_id and movie.tmdb_id in existing_by_tmdb:
-                        existing = existing_by_tmdb[movie.tmdb_id]
-                    elif movie.imdb_id and movie.imdb_id in existing_by_imdb:
-                        existing = existing_by_imdb[movie.imdb_id]
-                    elif not movie.tmdb_id and not movie.imdb_id:
-                        existing = existing_by_name_year.get((movie.name, movie.year))
-
-                    if existing:
-                        created_movies[id(movie)] = existing
+                    # Find the movie by its unique identifiers
+                    if movie.tmdb_id:
+                        db_movie = Movie.objects.filter(tmdb_id=movie.tmdb_id).first()
+                    elif movie.imdb_id:
+                        db_movie = Movie.objects.filter(imdb_id=movie.imdb_id).first()
                     else:
-                        movies_actually_created.append(movie)
-                        created_movies[id(movie)] = movie
+                        db_movie = Movie.objects.filter(
+                            name=movie.name,
+                            year=movie.year,
+                            tmdb_id__isnull=True,
+                            imdb_id__isnull=True
+                        ).first()
 
-                # Bulk create only movies that don't exist
-                if movies_actually_created:
-                    Movie.objects.bulk_create(movies_actually_created)
+                    if db_movie:
+                        created_movies[id(movie)] = db_movie
 
             # Update existing movies
             if movies_to_update:
@@ -701,16 +649,12 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                         movie.logo = movie._logo_to_update
                         movie.save(update_fields=['logo'])
 
-            # Update relations to reference the correct movie objects (with PKs)
+            # Update relations to reference the correct movie objects
             for relation in relations_to_create:
                 if id(relation.movie) in created_movies:
                     relation.movie = created_movies[id(relation.movie)]
 
-            for relation in relations_to_update:
-                if id(relation.movie) in created_movies:
-                    relation.movie = created_movies[id(relation.movie)]
-
-            # All movies now have PKs, safe to bulk create/update relations
+            # Handle relations
             if relations_to_create:
                 M3UMovieRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
@@ -780,10 +724,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             tmdb_id = series_data.get('tmdb') or series_data.get('tmdb_id')
             imdb_id = series_data.get('imdb') or series_data.get('imdb_id')
 
-            # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
-            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
+            # Clean empty string IDs
+            if tmdb_id == '':
                 tmdb_id = None
-            if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
+            if imdb_id == '':
                 imdb_id = None
 
             # Create a unique key for this series (priority: TMDB > IMDB > name+year)
@@ -812,14 +756,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 value = series_data.get(key)
                 if value:
                     # For string-like fields that might be arrays, extract clean strings
-                    if key == 'cast':
-                        if isinstance(value, list):
-                            clean_value = ', '.join(s.strip() for s in value if s and str(s).strip()) or None
-                        else:
-                            clean_value = extract_string_from_array_or_string(value)
-                        if clean_value:
-                            additional_metadata[key] = clean_value
-                    elif key in ['poster_path', 'youtube_trailer', 'director']:
+                    if key in ['poster_path', 'youtube_trailer', 'cast', 'director']:
                         clean_value = extract_string_from_array_or_string(value)
                         if clean_value:
                             additional_metadata[key] = clean_value
@@ -949,19 +886,12 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             # Handle logo assignment for existing series
             logo_updated = False
-            if logo_url and len(logo_url) <= 500:
-                if logo_url in existing_logos:
-                    new_logo = existing_logos[logo_url]
-                    if series.logo_id != new_logo.id:
-                        series._logo_to_update = new_logo
-                        logo_updated = True
-                elif series.logo_id:
-                    # Logo URL exists but logo creation failed or logo not found
-                    # Clear the orphaned logo reference
-                    logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
-                    series._logo_to_update = None
+            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
+                new_logo = existing_logos[logo_url]
+                if series.logo != new_logo:
+                    series._logo_to_update = new_logo
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and series.logo_id:
+            elif (not logo_url or len(logo_url) > 500) and series.logo:
                 # Clear logo if no logo URL provided or URL is too long
                 series._logo_to_update = None
                 logo_updated = True
@@ -1015,41 +945,26 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             # First, create new series and get their IDs
             created_series = {}
             if series_to_create:
-                # Bulk query to check which series already exist
-                tmdb_ids = [s.tmdb_id for s in series_to_create if s.tmdb_id]
-                imdb_ids = [s.imdb_id for s in series_to_create if s.imdb_id]
-                name_year_pairs = [(s.name, s.year) for s in series_to_create if not s.tmdb_id and not s.imdb_id]
+                Series.objects.bulk_create(series_to_create, ignore_conflicts=True)
 
-                existing_by_tmdb = {s.tmdb_id: s for s in Series.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
-                existing_by_imdb = {s.imdb_id: s for s in Series.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
-
-                existing_by_name_year = {}
-                if name_year_pairs:
-                    for series in Series.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
-                        key = (series.name, series.year)
-                        if key in name_year_pairs:
-                            existing_by_name_year[key] = series
-
-                # Check each series against the bulk query results
-                series_actually_created = []
+                # Get the newly created series with their IDs
+                # We need to re-fetch them to get the primary keys
                 for series in series_to_create:
-                    existing = None
-                    if series.tmdb_id and series.tmdb_id in existing_by_tmdb:
-                        existing = existing_by_tmdb[series.tmdb_id]
-                    elif series.imdb_id and series.imdb_id in existing_by_imdb:
-                        existing = existing_by_imdb[series.imdb_id]
-                    elif not series.tmdb_id and not series.imdb_id:
-                        existing = existing_by_name_year.get((series.name, series.year))
-
-                    if existing:
-                        created_series[id(series)] = existing
+                    # Find the series by its unique identifiers
+                    if series.tmdb_id:
+                        db_series = Series.objects.filter(tmdb_id=series.tmdb_id).first()
+                    elif series.imdb_id:
+                        db_series = Series.objects.filter(imdb_id=series.imdb_id).first()
                     else:
-                        series_actually_created.append(series)
-                        created_series[id(series)] = series
+                        db_series = Series.objects.filter(
+                            name=series.name,
+                            year=series.year,
+                            tmdb_id__isnull=True,
+                            imdb_id__isnull=True
+                        ).first()
 
-                # Bulk create only series that don't exist
-                if series_actually_created:
-                    Series.objects.bulk_create(series_actually_created)
+                    if db_series:
+                        created_series[id(series)] = db_series
 
             # Update existing series
             if series_to_update:
@@ -1065,16 +980,12 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                         series.logo = series._logo_to_update
                         series.save(update_fields=['logo'])
 
-            # Update relations to reference the correct series objects (with PKs)
+            # Update relations to reference the correct series objects
             for relation in relations_to_create:
                 if id(relation.series) in created_series:
                     relation.series = created_series[id(relation.series)]
 
-            for relation in relations_to_update:
-                if id(relation.series) in created_series:
-                    relation.series = created_series[id(relation.series)]
-
-            # All series now have PKs, safe to bulk create/update relations
+            # Handle relations
             if relations_to_create:
                 M3USeriesRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
@@ -1293,15 +1204,20 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 else:
                     episodes_data = {}
 
-        # Fetch the series relation once — used both to pass into batch_process_episodes
-        # (so episode relations get the FK set) and to update metadata afterwards.
-        series_relation = M3USeriesRelation.objects.filter(
-            m3u_account=account,
-            external_series_id=external_series_id
-        ).first()
+        # Clear existing episodes for this account to handle deletions
+        Episode.objects.filter(
+            series=series,
+            m3u_relations__m3u_account=account
+        ).delete()
 
         # Process all episodes in batch
-        batch_process_episodes(account, series, episodes_data, series_relation=series_relation)
+        batch_process_episodes(account, series, episodes_data)
+
+        # Update the series relation to mark episodes as fetched
+        series_relation = M3USeriesRelation.objects.filter(
+            series=series,
+            m3u_account=account
+        ).first()
 
         if series_relation:
             custom_props = series_relation.custom_properties or {}
@@ -1315,18 +1231,13 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
         logger.error(f"Error refreshing episodes for series {series.name}: {str(e)}")
 
 
-def batch_process_episodes(account, series, episodes_data, scan_start_time=None, series_relation=None):
+def batch_process_episodes(account, series, episodes_data, scan_start_time=None):
     """Process episodes in batches for better performance.
 
     Note: Multiple streams can represent the same episode (e.g., different languages
     or qualities). Each stream has a unique stream_id, but they share the same
     season/episode number. We create one Episode record per (series, season, episode)
     and multiple M3UEpisodeRelation records pointing to it.
-
-    series_relation, when provided, is stored as a FK on each M3UEpisodeRelation so
-    that CASCADE correctly removes episode relations when their parent series relation
-    is deleted, and so that stale-stream cleanup is scoped precisely to relations that
-    came from this specific provider query.
     """
     if not episodes_data:
         return
@@ -1480,11 +1391,10 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 # Update existing relation
                 relation = existing_relations[episode_id]
                 relation.episode = episode
-                relation.series_relation = series_relation
                 relation.container_extension = episode_data.get('container_extension', 'mp4')
                 relation.custom_properties = {
                     'info': episode_data,
-                    'season_number': season_number,
+                    'season_number': season_number
                 }
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
@@ -1493,12 +1403,11 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 relation = M3UEpisodeRelation(
                     m3u_account=account,
                     episode=episode,
-                    series_relation=series_relation,
                     stream_id=episode_id,
                     container_extension=episode_data.get('container_extension', 'mp4'),
                     custom_properties={
                         'info': episode_data,
-                        'season_number': season_number,
+                        'season_number': season_number
                     },
                     last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
                 )
@@ -1561,27 +1470,8 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
         # Update existing episode relations
         if relations_to_update:
             M3UEpisodeRelation.objects.bulk_update(relations_to_update, [
-                'episode', 'series_relation', 'container_extension', 'custom_properties', 'last_seen'
+                'episode', 'container_extension', 'custom_properties', 'last_seen'
             ])
-
-        # Delete relations for streams no longer returned by the provider.
-        # Scope to this series_relation FK (post-migration rows) plus any legacy NULL rows
-        # for the same account+series (pre-migration rows whose stream is now gone — the
-        # update path only backfills the FK for streams still present in the response).
-        # Falls back to account+series scope when series_relation is None (shouldn't occur).
-        if series_relation is not None:
-            stale_qs = M3UEpisodeRelation.objects.filter(
-                Q(series_relation=series_relation) |
-                Q(series_relation__isnull=True, m3u_account=account, episode__series=series)
-            )
-        else:
-            stale_qs = M3UEpisodeRelation.objects.filter(
-                m3u_account=account,
-                episode__series=series
-            )
-        removed_count = stale_qs.exclude(stream_id__in=episode_ids).delete()[0]
-        if removed_count:
-            logger.info(f"Removed {removed_count} episode relations no longer present in provider for series {series.name}")
 
     logger.info(f"Batch processed episodes: {len(episodes_to_create)} new, {len(episodes_to_update)} updated, "
                 f"{len(relations_to_create)} new relations, {len(relations_to_update)} updated relations")
@@ -1667,11 +1557,15 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=
     stale_movie_count = stale_movie_relations.count()
     stale_movie_relations.delete()
 
-    # Clean up stale series relations.
-    # Episode relations are removed via CASCADE on the series_relation FK.
+    # Clean up stale series relations
     stale_series_relations = M3USeriesRelation.objects.filter(**base_filters)
     stale_series_count = stale_series_relations.count()
     stale_series_relations.delete()
+
+    # Clean up stale episode relations
+    stale_episode_relations = M3UEpisodeRelation.objects.filter(**base_filters)
+    stale_episode_count = stale_episode_relations.count()
+    stale_episode_relations.delete()
 
     # Clean up movies with no relations (orphaned)
     # Safe to delete even during account-specific cleanup because if ANY account
@@ -1680,33 +1574,20 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=
     orphaned_movie_count = orphaned_movies.count()
     if orphaned_movie_count > 0:
         logger.info(f"Deleting {orphaned_movie_count} orphaned movies with no M3U relations")
-        try:
-            orphaned_movies.delete()
-        except IntegrityError:
-            # A concurrent refresh task created a new relation for one of these movies
-            # between our query and the DELETE. Skip and let the next cleanup run handle it.
-            logger.warning(
-                "Skipped some orphaned movie deletions due to concurrent modifications; "
-                "they will be retried on the next cleanup run."
-            )
-            orphaned_movie_count = 0
+        orphaned_movies.delete()
 
     # Clean up series with no relations (orphaned)
     orphaned_series = Series.objects.filter(m3u_relations__isnull=True)
     orphaned_series_count = orphaned_series.count()
     if orphaned_series_count > 0:
         logger.info(f"Deleting {orphaned_series_count} orphaned series with no M3U relations")
-        try:
-            orphaned_series.delete()
-        except IntegrityError:
-            logger.warning(
-                "Skipped some orphaned series deletions due to concurrent modifications; "
-                "they will be retried on the next cleanup run."
-            )
-            orphaned_series_count = 0
+        orphaned_series.delete()
+
+    # Episodes will be cleaned up via CASCADE when series are deleted
 
     result = (f"Cleaned up {stale_movie_count} stale movie relations, "
               f"{stale_series_count} stale series relations, "
+              f"{stale_episode_count} stale episode relations, "
               f"{orphaned_movie_count} orphaned movies, and "
               f"{orphaned_series_count} orphaned series")
 
@@ -2191,25 +2072,26 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                             movie.imdb_id = imdb_id_to_set
                             updated = True
                             logger.debug(f"Set imdb_id {imdb_id_to_set} on movie {movie.id}")
+                # Only update trailer if we have a non-empty value and either no existing value or existing value is empty
                 if should_update_field(custom_props.get('youtube_trailer'), info.get('trailer')):
                     custom_props['youtube_trailer'] = extract_string_from_array_or_string(info.get('trailer'))
                     updated = True
                 if should_update_field(custom_props.get('youtube_trailer'), info.get('youtube_trailer')):
                     custom_props['youtube_trailer'] = extract_string_from_array_or_string(info.get('youtube_trailer'))
                     updated = True
+                # Only update backdrop_path if we have a non-empty value and either no existing value or existing value is empty
                 if should_update_field(custom_props.get('backdrop_path'), info.get('backdrop_path')):
                     backdrop_url = extract_string_from_array_or_string(info.get('backdrop_path'))
                     custom_props['backdrop_path'] = [backdrop_url] if backdrop_url else None
                     updated = True
-                for actors_key in ('actors', 'cast'):
-                    actors_raw = info.get(actors_key)
-                    if should_update_field(custom_props.get('actors'), actors_raw):
-                        if isinstance(actors_raw, list):
-                            custom_props['actors'] = ', '.join(s.strip() for s in actors_raw if s and str(s).strip()) or None
-                        else:
-                            custom_props['actors'] = extract_string_from_array_or_string(actors_raw)
-                        updated = True
-                        break
+                # Only update actors if we have a non-empty value and either no existing value or existing value is empty
+                if should_update_field(custom_props.get('actors'), info.get('actors')):
+                    custom_props['actors'] = extract_string_from_array_or_string(info.get('actors'))
+                    updated = True
+                if should_update_field(custom_props.get('actors'), info.get('cast')):
+                    custom_props['actors'] = extract_string_from_array_or_string(info.get('cast'))
+                    updated = True
+                # Only update director if we have a non-empty value and either no existing value or existing value is empty
                 if should_update_field(custom_props.get('director'), info.get('director')):
                     custom_props['director'] = extract_string_from_array_or_string(info.get('director'))
                     updated = True
@@ -2256,3 +2138,33 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
     except Exception as e:
         logger.error(f"Error refreshing advanced movie data for relation {m3u_movie_relation_id}: {str(e)}")
         return f"Error: {str(e)}"
+
+
+def validate_logo_reference(obj, obj_type="object"):
+    """
+    Validate that a VOD logo reference exists in the database.
+    If not, set it to None to prevent foreign key constraint violations.
+
+    Args:
+        obj: Object with a logo attribute
+        obj_type: String description of the object type for logging
+
+    Returns:
+        bool: True if logo was valid or None, False if logo was invalid and cleared
+    """
+    if not hasattr(obj, 'logo') or not obj.logo:
+        return True
+
+    if not obj.logo.pk:
+        # Logo doesn't have a primary key, so it's not saved
+        obj.logo = None
+        return False
+
+    try:
+        # Verify the logo exists in the database
+        VODLogo.objects.get(pk=obj.logo.pk)
+        return True
+    except VODLogo.DoesNotExist:
+        logger.warning(f"VOD Logo with ID {obj.logo.pk} does not exist in database for {obj_type} '{getattr(obj, 'name', 'Unknown')}', setting to None")
+        obj.logo = None
+        return False

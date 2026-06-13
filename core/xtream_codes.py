@@ -43,22 +43,18 @@ class Client:
         self.server_info = None
 
     def _normalize_url(self, url):
-        """Normalize server URL: strip XC API endpoints and query params, preserve base path."""
+        """Normalize server URL by removing trailing slashes and paths"""
         if not url:
             raise ValueError("Server URL cannot be empty")
 
-        from urllib.parse import urlparse, urlunparse
-
-        parsed = urlparse(url.strip())
-        path = parsed.path.rstrip('/')
-
-        # XC API endpoints are always .php files; legitimate base paths never are.
-        # Stripping the trailing segment when it ends in .php handles any pasted API URL.
-        last_segment = path.rsplit('/', 1)[-1]
-        if last_segment.endswith('.php'):
-            path = path[:-(len(last_segment) + 1)] if '/' in path else ''
-
-        return urlunparse((parsed.scheme, parsed.netloc, path, '', '', ''))
+        url = url.rstrip('/')
+        # Remove any path after domain - we'll construct proper API URLs
+        # Split by protocol first to preserve it
+        if '://' in url:
+            protocol, rest = url.split('://', 1)
+            domain = rest.split('/', 1)[0]
+            return f"{protocol}://{domain}"
+        return url
 
     def _make_request(self, endpoint, params=None):
         """Make request with detailed error handling"""
@@ -66,7 +62,7 @@ class Client:
             url = f"{self.server_url}/{endpoint}"
             logger.debug(f"XC API Request: {url} with params: {params}")
 
-            response = self.session.get(url, params=params, timeout=60)
+            response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
 
             # Check if response is empty

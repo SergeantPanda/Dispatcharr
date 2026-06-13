@@ -1,13 +1,10 @@
 // Modal.js
 import React from 'react';
-import { Alert, Button, Flex, Modal, TextInput } from '@mantine/core';
+import API from '../../api';
+import { Flex, TextInput, Button, Modal, Alert } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { isNotEmpty, useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
-import { showNotification } from '../../utils/notificationUtils.js';
-import {
-  addChannelGroup,
-  updateChannelGroup,
-} from '../../utils/forms/ChannelGroupUtils.js';
 
 const ChannelGroup = ({ channelGroup = null, isOpen, onClose }) => {
   const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
@@ -29,7 +26,7 @@ const ChannelGroup = ({ channelGroup = null, isOpen, onClose }) => {
   const onSubmit = async () => {
     // Prevent submission if editing is not allowed
     if (channelGroup && !canEdit) {
-      showNotification({
+      notifications.show({
         title: 'Error',
         message: 'Cannot edit group with M3U account associations',
         color: 'red',
@@ -38,9 +35,16 @@ const ChannelGroup = ({ channelGroup = null, isOpen, onClose }) => {
     }
 
     const values = form.getValues();
-    const newGroup = channelGroup
-      ? await updateChannelGroup(channelGroup, values)
-      : await addChannelGroup(values);
+    let newGroup;
+
+    if (channelGroup) {
+      newGroup = await API.updateChannelGroup({
+        id: channelGroup.id,
+        ...values,
+      });
+    } else {
+      newGroup = await API.addChannelGroup(values);
+    }
 
     form.reset();
     onClose(newGroup); // Pass the new/updated group back to parent

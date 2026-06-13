@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import useAuthStore from '../../store/auth';
-import useSettingsStore from '../../store/settings';
+import API from '../../api';
 import {
   Paper,
   Title,
@@ -19,21 +19,19 @@ import {
   Checkbox,
 } from '@mantine/core';
 import logo from '../../assets/logo.png';
-import { showNotification } from '../../utils/notificationUtils.js';
 
 const LoginForm = () => {
   const login = useAuthStore((s) => s.login);
   const logout = useAuthStore((s) => s.logout);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const initData = useAuthStore((s) => s.initData);
-  const fetchVersion = useSettingsStore((s) => s.fetchVersion);
-  const storedVersion = useSettingsStore((s) => s.version);
 
   const navigate = useNavigate(); // Hook to navigate to other routes
   const [formData, setFormData] = useState({ username: '', password: '' });
   const [rememberMe, setRememberMe] = useState(false);
   const [savePassword, setSavePassword] = useState(false);
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
+  const [version, setVersion] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
 
   // Simple base64 encoding/decoding for localStorage
@@ -57,9 +55,11 @@ const LoginForm = () => {
   };
 
   useEffect(() => {
-    // Fetch version info using the settings store (will skip if already loaded)
-    fetchVersion();
-  }, [fetchVersion]);
+    // Fetch version info
+    API.getVersion().then((data) => {
+      setVersion(data?.version);
+    });
+  }, []);
 
   useEffect(() => {
     // Load saved username if it exists
@@ -131,18 +131,7 @@ const LoginForm = () => {
       // Navigation will happen automatically via the useEffect or route protection
     } catch (e) {
       console.log(`Failed to login: ${e}`);
-      if (e?.message === 'Unauthorized') {
-        showNotification({
-          title: 'Web UI Access Denied',
-          message:
-            'This account is a Streamer account and cannot log into the web UI. ' +
-            'Your M3U and stream URLs still work. Contact an admin to upgrade your account level.',
-          color: 'red',
-          autoClose: 10000,
-        });
-      }
       await logout();
-    } finally {
       setIsLoading(false);
     }
   };
@@ -245,8 +234,8 @@ const LoginForm = () => {
                     lineHeight: '1.2',
                   }}
                 >
-                  ⚠ Password will be stored locally without encryption. Only use
-                  on trusted devices.
+                  ⚠ Password will be stored locally without encryption. Only
+                  use on trusted devices.
                 </Text>
               )}
             </div>
@@ -263,7 +252,7 @@ const LoginForm = () => {
           </Stack>
         </form>
 
-        {storedVersion.version && (
+        {version && (
           <Text
             size="xs"
             color="dimmed"
@@ -273,7 +262,7 @@ const LoginForm = () => {
               right: 30,
             }}
           >
-            v{storedVersion.version}
+            v{version}
           </Text>
         )}
       </Paper>

@@ -16,24 +16,8 @@ import { Box, Button, Stack, Alert, Group } from '@mantine/core';
 import API from './api';
 import useSettingsStore from './store/settings';
 import useAuthStore from './store/auth';
-import useUsersStore from './store/users';
 
 export const WebsocketContext = createContext([false, () => {}, null]);
-
-// Debounce: coalesces rapid recording WS events into a single fetchRecordings()
-// call (400 ms window) to prevent redundant re-renders in the TV Guide.
-let _recordingFetchTimer = null;
-function scheduleRecordingFetch() {
-  if (_recordingFetchTimer) clearTimeout(_recordingFetchTimer);
-  _recordingFetchTimer = setTimeout(async () => {
-    _recordingFetchTimer = null;
-    try {
-      await useChannelsStore.getState().fetchRecordings();
-    } catch (e) {
-      console.warn('Failed to refresh recordings:', e);
-    }
-  }, 400);
-}
 
 export const WebsocketProvider = ({ children }) => {
   const [isReady, setIsReady] = useState(false);
@@ -50,6 +34,7 @@ export const WebsocketProvider = ({ children }) => {
 
   const epgs = useEPGsStore((s) => s.epgs);
   const updateEPG = useEPGsStore((s) => s.updateEPG);
+  const updateEPGProgress = useEPGsStore((s) => s.updateEPGProgress);
 
   const updatePlaylist = usePlaylistsStore((s) => s.updatePlaylist);
 
@@ -208,26 +193,21 @@ export const WebsocketProvider = ({ children }) => {
                   loading: false,
                   autoClose: 4000,
                 });
-                scheduleRecordingFetch();
+                try {
+                  await useChannelsStore.getState().fetchRecordings();
+                } catch {}
               } else if (status === 'skipped') {
-                const reasonMap = {
-                  no_commercials_detected:
-                    'No commercials were detected in this recording',
-                  no_commercials:
-                    'No commercials were detected in this recording',
-                };
                 notifications.update({
                   id,
                   title: 'No commercials to remove',
-                  message:
-                    reasonMap[parsedEvent.data.reason] ||
-                    parsedEvent.data.reason ||
-                    '',
+                  message: parsedEvent.data.reason || '',
                   color: 'teal',
                   loading: false,
                   autoClose: 3000,
                 });
-                scheduleRecordingFetch();
+                try {
+                  await useChannelsStore.getState().fetchRecordings();
+                } catch {}
               } else if (status === 'error') {
                 notifications.update({
                   id,
@@ -237,7 +217,9 @@ export const WebsocketProvider = ({ children }) => {
                   loading: false,
                   autoClose: 6000,
                 });
-                scheduleRecordingFetch();
+                try {
+                  await useChannelsStore.getState().fetchRecordings();
+                } catch {}
               }
               break;
             }
@@ -316,36 +298,6 @@ export const WebsocketProvider = ({ children }) => {
               setChannelStats(JSON.parse(parsedEvent.data.stats));
               break;
 
-            case 'vod_stats':
-              setVodStats(JSON.parse(parsedEvent.data.stats));
-              break;
-
-            case 'vod_started':
-            case 'vod_stopped': {
-              const { content_name, client_ip, user_id } = parsedEvent.data;
-              const isStart = parsedEvent.data.type === 'vod_started';
-              let identity = client_ip || 'unknown';
-              if (user_id && user_id !== '0') {
-                const allUsers = useUsersStore.getState().users;
-                const matched = allUsers.find(
-                  (u) => String(u.id) === String(user_id)
-                );
-                if (matched?.username)
-                  identity = `${matched.username} (${client_ip})`;
-              }
-              notifications.show({
-                title: isStart ? 'VOD started' : 'VOD ended',
-                message: (
-                  <>
-                    <div>{content_name}</div>
-                    <div style={{ marginTop: 2 }}>{identity}</div>
-                  </>
-                ),
-                color: 'blue.5',
-              });
-              break;
-            }
-
             case 'epg_channels':
               notifications.show({
                 message: 'EPG channels updated!',
@@ -366,28 +318,19 @@ export const WebsocketProvider = ({ children }) => {
               fetchEPGData();
               break;
 
-            case 'single_channel_epg_match': {
-              const matchResult = parsedEvent.data;
-              if (matchResult.channel) {
-                useChannelsStore.getState().updateChannel(matchResult.channel);
-              }
-              window.dispatchEvent(
-                new CustomEvent('single-channel-epg-match', {
-                  detail: matchResult,
-                })
-              );
-              break;
-            }
-
             case 'epg_match':
               notifications.show({
                 message: parsedEvent.data.message || 'EPG match is complete!',
                 color: 'green.5',
               });
 
-              // Celery already applied assignments server-side; refresh local state.
-              fetchEPGData();
-              API.requeryChannels();
+              // Check if we have associations data and use the more efficient batch API
+              if (
+                parsedEvent.data.associations &&
+                parsedEvent.data.associations.length > 0
+              ) {
+                API.batchSetEPG(parsedEvent.data.associations);
+              }
               break;
 
             case 'epg_matching_progress': {
@@ -481,7 +424,7 @@ export const WebsocketProvider = ({ children }) => {
                 // Refresh channels data and logos
                 try {
                   await API.requeryChannels();
-                  await useChannelsStore.getState().fetchChannelIds();
+                  await useChannelsStore.getState().fetchChannels();
 
                   // Get updated channel data and extract logo IDs to load
                   const channels = useChannelsStore.getState().channels;
@@ -546,7 +489,7 @@ export const WebsocketProvider = ({ children }) => {
                 // Refresh channels data
                 try {
                   await API.requeryChannels();
-                  await useChannelsStore.getState().fetchChannelIds();
+                  await useChannelsStore.getState().fetchChannels();
                 } catch (e) {
                   console.warn(
                     'Failed to refresh channels after name setting:',
@@ -565,11 +508,19 @@ export const WebsocketProvider = ({ children }) => {
               break;
 
             case 'recording_updated':
-              scheduleRecordingFetch();
+              try {
+                await useChannelsStore.getState().fetchRecordings();
+              } catch (e) {
+                console.warn('Failed to refresh recordings on update:', e);
+              }
               break;
 
             case 'recordings_refreshed':
-              scheduleRecordingFetch();
+              try {
+                await useChannelsStore.getState().fetchRecordings();
+              } catch (e) {
+                console.warn('Failed to refresh recordings on refreshed:', e);
+              }
               break;
 
             case 'recording_started':
@@ -577,7 +528,11 @@ export const WebsocketProvider = ({ children }) => {
                 title: 'Recording started!',
                 message: `Started recording channel ${parsedEvent.data.channel}`,
               });
-              scheduleRecordingFetch();
+              try {
+                await useChannelsStore.getState().fetchRecordings();
+              } catch (e) {
+                console.warn('Failed to refresh recordings on start:', e);
+              }
               break;
 
             case 'recording_ended':
@@ -585,40 +540,10 @@ export const WebsocketProvider = ({ children }) => {
                 title: 'Recording finished!',
                 message: `Stopped recording channel ${parsedEvent.data.channel}`,
               });
-              scheduleRecordingFetch();
-              break;
-
-            case 'recording_stopped':
-              notifications.show({
-                title: 'Recording stopped',
-                message: `Recording stopped early for ${parsedEvent.data.channel || 'channel'}. Partial content has been saved.`,
-                color: 'yellow',
-              });
-              scheduleRecordingFetch();
-              break;
-
-            case 'recording_extended':
-              scheduleRecordingFetch();
-              break;
-
-            case 'recording_cancelled':
-              notifications.show({
-                title: parsedEvent.data.was_in_progress
-                  ? 'Recording cancelled'
-                  : 'Recording deleted',
-                message: parsedEvent.data.was_in_progress
-                  ? 'Recording cancelled and content removed.'
-                  : 'Recording deleted.',
-                color: 'red',
-              });
-              // Surgical removal by ID avoids a full fetchRecordings() re-render.
-              // Fall back to a full refresh if the ID is missing (e.g. older server).
-              if (parsedEvent.data.recording_id != null) {
-                useChannelsStore
-                  .getState()
-                  .removeRecording(parsedEvent.data.recording_id);
-              } else {
-                scheduleRecordingFetch();
+              try {
+                await useChannelsStore.getState().fetchRecordings();
+              } catch (e) {
+                console.warn('Failed to refresh recordings on end:', e);
               }
               break;
 
@@ -643,91 +568,81 @@ export const WebsocketProvider = ({ children }) => {
               }
               break;
 
-            case 'epg_refresh': {
-              const sourceId =
-                parsedEvent.data.source || parsedEvent.data.account;
-              if (!sourceId) break;
+            case 'epg_refresh':
+              // If we have source/account info, check if EPG exists before processing
+              if (parsedEvent.data.source || parsedEvent.data.account) {
+                const sourceId =
+                  parsedEvent.data.source || parsedEvent.data.account;
+                const epg = epgs[sourceId];
 
-              // Read from the store directly. connectWebSocket closes over a stale
-              // epgs snapshot, so a newly created source is missed and the old early-
-              // return path never reached fetchEPGData on parsing_channels completion.
-              let {
-                epgs: epgsState,
-                updateEPG,
-                updateEPGProgress,
-                fetchEPGs,
-                fetchEPGData,
-              } = useEPGsStore.getState();
-
-              if (!epgsState[sourceId]) {
-                try {
-                  await fetchEPGs();
-                } catch (e) {
-                  console.warn(
-                    'Failed to refresh EPG sources for progress update:',
-                    e
+                // Only update progress if the EPG still exists in the store
+                // This prevents crashes when receiving updates for deleted EPGs
+                if (epg) {
+                  // Update the store with progress information
+                  updateEPGProgress(parsedEvent.data);
+                } else {
+                  // EPG was deleted, ignore this update
+                  console.debug(
+                    `Ignoring EPG refresh update for deleted EPG ${sourceId}`
                   );
+                  break;
                 }
-                epgsState = useEPGsStore.getState().epgs;
-              }
 
-              updateEPGProgress(parsedEvent.data);
+                if (epg) {
+                  // Check for any indication of an error (either via status or error field)
+                  const hasError =
+                    parsedEvent.data.status === 'error' ||
+                    !!parsedEvent.data.error ||
+                    (parsedEvent.data.message &&
+                      parsedEvent.data.message.toLowerCase().includes('error'));
 
-              const epg = epgsState[sourceId];
-              if (!epg) break;
+                  if (hasError) {
+                    // Handle error state
+                    const errorMessage =
+                      parsedEvent.data.error ||
+                      parsedEvent.data.message ||
+                      'Unknown error occurred';
 
-              const hasError =
-                parsedEvent.data.status === 'error' ||
-                !!parsedEvent.data.error ||
-                (parsedEvent.data.message &&
-                  parsedEvent.data.message.toLowerCase().includes('error'));
+                    updateEPG({
+                      ...epg,
+                      status: 'error',
+                      last_message: errorMessage,
+                    });
 
-              if (hasError) {
-                const errorMessage =
-                  parsedEvent.data.error ||
-                  parsedEvent.data.message ||
-                  'Unknown error occurred';
+                    // Show notification for the error
+                    notifications.show({
+                      title: 'EPG Refresh Error',
+                      message: errorMessage,
+                      color: 'red.5',
+                    });
+                  }
+                  // Update status on completion only if no errors
+                  else if (parsedEvent.data.progress === 100) {
+                    updateEPG({
+                      ...epg,
+                      status: parsedEvent.data.status || 'success',
+                      last_message:
+                        parsedEvent.data.message || epg.last_message,
+                      // Use the timestamp from the backend if provided
+                      ...(parsedEvent.data.updated_at && {
+                        updated_at: parsedEvent.data.updated_at,
+                      }),
+                    });
 
-                updateEPG({
-                  ...epg,
-                  status: 'error',
-                  last_message: errorMessage,
-                });
+                    // Only show success notification if we've finished parsing programs and had no errors
+                    if (parsedEvent.data.action === 'parsing_programs') {
+                      notifications.show({
+                        title: 'EPG Processing Complete',
+                        message: 'EPG data has been updated successfully',
+                        color: 'green.5',
+                      });
 
-                notifications.show({
-                  title: 'EPG Refresh Error',
-                  message: errorMessage,
-                  color: 'red.5',
-                });
-              } else if (parsedEvent.data.progress === 100) {
-                updateEPG({
-                  ...epg,
-                  status: parsedEvent.data.status || 'success',
-                  last_message: parsedEvent.data.message || epg.last_message,
-                  ...(parsedEvent.data.updated_at && {
-                    updated_at: parsedEvent.data.updated_at,
-                  }),
-                });
-
-                if (parsedEvent.data.action === 'parsing_channels') {
-                  notifications.show({
-                    message: 'EPG channels updated!',
-                    color: 'green.5',
-                  });
-
-                  await fetchEPGData();
-                } else if (parsedEvent.data.action === 'parsing_programs') {
-                  notifications.show({
-                    title: 'EPG Processing Complete',
-                    message: 'EPG data has been updated successfully',
-                    color: 'green.5',
-                  });
-
-                  await fetchEPGData();
+                      fetchEPGData();
+                    }
+                  }
                 }
               }
               break;
-            }
 
             case 'epg_sources_changed':
               // A plugin or backend process signaled that the EPG sources changed
@@ -785,17 +700,6 @@ export const WebsocketProvider = ({ children }) => {
                   withCloseButton: true, // Allow manual close
                   loading: false, // Remove loading indicator
                 });
-                // Requery streams and channels after rehash completes
-                try {
-                  await API.requeryChannels();
-                  await API.requeryStreams();
-                  await useChannelsStore.getState().fetchChannelIds();
-                } catch (error) {
-                  console.error(
-                    'Error refreshing channels/streams after rehash:',
-                    error
-                  );
-                }
               } else if (parsedEvent.data.action === 'blocked') {
                 // Handle blocked rehash attempt
                 notifications.show({
@@ -851,9 +755,7 @@ export const WebsocketProvider = ({ children }) => {
               // Refresh the channels table to show new channels
               try {
                 await API.requeryChannels();
-                await API.requeryStreams();
-                useChannelsStore.getState().fetchChannelIds();
-                await fetchChannelProfiles();
+                await useChannelsStore.getState().fetchChannels();
                 console.log('Channels refreshed after bulk creation');
               } catch (error) {
                 console.error(
@@ -930,65 +832,6 @@ export const WebsocketProvider = ({ children }) => {
               break;
             }
 
-            case 'system_notification': {
-              // Handle real-time system notifications (version updates, setting recommendations, etc.)
-              const notificationData = parsedEvent.data.notification;
-              if (notificationData) {
-                // Import and update the notifications store
-                const { default: useNotificationsStore } =
-                  await import('./store/notifications');
-                useNotificationsStore
-                  .getState()
-                  .addNotification(notificationData);
-
-                // Show a toast notification for high priority items
-                if (
-                  notificationData.priority === 'high' ||
-                  notificationData.priority === 'critical'
-                ) {
-                  const color =
-                    notificationData.notification_type === 'version_update'
-                      ? 'green'
-                      : notificationData.notification_type === 'warning'
-                        ? 'orange'
-                        : 'blue';
-
-                  notifications.show({
-                    title: notificationData.title,
-                    message: notificationData.message,
-                    color,
-                    autoClose: 10000,
-                  });
-                }
-              }
-              break;
-            }
-
-            case 'notification_dismissed': {
-              // Handle notification dismissed from another session
-              const { notification_key } = parsedEvent.data;
-              if (notification_key) {
-                const { default: useNotificationsStore } =
-                  await import('./store/notifications');
-                useNotificationsStore
-                  .getState()
-                  .dismissNotification(notification_key);
-              }
-              break;
-            }
-
-            case 'notifications_cleared': {
-              // Handle bulk notification clearing (e.g., when version is updated)
-              API.getNotifications();
-              break;
-            }
-
-            case 'ip_lookup_complete': {
-              const { type: _t, ...ipData } = parsedEvent.data;
-              useSettingsStore.getState().setEnvironmentFields(ipData);
-              break;
-            }
-
             default:
               console.error(
                 `Unknown websocket event type: ${parsedEvent.data?.type}`
@@ -1054,7 +897,6 @@ export const WebsocketProvider = ({ children }) => {
   }, [connectWebSocket, clearReconnectTimer, isAuthenticated, accessToken]);
 
   const setChannelStats = useChannelsStore((s) => s.setChannelStats);
-  const setVodStats = useChannelsStore((s) => s.setVodStats);
   const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
   const setRefreshProgress = usePlaylistsStore((s) => s.setRefreshProgress);
   const setProfilePreview = usePlaylistsStore((s) => s.setProfilePreview);

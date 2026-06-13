@@ -1,89 +1,30 @@
-# ==============================================================================
-# Stage 1: builder
-# Installs the Python toolchain + compilers, creates the virtual environment and
-# builds the legacy (CPU-baseline=none) NumPy wheel. None of these compilers end
-# up in the final image — only the artifacts below are copied forward.
-# ==============================================================================
-FROM lscr.io/linuxserver/ffmpeg:latest AS builder
+FROM lscr.io/linuxserver/ffmpeg:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
 ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-ENV UV_COMPILE_BYTECODE=1
-ENV UV_LINK_MODE=copy
 
-# --- Install Python 3.13 and build dependencies ---
+# --- Install Python 3.13 and system dependencies ---
 # Note: Hardware acceleration (VA-API, VDPAU, NVENC) already included in base ffmpeg image
 RUN apt-get update && apt-get install --no-install-recommends -y \
     ca-certificates software-properties-common gnupg2 curl wget \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
-    python3.13 python3.13-dev python3.13-venv libpython3.13 \
-    libpcre3 libpcre3-dev \
-    build-essential gcc g++ gfortran libopenblas-dev libopenblas0 ninja-build \
-    && rm -rf /var/lib/apt/lists/*
-
-# --- Install UV ---
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
-# --- Create Python virtual environment and install dependencies ---
-WORKDIR /tmp/build
-COPY pyproject.toml /tmp/build/
-COPY version.py /tmp/build/
-COPY README.md /tmp/build/
-RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev
-WORKDIR /
-
-# --- Build legacy NumPy wheel for old hardware (store for runtime switching) ---
-# build/pip are installed into the venv only long enough to produce the wheel,
-# then uninstalled so they are not carried into the final image's venv.
-RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build pip && \
-    cd /tmp && \
-    $UV_PROJECT_ENVIRONMENT/bin/python -m pip download --no-binary numpy --no-deps numpy && \
-    tar -xzf numpy-*.tar.gz && \
-    cd numpy-*/ && \
-    $UV_PROJECT_ENVIRONMENT/bin/python -m build --wheel -Csetup-args=-Dcpu-baseline="none" -Csetup-args=-Dcpu-dispatch="none" && \
-    mv dist/*.whl /opt/ && \
-    cd / && rm -rf /tmp/numpy-* /tmp/*.tar.gz /tmp/build && \
-    uv pip uninstall --python $UV_PROJECT_ENVIRONMENT/bin/python build pip
-
-# ==============================================================================
-# Stage 2: final runtime image
-# Same ffmpeg base, but installs only the runtime system libraries (no compilers)
-# and copies the prebuilt virtual environment + NumPy wheel from the builder.
-# ==============================================================================
-FROM lscr.io/linuxserver/ffmpeg:latest AS final
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
-ENV VIRTUAL_ENV=/dispatcharrpy
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-ENV UV_COMPILE_BYTECODE=1
-ENV UV_LINK_MODE=copy
-
-# --- Install runtime system dependencies (no build toolchain) ---
-# python3.13 + libpython3.13 back the copied venv; libpcre3 backs uWSGI;
-# libopenblas0 backs the legacy NumPy wheel; ca-certificates/gnupg2/curl/wget
-# and software-properties-common are kept for TLS and the AIO runtime apt step.
-RUN apt-get update && apt-get install --no-install-recommends -y \
-    ca-certificates software-properties-common gnupg2 curl wget \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install --no-install-recommends -y \
-    python3.13 python3.13-venv libpython3.13 \
-    libpcre3 libopenblas0 procps pciutils \
-    nginx comskip \
+    python3.13 python3.13-dev python3.13-venv \
+    python-is-python3 python3-pip \
+    libpcre3 libpcre3-dev libpq-dev procps \
+    build-essential gcc pciutils \
+    nginx streamlink comskip \
     vlc-bin vlc-plugin-base \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# --- Install UV (used at runtime to swap in the legacy NumPy wheel) ---
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# --- Create Python virtual environment ---
+RUN python3.13 -m venv $VIRTUAL_ENV && $VIRTUAL_ENV/bin/pip install --upgrade pip
 
-# --- Copy prebuilt virtual environment and legacy NumPy wheel from the builder ---
-COPY --from=builder /dispatcharrpy /dispatcharrpy
-COPY --from=builder /opt/numpy-*.whl /opt/
+# --- Install Python dependencies ---
+COPY requirements.txt /tmp/requirements.txt
+RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
 # --- Set up Redis 7.x ---
 RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg && \

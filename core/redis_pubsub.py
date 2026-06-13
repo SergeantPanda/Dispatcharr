@@ -201,6 +201,10 @@ class RedisPubSubManager:
 
                     channel = message.get('channel')
                     if channel:
+                        # Decode binary channel name if needed
+                        if isinstance(channel, bytes):
+                            channel = channel.decode('utf-8')
+
                         # Find and call the appropriate handler
                         handler = self.message_handlers.get(channel)
                         if handler:
