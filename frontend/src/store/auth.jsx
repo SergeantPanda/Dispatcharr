@@ -1,16 +1,14 @@
 import { create } from 'zustand';
+import api from '../api';
 import useSettingsStore from './settings';
 import useChannelsStore from './channels';
 import usePlaylistsStore from './playlists';
 import useEPGsStore from './epgs';
 import useStreamProfilesStore from './streamProfiles';
-import useOutputProfilesStore from './outputProfiles';
 import useUserAgentsStore from './userAgents';
-import useServerGroupsStore from './serverGroups';
 import useUsersStore from './users';
 import API from '../api';
 import { USER_LEVELS } from '../constants';
-import { DEFAULT_ADMIN_ORDER, DEFAULT_USER_ORDER } from '../config/navigation';
 
 const decodeToken = (token) => {
   if (!token) return null;
@@ -27,126 +25,49 @@ const isTokenExpired = (expirationTime) => {
 const useAuthStore = create((set, get) => ({
   isAuthenticated: false,
   isInitialized: false,
-  isInitializing: false,
   needsSuperuser: false,
   user: {
     username: '',
     email: '',
     user_level: '',
-    custom_properties: {},
   },
   isLoading: false,
   error: null,
 
   setUser: (user) => set({ user }),
 
-  updateUserPreferences: async (preferences) => {
-    const currentUser = get().user;
-
-    // Optimistic update
-    set({
-      user: {
-        ...currentUser,
-        custom_properties: {
-          ...currentUser.custom_properties,
-          ...preferences,
-        },
-      },
-    });
-
-    try {
-      // Send only the delta - backend merges with DB value authoritatively
-      const response = await API.updateMe({
-        custom_properties: preferences,
-      });
-      set({ user: response });
-      return response;
-    } catch (error) {
-      // Revert on failure
-      set({ user: currentUser });
-      throw error;
-    }
-  },
-
-  getNavOrder: () => {
-    const user = get().user;
-    return user?.custom_properties?.navOrder || null;
-  },
-
-  setNavOrder: async (navOrder) => {
-    return await get().updateUserPreferences({ navOrder });
-  },
-
-  getHiddenNav: () => {
-    const user = get().user;
-    const hiddenNav = user?.custom_properties?.hiddenNav || [];
-    // Filter out stale IDs that are no longer valid for this user's role
-    const isAdmin = user?.user_level >= USER_LEVELS.ADMIN;
-    const validIds = new Set(
-      isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER
-    );
-    return hiddenNav.filter((id) => validIds.has(id));
-  },
-
-  toggleNavVisibility: async (itemId) => {
-    const hiddenNav = get().getHiddenNav();
-    const newHiddenNav = hiddenNav.includes(itemId)
-      ? hiddenNav.filter((id) => id !== itemId)
-      : [...hiddenNav, itemId];
-    return await get().updateUserPreferences({ hiddenNav: newHiddenNav });
-  },
-
   initData: async () => {
-    // Prevent multiple simultaneous initData calls
-    if (get().isInitializing || get().isInitialized) {
-      return;
+    const user = await API.me();
+    if (user.user_level <= USER_LEVELS.STREAMER) {
+      throw new Error('Unauthorized');
     }
 
-    set({ isInitializing: true });
+    set({ user, isAuthenticated: true });
+
+    // Ensure settings are loaded first
+    await useSettingsStore.getState().fetchSettings();
 
     try {
-      const user = await API.me();
-      if (user.user_level <= USER_LEVELS.STREAMER) {
-        throw new Error('Unauthorized');
-      }
-
-      set({ user });
-
-      // Ensure settings are loaded first
-      await useSettingsStore.getState().fetchSettings();
-
-      // Fetch essential data needed for initial render
+      // Only after settings are loaded, fetch the essential data
       await Promise.all([
+        useChannelsStore.getState().fetchChannels(),
         useChannelsStore.getState().fetchChannelGroups(),
         useChannelsStore.getState().fetchChannelProfiles(),
         usePlaylistsStore.getState().fetchPlaylists(),
         useEPGsStore.getState().fetchEPGs(),
         useEPGsStore.getState().fetchEPGData(),
         useStreamProfilesStore.getState().fetchProfiles(),
-        useOutputProfilesStore.getState().fetchProfiles(),
         useUserAgentsStore.getState().fetchUserAgents(),
-        useServerGroupsStore.getState().fetchServerGroups(),
-        useChannelsStore.getState().fetchChannelIds(),
       ]);
 
       if (user.user_level >= USER_LEVELS.ADMIN) {
         await Promise.all([useUsersStore.getState().fetchUsers()]);
       }
 
-      // Only set isAuthenticated and isInitialized AFTER essential data is loaded
-      // This prevents routes from rendering before data is ready
-      set({
-        isAuthenticated: true,
-        isInitialized: true,
-        isInitializing: false,
-      });
-
       // Note: Logos are loaded after the Channels page tables finish loading
       // This is handled by the tables themselves signaling completion
     } catch (error) {
       console.error('Error initializing data:', error);
-      set({ isInitializing: false });
-      throw error;
     }
   },
 
@@ -161,16 +82,20 @@ const useAuthStore = create((set, get) => ({
 
   getToken: async () => {
     const tokenExpiration = localStorage.getItem('tokenExpiration');
+    let accessToken = null;
+    if (isTokenExpired(tokenExpiration)) {
+      accessToken = await get().getRefreshToken();
+    } else {
+      accessToken = localStorage.getItem('accessToken');
+    }
 
-    return isTokenExpired(tokenExpiration)
-      ? await get().getRefreshToken()
-      : localStorage.getItem('accessToken');
+    return accessToken;
   },
 
   // Action to login
   login: async ({ username, password }) => {
     try {
-      const response = await API.login(username, password);
+      const response = await api.login(username, password);
       if (response.access) {
         const expiration = decodeToken(response.access);
         set({
@@ -193,25 +118,26 @@ const useAuthStore = create((set, get) => ({
   // Action to refresh the token
   getRefreshToken: async () => {
     const refreshToken = localStorage.getItem('refreshToken');
-    if (!refreshToken) return false;
+    if (!refreshToken) return false; // Add explicit return here
 
     try {
-      const data = await API.refreshToken(refreshToken);
-      if (data?.access) {
+      const data = await api.refreshToken(refreshToken);
+      if (data && data.access) {
         set({
           accessToken: data.access,
           tokenExpiration: decodeToken(data.access),
+          isAuthenticated: true,
         });
         localStorage.setItem('accessToken', data.access);
         localStorage.setItem('tokenExpiration', decodeToken(data.access));
 
         return data.access;
       }
-      return false;
+      return false; // Add explicit return for when data.access is not available
     } catch (error) {
       console.error('Token refresh failed:', error);
       await get().logout();
-      return false;
+      return false; // Add explicit return after error
     }
   },
 
@@ -230,8 +156,6 @@ const useAuthStore = create((set, get) => ({
       refreshToken: null,
       tokenExpiration: null,
       isAuthenticated: false,
-      isInitialized: false,
-      isInitializing: false,
       user: null,
     });
     localStorage.removeItem('accessToken');

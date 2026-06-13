@@ -2,7 +2,6 @@ import React, {
   Suspense,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -10,7 +9,6 @@ import {
   ActionIcon,
   Alert,
   AppShellMain,
-  Badge,
   Box,
   Button,
   Divider,
@@ -18,53 +16,30 @@ import {
   Group,
   Loader,
   Modal,
-  Select,
   SimpleGrid,
   Stack,
   Switch,
   Text,
-  TextInput,
 } from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
-import {
-  showNotification,
-  updateNotification,
-} from '../utils/notificationUtils.js';
+import { showNotification, updateNotification, } from '../utils/notificationUtils.js';
 import { usePluginStore } from '../store/plugins.jsx';
 import {
   deletePluginByKey,
   importPlugin,
-  reloadPlugins,
   runPluginAction,
   setPluginEnabled,
   updatePluginSettings,
 } from '../utils/pages/PluginsUtils.js';
-import { RefreshCcw, Search } from 'lucide-react';
+import { RefreshCcw } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
-import {
-  PluginRestartWarning,
-  PluginSecurityWarning,
-  PluginSupportDisclaimer,
-} from '../components/PluginWarnings.jsx';
-const PluginCard = React.lazy(
-  () => import('../components/cards/PluginCard.jsx')
-);
-
-const FILTER_OPTIONS = [
-  { value: 'all', label: 'All Plugins' },
-  { value: 'enabled', label: 'Enabled' },
-  { value: 'disabled', label: 'Disabled' },
-  { value: 'update', label: 'Update Available' },
-  { value: 'managed', label: 'Managed' },
-  { value: 'unmanaged', label: 'Unmanaged' },
-];
+const PluginCard = React.lazy(() =>
+  import('../components/cards/PluginCard.jsx'));
 
 const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
   const plugins = usePluginStore((state) => state.plugins);
   const loading = usePluginStore((state) => state.loading);
   const hasFetchedRef = useRef(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterStatus, setFilterStatus] = useState('all');
 
   useEffect(() => {
     if (!hasFetchedRef.current) {
@@ -73,53 +48,15 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
     }
   }, []);
 
-  const filteredPlugins = useMemo(() => {
-    let result = plugins;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (p) =>
-          p.name?.toLowerCase().includes(q) ||
-          p.description?.toLowerCase().includes(q) ||
-          p.author?.toLowerCase().includes(q)
-      );
-    }
-    switch (filterStatus) {
-      case 'enabled':
-        result = result.filter((p) => p.enabled);
-        break;
-      case 'disabled':
-        result = result.filter((p) => !p.enabled);
-        break;
-      case 'update':
-        result = result.filter((p) => p.update_available);
-        break;
-      case 'managed':
-        result = result.filter((p) => p.is_managed);
-        break;
-      case 'unmanaged':
-        result = result.filter((p) => !p.is_managed);
-        break;
-    }
-    result.sort((a, b) => {
-      if (a.update_available && !b.update_available) return -1;
-      if (!a.update_available && b.update_available) return 1;
-      return (a.name || '').localeCompare(b.name || '');
-    });
-    return result;
-  }, [plugins, searchQuery, filterStatus]);
-
   const handleTogglePluginEnabled = async (key, next) => {
     const resp = await setPluginEnabled(key, next);
 
     if (resp?.success) {
-      const updates = resp?.plugin || {
+      usePluginStore.getState().updatePlugin(key, {
         enabled: next,
         ever_enabled: resp?.ever_enabled,
-      };
-      usePluginStore.getState().updatePlugin(key, updates);
+      });
     }
-    return resp;
   };
 
   if (loading && plugins.length === 0) {
@@ -128,33 +65,15 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
 
   return (
     <>
-      <Group gap="sm" mb="md" wrap="wrap">
-        <TextInput
-          placeholder="Search plugins…"
-          leftSection={<Search size={14} />}
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.currentTarget.value)}
-          style={{ flex: 1, minWidth: 180, maxWidth: 300 }}
-          size="xs"
-        />
-        <Select
-          data={FILTER_OPTIONS}
-          value={filterStatus}
-          onChange={(v) => setFilterStatus(v || 'all')}
-          size="xs"
-          allowDeselect={false}
-          style={{ width: 170 }}
-        />
-      </Group>
-
-      {filteredPlugins.length > 0 && (
+      {plugins.length > 0 &&
         <SimpleGrid
-          cols={{ base: 1, md: 2, xl: 3 }}
+          cols={2}
           spacing="md"
+          breakpoints={[{ maxWidth: '48em', cols: 1 }]}
         >
           <ErrorBoundary>
             <Suspense fallback={<Loader />}>
-              {filteredPlugins.map((p) => (
+              {plugins.map((p) => (
                 <PluginCard
                   key={p.key}
                   plugin={p}
@@ -169,19 +88,13 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
             </Suspense>
           </ErrorBoundary>
         </SimpleGrid>
-      )}
-
-      {filteredPlugins.length === 0 && plugins.length > 0 && (
-        <Box>
-          <Text c="dimmed">No plugins match your search or filter.</Text>
-        </Box>
-      )}
+      }
 
       {plugins.length === 0 && (
         <Box>
           <Text c="dimmed">
-            No plugins found. Drop a plugin into <code>/data/plugins</code> and
-            reload.
+            No plugins found. Drop a plugin into <code>/data/plugins</code>{' '}
+            and reload.
           </Text>
         </Box>
       )}
@@ -190,7 +103,6 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
 };
 
 export default function PluginsPage() {
-  const plugins = usePluginStore((state) => state.plugins);
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -201,7 +113,6 @@ export default function PluginsPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
-  const [reloading, setReloading] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmConfig, setConfirmConfig] = useState({
     title: '',
@@ -209,32 +120,8 @@ export default function PluginsPage() {
     resolve: null,
   });
 
-  const handleReload = async () => {
-    const { repos, refreshRepo, fetchAvailablePlugins, fetchPlugins } = usePluginStore.getState();
-    setReloading(true);
-    try {
-      for (const repo of repos) {
-        try { await refreshRepo(repo.id); } catch {
-          console.error(`Failed to refresh repo ${repo.name} (${repo.id})`);
-        }
-      }
-      await fetchAvailablePlugins();
-      await reloadPlugins();
-      await fetchPlugins();
-      showNotification({
-        title: 'Refreshed',
-        message: 'Plugin repos and registry reloaded',
-        color: 'green',
-      });
-    } catch {
-      showNotification({
-        title: 'Error',
-        message: 'Some repos failed to refresh',
-        color: 'red',
-      });
-    } finally {
-      setReloading(false);
-    }
+  const handleReload = () => {
+    usePluginStore.getState().invalidatePlugins();
   };
 
   const handleRequestDelete = useCallback((pl) => {
@@ -242,7 +129,6 @@ export default function PluginsPage() {
     setDeleteOpen(true);
   }, []);
 
-  // eslint-disable-next-line no-unused-vars
   const requireTrust = useCallback((plugin) => {
     return new Promise((resolve) => {
       setTrustResolve(() => resolve);
@@ -266,73 +152,55 @@ export default function PluginsPage() {
 
   const handleImportPlugin = () => {
     return async () => {
-      const run = async (overwrite) => {
-        setImporting(true);
-        const notifId = showNotification({
-          title: 'Uploading plugin',
-          message: 'Backend may restart; please wait…',
-          loading: true,
-          autoClose: false,
-          withCloseButton: false,
-        });
-        try {
-          const resp = await importPlugin(importFile, overwrite, /* silent */ true);
-          if (resp?.success && resp.plugin) {
-            setImported({ ...resp.plugin, was_managed: resp.was_managed, was_overwrite: overwrite });
-            usePluginStore.getState().invalidatePlugins();
-            updateNotification({
-              id: notifId,
-              loading: false,
-              color: 'green',
-              title: 'Imported',
-              message:
-                'Plugin imported. If the app briefly disconnected, it should be back now.',
-              autoClose: 3000,
-            });
-          } else {
-            updateNotification({
-              id: notifId,
-              loading: false,
-              color: 'red',
-              title: 'Import failed',
-              message: resp?.error || 'Unknown error',
-              autoClose: 5000,
-            });
-          }
-        } catch (e) {
-          const msg =
-            (e?.body && (e.body.error || e.body.detail)) || e?.message || '';
-          if (!overwrite && /already exists/i.test(msg)) {
-            // Dismiss the loading toast before showing the confirm dialog
-            updateNotification({
-              id: notifId,
-              loading: false,
-              autoClose: 100,
-              withCloseButton: false,
-            });
-            const pluginName = msg.match(/'([^']+)'/)?.[1] || 'this plugin';
-            const confirmed = await requestConfirm(
-              'Plugin already exists',
-              `'${pluginName}' is already installed. Do you want to replace it?`
-            );
-            if (confirmed) {
-              await run(true);
-            }
-          } else {
-            updateNotification({
-              id: notifId,
-              loading: false,
-              color: 'red',
-              title: 'Import failed',
-              message: msg || 'Failed',
-              autoClose: 5000,
-            });
-          }
-        } finally {
-          setImporting(false);
+      setImporting(true);
+      const id = showNotification({
+        title: 'Uploading plugin',
+        message: 'Backend may restart; please wait…',
+        loading: true,
+        autoClose: false,
+        withCloseButton: false,
+      });
+      try {
+        const resp = await importPlugin(importFile);
+        if (resp?.success && resp.plugin) {
+          setImported(resp.plugin);
+          usePluginStore.getState().invalidatePlugins();
+
+          updateNotification({
+            id,
+            loading: false,
+            color: 'green',
+            title: 'Imported',
+            message:
+              'Plugin imported. If the app briefly disconnected, it should be back now.',
+            autoClose: 3000,
+          });
+        } else {
+          updateNotification({
+            id,
+            loading: false,
+            color: 'red',
+            title: 'Import failed',
+            message: resp?.error || 'Unknown error',
+            autoClose: 5000,
+          });
         }
-      };
-      await run(false);
+      } catch (e) {
+        // API.importPlugin already showed a concise error; just update the loading notice
+        updateNotification({
+          id,
+          loading: false,
+          color: 'red',
+          title: 'Import failed',
+          message:
+            (e?.body && (e.body.error || e.body.detail)) ||
+            e?.message ||
+            'Failed',
+          autoClose: 5000,
+        });
+      } finally {
+        setImporting(false);
+      }
     };
   };
 
@@ -344,8 +212,7 @@ export default function PluginsPage() {
       if (proceed) {
         const resp = await setPluginEnabled(imported.key, true);
         if (resp?.success) {
-          const updates = resp?.plugin || { enabled: true, ever_enabled: true };
-          usePluginStore.getState().updatePlugin(imported.key, updates);
+          usePluginStore.getState().updatePlugin(imported.key, { enabled: true, ever_enabled: true });
 
           showNotification({
             title: imported.name,
@@ -383,32 +250,24 @@ export default function PluginsPage() {
     };
   };
 
-  const handleConfirm = useCallback(
-    (confirmed) => {
-      const resolver = confirmConfig.resolve;
-      setConfirmOpen(false);
-      setConfirmConfig({ title: '', message: '', resolve: null });
-      if (resolver) resolver(confirmed);
-    },
-    [confirmConfig.resolve]
-  );
+  const handleConfirm = useCallback((confirmed) => {
+    const resolver = confirmConfig.resolve;
+    setConfirmOpen(false);
+    setConfirmConfig({ title: '', message: '', resolve: null });
+    if (resolver) resolver(confirmed);
+  }, [confirmConfig.resolve]);
 
   return (
     <AppShellMain p={16}>
       <Group justify="space-between" mb="md">
-        <Group gap="xs" align="center">
-          <Text fw={700} size="lg">
-            My Plugins
-          </Text>
-          {plugins.length > 0 && (
-            <Badge variant="light" color="gray" size="sm">{plugins.length} Plugins Installed</Badge>
-          )}
-        </Group>
+        <Text fw={700} size="lg">
+          Plugins
+        </Text>
         <Group>
           <Button size="xs" variant="light" onClick={showImportForm}>
             Import Plugin
           </Button>
-          <ActionIcon variant="light" onClick={handleReload} title="Reload" loading={reloading} disabled={reloading}>
+          <ActionIcon variant="light" onClick={handleReload} title="Reload">
             <RefreshCcw size={18} />
           </ActionIcon>
         </Group>
@@ -431,8 +290,11 @@ export default function PluginsPage() {
           <Text size="sm" c="dimmed">
             Upload a ZIP containing your plugin folder or package.
           </Text>
-          <PluginRestartWarning />
-          <PluginSupportDisclaimer />
+          <Alert color="yellow" variant="light" title="Heads up">
+            Importing a plugin may briefly restart the backend (you might see a
+            temporary disconnect). Please wait a few seconds and the app will
+            reconnect automatically.
+          </Alert>
           <Dropzone
             onDrop={(files) => files[0] && setImportFile(files[0])}
             onReject={() => {}}
@@ -475,30 +337,20 @@ export default function PluginsPage() {
           {imported && (
             <Box>
               <Divider my="sm" />
-              <Alert color="blue" variant="light" mb="xs">
-                {imported.was_overwrite
-                  ? `'${imported.name}' was successfully overwritten.`
-                  : `'${imported.name}' was successfully installed.`}
-              </Alert>
-              {imported.was_managed && (
-                <Alert color="orange" variant="light" mt="xs">
-                  This plugin was previously managed by a repo. Manual
-                  installation removes it from repo management, so it will no
-                  longer receive update checks or version tracking.
-                </Alert>
-              )}
-              {imported.enabled === false && (
-                <Group justify="space-between" mt="sm" align="center">
-                  <Text size="sm">Enable now</Text>
-                  <Switch
-                    size="sm"
-                    checked={enableAfterImport}
-                    onChange={(e) =>
-                      setEnableAfterImport(e.currentTarget.checked)
-                    }
-                  />
-                </Group>
-              )}
+              <Text fw={600}>{imported.name}</Text>
+              <Text size="sm" c="dimmed">
+                {imported.description}
+              </Text>
+              <Group justify="space-between" mt="sm" align="center">
+                <Text size="sm">Enable now</Text>
+                <Switch
+                  size="sm"
+                  checked={enableAfterImport}
+                  onChange={(e) =>
+                    setEnableAfterImport(e.currentTarget.checked)
+                  }
+                />
+              </Group>
               <Group justify="flex-end" mt="md">
                 <Button
                   variant="default"
@@ -512,14 +364,13 @@ export default function PluginsPage() {
                 >
                   Done
                 </Button>
-                {imported.enabled === false && enableAfterImport && (
-                  <Button
-                    size="xs"
-                    onClick={handleEnablePlugin()}
-                  >
-                    Enable
-                  </Button>
-                )}
+                <Button
+                  size="xs"
+                  disabled={!enableAfterImport}
+                  onClick={handleEnablePlugin()}
+                >
+                  Enable
+                </Button>
               </Group>
             </Box>
           )}
@@ -535,17 +386,18 @@ export default function PluginsPage() {
         }}
         title="Enable third-party plugins?"
         centered
-        zIndex={300}
       >
         <Stack>
-          <PluginSecurityWarning>
+          <Text size="sm">
             Plugins run server-side code with full access to your Dispatcharr
             instance and its data. Only enable plugins from developers you
-            trust. Malicious plugins could read or modify data, call internal
+            trust.
+          </Text>
+          <Text size="sm" c="dimmed">
+            Why: Malicious plugins could read or modify data, call internal
             APIs, or perform unwanted actions. Review the source or trust the
             author before enabling.
-          </PluginSecurityWarning>
-          <PluginSupportDisclaimer />
+          </Text>
           <Group justify="flex-end">
             <Button
               variant="default"
@@ -580,7 +432,6 @@ export default function PluginsPage() {
         }}
         title={deleteTarget ? `Delete ${deleteTarget.name}?` : 'Delete Plugin'}
         centered
-        zIndex={300}
       >
         <Stack>
           <Text size="sm">
@@ -616,7 +467,6 @@ export default function PluginsPage() {
         onClose={() => handleConfirm(false)}
         title={confirmConfig.title}
         centered
-        zIndex={300}
       >
         <Stack>
           <Text size="sm">{confirmConfig.message}</Text>

@@ -9,11 +9,9 @@ from django.conf import settings
 from django.http import HttpResponse, StreamingHttpResponse, Http404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, parser_classes
-from rest_framework.permissions import AllowAny
-from apps.accounts.permissions import IsAdmin
+from rest_framework.permissions import IsAdminUser, AllowAny
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
-from core.utils import safe_upload_path
 
 from . import services
 from .tasks import create_backup_task, restore_backup_task
@@ -35,7 +33,7 @@ def _verify_task_token(task_id: str, token: str) -> bool:
 
 
 @api_view(["GET"])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminUser])
 def list_backups(request):
     """List all available backup files."""
     try:
@@ -49,7 +47,7 @@ def list_backups(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminUser])
 def create_backup(request):
     """Create a new backup (async via Celery)."""
     try:
@@ -88,7 +86,7 @@ def backup_status(request, task_id):
             )
     else:
         # Fall back to admin auth check
-        if not request.user.is_authenticated or getattr(request.user, 'user_level', 0) < 10:
+        if not request.user.is_authenticated or not request.user.is_staff:
             return Response(
                 {"detail": "Authentication required"},
                 status=status.HTTP_401_UNAUTHORIZED,
@@ -126,7 +124,7 @@ def backup_status(request, task_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminUser])
 def get_download_token(request, filename):
     """Get a signed token for downloading a backup file."""
     try:
@@ -170,7 +168,7 @@ def download_backup(request, filename):
             )
     else:
         # Fall back to admin auth check
-        if not request.user.is_authenticated or getattr(request.user, 'user_level', 0) < 10:
+        if not request.user.is_authenticated or not request.user.is_staff:
             return Response(
                 {"detail": "Authentication required"},
                 status=status.HTTP_401_UNAUTHORIZED,
@@ -232,7 +230,7 @@ def download_backup(request, filename):
 
 
 @api_view(["DELETE"])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminUser])
 def delete_backup(request, filename):
     """Delete a backup file."""
     try:
@@ -255,7 +253,7 @@ def delete_backup(request, filename):
 
 
 @api_view(["POST"])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminUser])
 @parser_classes([MultiPartParser, FormParser])
 def upload_backup(request):
     """Upload a backup file for restoration."""
@@ -268,18 +266,10 @@ def upload_backup(request):
 
     try:
         backup_dir = services.get_backup_dir()
-        # Sanitize filename: strip directory components to prevent path traversal
-        filename = Path(uploaded.name or "uploaded-backup.zip").name
-        if not filename:
-            filename = "uploaded-backup.zip"
-
-        try:
-            safe_upload_path(filename, str(backup_dir))
-        except ValueError:
-            return Response({"detail": "Invalid filename."}, status=status.HTTP_400_BAD_REQUEST)
+        filename = uploaded.name or "uploaded-backup.zip"
 
         # Ensure unique filename
-        backup_file = (backup_dir / filename).resolve()
+        backup_file = backup_dir / filename
         counter = 1
         while backup_file.exists():
             name_parts = filename.rsplit(".", 1)
@@ -309,7 +299,7 @@ def upload_backup(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminUser])
 def restore_backup(request, filename):
     """Restore from a backup file (async via Celery). WARNING: This will flush the database!"""
     try:
@@ -342,7 +332,7 @@ def restore_backup(request, filename):
 
 
 @api_view(["GET"])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminUser])
 def get_schedule(request):
     """Get backup schedule settings."""
     try:
@@ -356,7 +346,7 @@ def get_schedule(request):
 
 
 @api_view(["PUT"])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminUser])
 def update_schedule(request):
     """Update backup schedule settings."""
     try:

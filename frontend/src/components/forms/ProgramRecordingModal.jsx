@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
-import { Modal, Flex, Button, Anchor } from '@mantine/core';
+import React from 'react';
+import { Modal, Flex, Button } from '@mantine/core';
+import useChannelsStore from '../../store/channels.jsx';
 import { deleteRecordingById } from '../../utils/cards/RecordingCardUtils.js';
 import { deleteSeriesAndRule } from '../../utils/cards/RecordingCardUtils.js';
-import { deleteSeriesRuleByTvgId } from '../../utils/guideUtils.js';
-import SeriesRuleEditorModal from './SeriesRuleEditorModal.jsx';
+import { deleteSeriesRuleByTvgId } from '../../pages/guideUtils.js';
 
 export default function ProgramRecordingModal({
   opened,
@@ -11,21 +11,22 @@ export default function ProgramRecordingModal({
   program,
   recording,
   existingRuleMode,
-  existingRule,
   onRecordOne,
   onRecordSeriesAll,
   onRecordSeriesNew,
   onExistingRuleModeChange,
 }) {
-  const [editorOpen, setEditorOpen] = useState(false);
-
   const handleRemoveRecording = async () => {
     try {
       await deleteRecordingById(recording.id);
     } catch (error) {
       console.warn('Failed to delete recording', error);
     }
-    // recording_cancelled WS event triggers the debounced fetchRecordings()
+    try {
+      await useChannelsStore.getState().fetchRecordings();
+    } catch (error) {
+      console.warn('Failed to refresh recordings after delete', error);
+    }
     onClose();
   };
 
@@ -34,12 +35,16 @@ export default function ProgramRecordingModal({
       tvg_id: program.tvg_id,
       title: program.title,
     });
-    // recordings_refreshed WS event triggers the debounced fetchRecordings()
+    try {
+      await useChannelsStore.getState().fetchRecordings();
+    } catch (error) {
+      console.warn('Failed to refresh recordings after series delete', error);
+    }
     onClose();
   };
 
   const handleRemoveSeriesRule = async () => {
-    await deleteSeriesRuleByTvgId(program.tvg_id, program.title);
+    await deleteSeriesRuleByTvgId(program.tvg_id);
     onExistingRuleModeChange(null);
     onClose();
   };
@@ -69,43 +74,23 @@ export default function ProgramRecordingModal({
           Just this one
         </Button>
 
-        <Button
-          variant="light"
-          onClick={() => {
-            onRecordSeriesAll();
-            onClose();
-          }}
-        >
+        <Button variant="light" onClick={() => {
+          onRecordSeriesAll();
+          onClose();
+        }}>
           Every episode
         </Button>
 
-        <Button
-          variant="light"
-          onClick={() => {
-            onRecordSeriesNew();
-            onClose();
-          }}
-        >
+        <Button variant="light" onClick={() => {
+          onRecordSeriesNew();
+          onClose();
+        }}>
           New episodes only
         </Button>
 
-        <Anchor
-          component="button"
-          type="button"
-          size="xs"
-          ta="center"
-          onClick={() => setEditorOpen(true)}
-        >
-          Customize rule...
-        </Anchor>
-
         {recording && (
           <>
-            <Button
-              color="orange"
-              variant="light"
-              onClick={handleRemoveRecording}
-            >
+            <Button color="orange" variant="light" onClick={handleRemoveRecording}>
               Remove this recording
             </Button>
             <Button color="red" variant="light" onClick={handleRemoveSeries}>
@@ -120,25 +105,6 @@ export default function ProgramRecordingModal({
           </Button>
         )}
       </Flex>
-
-      <SeriesRuleEditorModal
-        opened={editorOpen}
-        onClose={() => setEditorOpen(false)}
-        initialRule={
-          existingRule ||
-          (program
-            ? {
-                tvg_id: program.tvg_id,
-                title: program.title,
-                title_mode: 'exact',
-                mode: 'all',
-              }
-            : null)
-        }
-        onSaved={() => {
-          onClose();
-        }}
-      />
     </Modal>
   );
 }

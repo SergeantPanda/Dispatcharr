@@ -1,7 +1,6 @@
 import logging
 import traceback
 from celery import shared_task
-from django.core.management import call_command
 
 from . import services
 
@@ -62,8 +61,6 @@ def restore_backup_task(self, filename: str):
         backup_file = backup_dir / filename
         logger.info(f"[RESTORE] Backup file path: {backup_file}")
         services.restore_backup(backup_file)
-        logger.info(f"[RESTORE] Running migrations after restore...")
-        call_command('migrate', '--noinput', verbosity=1)
         logger.info(f"[RESTORE] Task {self.request.id} completed successfully")
         return {
             "status": "completed",

@@ -1,8 +1,5 @@
 import API from '../../api.js';
 import useChannelsStore from '../../store/channels.jsx';
-import defaultLogo from '../../images/logo.png';
-import { formatSeasonEpisode } from '../guideUtils.js';
-import { buildLiveStreamUrl } from '../components/FloatingVideoUtils.js';
 
 export const removeRecording = (id) => {
   // Optimistically remove immediately from UI
@@ -22,41 +19,20 @@ export const removeRecording = (id) => {
   });
 };
 
-/**
- * Resolve the channel logo cache URL from either a full channel object
- * (has logo.cache_url) or a summary object (has logo_id integer).
- */
-export const getChannelLogoUrl = (channel) => {
-  if (!channel) return null;
-  let url = channel.logo_id
-    ? `/api/channels/logos/${channel.logo_id}/cache/`
-    : channel.logo?.cache_url || null;
-  if (
-    url &&
-    url.startsWith('/') &&
-    typeof import.meta !== 'undefined' &&
-    import.meta.env &&
-    import.meta.env.DEV
-  ) {
-    url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
-  }
-  return url;
-};
-
 export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
   let purl = posterLogoId
     ? `/api/channels/logos/${posterLogoId}/cache/`
-    : customProperties?.poster_url || posterUrl || null;
+    : customProperties?.poster_url || posterUrl || '/logo.png';
   if (
-    purl &&
     typeof import.meta !== 'undefined' &&
     import.meta.env &&
     import.meta.env.DEV &&
+    purl &&
     purl.startsWith('/')
   ) {
     purl = `${window.location.protocol}//${window.location.hostname}:5656${purl}`;
   }
-  return purl || defaultLogo;
+  return purl;
 };
 
 export const getShowVideoUrl = (channel, env_mode) => {
@@ -64,7 +40,7 @@ export const getShowVideoUrl = (channel, env_mode) => {
   if (env_mode === 'dev') {
     url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
   }
-  return buildLiveStreamUrl(url);
+  return url;
 };
 
 export const runComSkip = async (recording) => {
@@ -75,29 +51,23 @@ export const deleteRecordingById = async (recordingId) => {
   await API.deleteRecording(recordingId);
 };
 
-export const stopRecordingById = async (recordingId) => {
-  await API.stopRecording(recordingId);
-};
-
-export const extendRecordingById = async (recordingId, extraMinutes) => {
-  await API.extendRecording(recordingId, extraMinutes);
-};
-
 export const deleteSeriesAndRule = async (seriesInfo) => {
   const { tvg_id, title } = seriesInfo;
-  try {
-    await API.bulkRemoveSeriesRecordings({
-      tvg_id: tvg_id || '',
-      title,
-      scope: 'title',
-    });
-  } catch (error) {
-    console.error('Failed to remove series recordings', error);
-  }
-  try {
-    await API.deleteSeriesRule(tvg_id, title);
-  } catch (error) {
-    console.error('Failed to delete series rule', error);
+  if (tvg_id) {
+    try {
+      await API.bulkRemoveSeriesRecordings({
+        tvg_id,
+        title,
+        scope: 'title',
+      });
+    } catch (error) {
+      console.error('Failed to remove series recordings', error);
+    }
+    try {
+      await API.deleteSeriesRule(tvg_id);
+    } catch (error) {
+      console.error('Failed to delete series rule', error);
+    }
   }
 };
 
@@ -110,9 +80,9 @@ export const getRecordingUrl = (customProps, env_mode) => {
 };
 
 export const getSeasonLabel = (season, episode, onscreen) => {
-  if (season != null && episode != null)
-    return formatSeasonEpisode(season, episode);
-  return onscreen || null;
+  return season && episode
+    ? `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+    : onscreen || null;
 };
 
 export const getSeriesInfo = (customProps) => {

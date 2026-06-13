@@ -1,20 +1,10 @@
 import { create } from 'zustand';
 import api from '../api';
 
-const determineEPGStatus = (data, currentEpg) => {
-  if (data.status) return data.status;
-  if (data.action === 'downloading') return 'fetching';
-  if (data.action === 'parsing_channels' || data.action === 'parsing_programs')
-    return 'parsing';
-  if (data.progress === 100) return 'success';
-  return currentEpg?.status || 'idle';
-};
-
 const useEPGsStore = create((set) => ({
   epgs: {},
   tvgs: [],
   tvgsById: {},
-  tvgsLoaded: false,
   isLoading: false,
   error: null,
   refreshProgress: {},
@@ -22,9 +12,9 @@ const useEPGsStore = create((set) => ({
   fetchEPGs: async () => {
     set({ isLoading: true, error: null });
     try {
-      const sources = await api.getEPGs();
+      const epgs = await api.getEPGs();
       set({
-        epgs: (sources ?? []).reduce((acc, epg) => {
+        epgs: epgs.reduce((acc, epg) => {
           acc[epg.id] = epg;
           return acc;
         }, {}),
@@ -46,16 +36,11 @@ const useEPGsStore = create((set) => ({
           acc[tvg.id] = tvg;
           return acc;
         }, {}),
-        tvgsLoaded: true,
         isLoading: false,
       });
     } catch (error) {
       console.error('Failed to fetch tvgs:', error);
-      set({
-        error: 'Failed to load tvgs.',
-        tvgsLoaded: true,
-        isLoading: false,
-      });
+      set({ error: 'Failed to load tvgs.', isLoading: false });
     }
   },
 
@@ -101,7 +86,7 @@ const useEPGsStore = create((set) => ({
       }
 
       // Create a new refreshProgress object that includes the current update
-      const refreshProgress = {
+      const newRefreshProgress = {
         ...state.refreshProgress,
         [data.source]: {
           action: data.action,
@@ -115,33 +100,45 @@ const useEPGsStore = create((set) => ({
 
       // Set the EPG source status based on the update
       // First prioritize explicit status values from the backend
-      const status = determineEPGStatus(data, state.epgs[data.source]);
+      const sourceStatus = data.status
+        ? data.status // Use explicit status if provided
+        : data.action === 'downloading'
+          ? 'fetching'
+          : data.action === 'parsing_channels' ||
+              data.action === 'parsing_programs'
+            ? 'parsing'
+            : data.progress === 100
+              ? 'success' // Mark as success when progress is 100%
+              : state.epgs[data.source]?.status || 'idle';
 
       // Only update epgs object if status or last_message actually changed
       // This prevents unnecessary re-renders on every progress update
-      const lastMessage =
+      const currentEpg = state.epgs[data.source];
+      const newLastMessage =
         data.status === 'error'
           ? data.error || 'Unknown error'
-          : state.epgs[data.source]?.last_message;
+          : currentEpg?.last_message;
 
-      const currentEpg = state.epgs[data.source];
-      const shouldUpdateEpg =
+      let newEpgs = state.epgs;
+      if (
         currentEpg &&
-        (currentEpg.status !== status ||
-          currentEpg.last_message !== lastMessage);
+        (currentEpg.status !== sourceStatus ||
+          currentEpg.last_message !== newLastMessage)
+      ) {
+        newEpgs = {
+          ...state.epgs,
+          [data.source]: {
+            ...currentEpg,
+            status: sourceStatus,
+            last_message: newLastMessage,
+          },
+        };
+      }
 
-      const epgs = shouldUpdateEpg
-        ? {
-            ...state.epgs,
-            [data.source]: {
-              ...currentEpg,
-              status,
-              last_message: lastMessage,
-            },
-          }
-        : state.epgs;
-
-      return { refreshProgress, epgs };
+      return {
+        refreshProgress: newRefreshProgress,
+        epgs: newEpgs,
+      };
     }),
 }));
 

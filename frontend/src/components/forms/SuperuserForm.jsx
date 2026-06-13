@@ -13,16 +13,7 @@ import {
 } from '@mantine/core';
 import API from '../../api';
 import useAuthStore from '../../store/auth';
-import useSettingsStore from '../../store/settings';
 import logo from '../../assets/logo.png';
-
-const createSuperUser = (formData) => {
-  return API.createSuperUser({
-    username: formData.username,
-    password: formData.password,
-    email: formData.email,
-  });
-};
 
 function SuperuserForm() {
   const [formData, setFormData] = useState({
@@ -30,15 +21,16 @@ function SuperuserForm() {
     password: '',
     email: '',
   });
-  const [_error, setError] = useState('');
+  const [error, setError] = useState('');
+  const [version, setVersion] = useState(null);
   const setSuperuserExists = useAuthStore((s) => s.setSuperuserExists);
-  const fetchVersion = useSettingsStore((s) => s.fetchVersion);
-  const storedVersion = useSettingsStore((s) => s.version);
 
   useEffect(() => {
-    // Fetch version info using the settings store (will skip if already loaded)
-    fetchVersion();
-  }, [fetchVersion]);
+    // Fetch version info
+    API.getVersion().then((data) => {
+      setVersion(data?.version);
+    });
+  }, []);
 
   const handleChange = (e) => {
     setFormData((prev) => ({
@@ -51,7 +43,11 @@ function SuperuserForm() {
     e.preventDefault();
     try {
       console.log(formData);
-      const response = await createSuperUser(formData);
+      const response = await API.createSuperUser({
+        username: formData.username,
+        password: formData.password,
+        email: formData.email,
+      });
       if (response.superuser_exists) {
         setSuperuserExists(true);
       }
@@ -124,7 +120,7 @@ function SuperuserForm() {
           </Stack>
         </form>
 
-        {storedVersion.version && (
+        {version && (
           <Text
             size="xs"
             color="dimmed"
@@ -134,7 +130,7 @@ function SuperuserForm() {
               right: 30,
             }}
           >
-            v{storedVersion.version}
+            v{version}
           </Text>
         )}
       </Paper>

@@ -8,9 +8,9 @@ import {
   Group,
   SimpleGrid,
   Text,
+  Divider,
   Box,
   Checkbox,
-  SegmentedControl,
 } from '@mantine/core';
 import { CircleCheck, CircleX } from 'lucide-react';
 import useVODStore from '../../store/useVODStore';
@@ -25,7 +25,6 @@ const VODCategoryFilter = ({
 }) => {
   const categories = useVODStore((s) => s.categories);
   const [filter, setFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
 
   useEffect(() => {
     if (Object.keys(categories).length === 0) {
@@ -65,22 +64,13 @@ const VODCategoryFilter = ({
     );
   };
 
-  const isVisible = (category) => {
-    const matchesText = category.name
-      .toLowerCase()
-      .includes(filter.toLowerCase());
-    const matchesStatus =
-      statusFilter === 'all' ||
-      (statusFilter === 'enabled' && category.enabled) ||
-      (statusFilter === 'disabled' && !category.enabled);
-    return matchesText && matchesStatus;
-  };
-
   const selectAll = () => {
     setCategoryStates(
       categoryStates.map((state) => ({
         ...state,
-        enabled: isVisible(state) ? true : state.enabled,
+        enabled: state.name.toLowerCase().includes(filter.toLowerCase())
+          ? true
+          : state.enabled,
       }))
     );
   };
@@ -89,7 +79,9 @@ const VODCategoryFilter = ({
     setCategoryStates(
       categoryStates.map((state) => ({
         ...state,
-        enabled: isVisible(state) ? false : state.enabled,
+        enabled: state.name.toLowerCase().includes(filter.toLowerCase())
+          ? false
+          : state.enabled,
       }))
     );
   };
@@ -106,23 +98,13 @@ const VODCategoryFilter = ({
         description="When disabled, new categories from the provider will be created but disabled by default. You can enable them manually later."
       />
 
-      <Flex gap="sm" align="center">
+      <Flex gap="sm">
         <TextInput
           placeholder="Filter categories..."
           value={filter}
           onChange={(event) => setFilter(event.currentTarget.value)}
           style={{ flex: 1 }}
           size="xs"
-        />
-        <SegmentedControl
-          value={statusFilter}
-          onChange={setStatusFilter}
-          size="xs"
-          data={[
-            { label: 'All', value: 'all' },
-            { label: 'Enabled', value: 'enabled' },
-            { label: 'Disabled', value: 'disabled' },
-          ]}
         />
         <Button variant="default" size="xs" onClick={selectAll}>
           Select Visible
@@ -139,7 +121,9 @@ const VODCategoryFilter = ({
           verticalSpacing="xs"
         >
           {categoryStates
-            .filter((category) => isVisible(category))
+            .filter((category) => {
+              return category.name.toLowerCase().includes(filter.toLowerCase());
+            })
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((category) => (
               <Group

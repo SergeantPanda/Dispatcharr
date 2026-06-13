@@ -1,115 +1,11 @@
 import { create } from 'zustand';
 import api from '../api';
-import { showNotification } from '../utils/notificationUtils.js';
-import useUsersStore from './users';
+import { notifications } from '@mantine/notifications';
 
 const defaultProfiles = { 0: { id: '0', name: 'All', channels: new Set() } };
 
-// Seconds-precision timestamp recorded when this module is first loaded.
-// Compared against client.connected_at (also in seconds) to distinguish connections
-// that were already active before the page loaded from ones that started after.
-const pageLoadTime = Date.now() / 1000;
-
-// Returns true when a client connected after the page was loaded (genuinely new).
-// Falls back to true when connected_at is absent so we don't silently drop notifications.
-const isClientNewSincePageLoad = (client) =>
-  !client.connected_at || client.connected_at >= pageLoadTime;
-
-// Resolve identity info for a client: { username, ip }.
-// username is null when no user account is linked.
-const getClientIdentity = (client) => {
-  let username = null;
-  if (client?.user_id && client.user_id !== '0') {
-    const users = useUsersStore.getState().users;
-    const user = users.find((u) => String(u.id) === String(client.user_id));
-    if (user?.username) username = user.username;
-  }
-  return { username, ip: client?.ip_address || 'unknown' };
-};
-
-// Build a two-line notification message: channel name on top, identity below.
-const clientMessage = (channelName, client) => {
-  const { username, ip } = getClientIdentity(client);
-  const identity = username ? `${username} (${ip})` : ip;
-  return (
-    <>
-      <div>{channelName}</div>
-      <div style={{ marginTop: 2 }}>{identity}</div>
-    </>
-  );
-};
-
-const reduceChannels = (channels) => {
-  const channelsByUUID = {};
-  const channelsByID = channels.reduce((acc, channel) => {
-    acc[channel.id] = channel;
-    channelsByUUID[channel.uuid] = channel.id;
-    return acc;
-  }, {});
-  return { channelsByUUID, channelsByID };
-};
-
-const showNotificationIfChannelStopped = (
-  oldChannels,
-  newChannels,
-  channelsByUUID,
-  channels
-) => {
-  // Safe on first poll: oldChannels is {} so the loop body never runs and no false "stopped" notifications fire.
-  for (const uuid in oldChannels) {
-    if (newChannels[uuid] === undefined) {
-      const channelId = channelsByUUID[uuid];
-      const channel = channelId && channels[channelId];
-      const channelName =
-        channel?.name || oldChannels[uuid]?.channel_name || `Channel (${uuid})`;
-      showNotification({
-        title: 'Channel streaming stopped',
-        message: channelName,
-        color: 'blue.5',
-      });
-    }
-  }
-};
-
-const showNotificationIfClientStopped = (
-  oldClients,
-  newClients,
-  channelsByUUID,
-  channels
-) => {
-  // Safe on first poll: oldClients is {} so the loop body never runs and no false "stopped" notifications fire.
-  for (const clientId in oldClients) {
-    if (newClients[clientId] === undefined) {
-      const client = oldClients[clientId];
-      const channelId = client?.channel_id
-        ? channelsByUUID[client.channel_id]
-        : undefined;
-      const channel = channelId && channels[channelId];
-      const channelName =
-        channel?.name ||
-        client?.channel_name ||
-        (client?.channel_id ? `Channel (${client.channel_id})` : null);
-      const { username, ip } = getClientIdentity(client);
-      const identity = username ? `${username} (${ip})` : ip;
-      showNotification({
-        title: 'Client stopped streaming',
-        message: channelName ? (
-          <>
-            <div>{channelName}</div>
-            <div style={{ marginTop: 2 }}>{identity}</div>
-          </>
-        ) : (
-          identity
-        ),
-        color: 'blue.5',
-      });
-    }
-  }
-};
-
 const useChannelsStore = create((set, get) => ({
   channels: [],
-  channelIds: [],
   channelsByUUID: {},
   channelGroups: {},
   profiles: {},
@@ -118,7 +14,6 @@ const useChannelsStore = create((set, get) => ({
   stats: {},
   activeChannels: {},
   activeClients: {},
-  activeVodConnections: [],
   recordings: [],
   recurringRules: [],
   isLoading: false,
@@ -129,24 +24,16 @@ const useChannelsStore = create((set, get) => ({
     set({ forceUpdate: new Date() });
   },
 
-  fetchChannelIds: async () => {
-    set({ isLoading: true, error: null });
-    try {
-      const channelIds = await api.getAllChannelIds();
-      set({
-        channelIds,
-        isLoading: false,
-      });
-    } catch (error) {
-      set({ error: error.message, isLoading: false });
-    }
-  },
-
   fetchChannels: async () => {
     set({ isLoading: true, error: null });
     try {
       const channels = await api.getChannels();
-      const { channelsByUUID, channelsByID } = reduceChannels(channels);
+      const channelsByUUID = {};
+      const channelsByID = channels.reduce((acc, channel) => {
+        acc[channel.id] = channel;
+        channelsByUUID[channel.uuid] = channel.id;
+        return acc;
+      }, {});
       set({
         channels: channelsByID,
         channelsByUUID,
@@ -226,7 +113,16 @@ const useChannelsStore = create((set, get) => ({
 
   addChannels: (newChannels) =>
     set((state) => {
-      const { channelsByUUID, channelsByID } = reduceChannels(newChannels);
+      const channelsByUUID = {};
+      const profileChannels = new Set();
+
+      const channelsByID = newChannels.reduce((acc, channel) => {
+        acc[channel.id] = channel;
+        channelsByUUID[channel.uuid] = channel.id;
+        profileChannels.add(channel.id);
+
+        return acc;
+      }, {});
 
       // Don't automatically add to all profiles anymore - let the backend handle profile assignments
       // Just maintain the existing profile structure
@@ -264,8 +160,12 @@ const useChannelsStore = create((set, get) => ({
       );
       return;
     }
-
-    const { channelsByUUID, updatedChannels } = reduceChannels(channels);
+    const channelsByUUID = {};
+    const updatedChannels = channels.reduce((acc, chan) => {
+      channelsByUUID[chan.uuid] = chan.id;
+      acc[chan.id] = chan;
+      return acc;
+    }, {});
 
     set((state) => ({
       channels: {
@@ -283,10 +183,8 @@ const useChannelsStore = create((set, get) => ({
     set((state) => {
       const updatedChannels = { ...state.channels };
       const channelsByUUID = { ...state.channelsByUUID };
-      const channelIdsSet = new Set(state.channelIds); // Convert to Set for O(1) lookups
       for (const id of channelIds) {
         delete updatedChannels[id];
-        channelIdsSet.delete(id);
 
         for (const uuid in channelsByUUID) {
           if (channelsByUUID[uuid] == id) {
@@ -296,12 +194,7 @@ const useChannelsStore = create((set, get) => ({
         }
       }
 
-      console.log(channelIdsSet);
-      return {
-        channels: updatedChannels,
-        channelsByUUID,
-        channelIds: Array.from(channelIdsSet),
-      };
+      return { channels: updatedChannels, channelsByUUID };
     });
   },
 
@@ -356,9 +249,12 @@ const useChannelsStore = create((set, get) => ({
         delete updatedProfiles[id];
       }
 
-      const additionalUpdates = profileIds.includes(state.selectedProfileId)
-        ? { selectedProfileId: '0' }
-        : {};
+      let additionalUpdates = {};
+      if (profileIds.includes(state.selectedProfileId)) {
+        additionalUpdates = {
+          selectedProfileId: '0',
+        };
+      }
 
       return {
         profiles: updatedProfiles,
@@ -400,12 +296,14 @@ const useChannelsStore = create((set, get) => ({
         channels: currentChannelsSet,
       };
 
-      return {
+      const updates = {
         profiles: {
           ...state.profiles,
           [profileId]: updatedProfile,
         },
       };
+
+      return updates;
     }),
 
   setChannelsPageSelection: (channelsPageSelection) =>
@@ -420,81 +318,77 @@ const useChannelsStore = create((set, get) => ({
     return set((state) => {
       const {
         channels,
+        stats: currentStats,
         activeChannels: oldChannels,
         activeClients: oldClients,
         channelsByUUID,
       } = state;
       const newClients = {};
-
       const newChannels = stats.channels.reduce((acc, ch) => {
         acc[ch.channel_id] = ch;
-        return acc;
-      }, {});
+        if (currentStats.channels) {
+          if (oldChannels[ch.channel_id] === undefined) {
+            // Add null checks to prevent accessing properties on undefined
+            const channelId = channelsByUUID[ch.channel_id];
+            const channel = channelId ? channels[channelId] : null;
 
-      stats.channels.forEach((ch) => {
-        const channelId = channelsByUUID[ch.channel_id];
-        const channel = channelId ? channels[channelId] : null;
-        const channelName =
-          channel?.name || ch.channel_name || `Channel (${ch.channel_id})`;
-        const isNewChannel = oldChannels[ch.channel_id] === undefined;
-
-        ch.clients.forEach((client) => {
-          newClients[client.client_id] = client;
-        });
-
-        if (isNewChannel) {
-          // Only notify for clients that connected after the page loaded.
-          // This naturally suppresses pre-existing connections on the first poll
-          // while still firing for connections that started mid-session.
-          const genuinelyNewClients = ch.clients.filter(
-            (client) =>
-              oldClients[client.client_id] === undefined &&
-              isClientNewSincePageLoad(client)
-          );
-          if (genuinelyNewClients.length > 0) {
-            showNotification({
-              title: 'Channel started streaming',
-              message: clientMessage(channelName, genuinelyNewClients[0]),
-              color: 'blue.5',
-            });
-            genuinelyNewClients.slice(1).forEach((client) => {
-              showNotification({
-                title: 'New client started streaming',
-                message: clientMessage(channelName, client),
-                color: 'blue.5',
-              });
-            });
-          }
-        } else {
-          // Existing channel, notify only for clients that just joined.
-          ch.clients.forEach((client) => {
-            if (
-              oldClients[client.client_id] === undefined &&
-              isClientNewSincePageLoad(client)
-            ) {
-              showNotification({
-                title: 'New client started streaming',
-                message: clientMessage(channelName, client),
+            if (channel) {
+              notifications.show({
+                title: 'New channel streaming',
+                message: channel.name,
                 color: 'blue.5',
               });
             }
-          });
+          }
         }
-      });
+        ch.clients.map((client) => {
+          newClients[client.client_id] = client;
+          // This check prevents the notifications if streams are active on page load
+          if (currentStats.channels) {
+            if (oldClients[client.client_id] === undefined) {
+              notifications.show({
+                title: 'New client started streaming',
+                message: `Client streaming from ${client.ip_address}`,
+                color: 'blue.5',
+              });
+            }
+          }
+        });
+        return acc;
+      }, {});
+      // This check prevents the notifications if streams are active on page load
+      if (currentStats.channels) {
+        for (const uuid in oldChannels) {
+          if (newChannels[uuid] === undefined) {
+            // Add null check for channel name
+            const channelId = channelsByUUID[uuid];
+            const channel = channelId && channels[channelId];
 
-      showNotificationIfChannelStopped(
-        oldChannels,
-        newChannels,
-        channelsByUUID,
-        channels
-      );
-      showNotificationIfClientStopped(
-        oldClients,
-        newClients,
-        channelsByUUID,
-        channels
-      );
-
+            if (channel) {
+              notifications.show({
+                title: 'Channel streaming stopped',
+                message: channel.name,
+                color: 'blue.5',
+              });
+            } else {
+              notifications.show({
+                title: 'Channel streaming stopped',
+                message: `Channel (${uuid})`,
+                color: 'blue.5',
+              });
+            }
+          }
+        }
+        for (const clientId in oldClients) {
+          if (newClients[clientId] === undefined) {
+            notifications.show({
+              title: 'Client stopped streaming',
+              message: `Client stopped streaming from ${oldClients[clientId].ip_address}`,
+              color: 'blue.5',
+            });
+          }
+        }
+      }
       return {
         stats,
         activeChannels: newChannels,
@@ -503,15 +397,15 @@ const useChannelsStore = create((set, get) => ({
     });
   },
 
-  setVodStats: (stats) => {
-    set({ activeVodConnections: stats.vod_connections || [] });
-  },
-
   fetchRecordings: async () => {
+    set({ isLoading: true, error: null });
     try {
-      set({ recordings: await api.getRecordings() });
+      set({
+        recordings: await api.getRecordings(),
+      });
     } catch (error) {
       console.error('Failed to fetch recordings:', error);
+      set({ error: 'Failed to load recordings.', isLoading: false });
     }
   },
 
@@ -538,17 +432,11 @@ const useChannelsStore = create((set, get) => ({
       const target = String(id);
       const current = state.recordings;
       if (Array.isArray(current)) {
-        // Early return if item doesn't exist — avoids a new array reference
-        // (and thus a needless re-render) when called redundantly, e.g. both
-        // the optimistic API delete and the WS recording_cancelled handler.
-        if (!current.some((r) => String(r?.id) === target)) return {};
         return {
           recordings: current.filter((r) => String(r?.id) !== target),
         };
       }
       if (current && typeof current === 'object') {
-        if (!Object.values(current).some((r) => String(r?.id) === target))
-          return {};
         const next = { ...current };
         for (const k of Object.keys(next)) {
           try {
