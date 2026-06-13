@@ -2,18 +2,17 @@ import { isNotEmpty } from '@mantine/form';
 
 export const getStreamSettingsFormInitialValues = () => {
   return {
-    'default-user-agent': '',
-    'default-stream-profile': '',
-    'preferred-region': '',
-    'auto-import-mapped-files': true,
-    'm3u-hash-key': [],
+    default_user_agent: '',
+    default_stream_profile: '',
+    m3u_hash_key: [],
+    default_output_format: 'mpegts',
+    hdhr_output_profile_id: null,
   };
 };
 
 export const getStreamSettingsFormValidation = () => {
   return {
-    'default-user-agent': isNotEmpty('Select a user agent'),
-    'default-stream-profile': isNotEmpty('Select a stream profile'),
-    'preferred-region': isNotEmpty('Select a region'),
+    default_user_agent: isNotEmpty('Select a user agent'),
+    default_stream_profile: isNotEmpty('Select a stream profile'),
   };
 };

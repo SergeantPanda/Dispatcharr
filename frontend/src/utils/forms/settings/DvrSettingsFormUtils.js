@@ -10,13 +10,15 @@ export const uploadComskipIni = async (file) => {
 
 export const getDvrSettingsFormInitialValues = () => {
   return {
-    'dvr-tv-template': '',
-    'dvr-movie-template': '',
-    'dvr-tv-fallback-template': '',
-    'dvr-movie-fallback-template': '',
-    'dvr-comskip-enabled': false,
-    'dvr-comskip-custom-path': '',
-    'dvr-pre-offset-minutes': 0,
-    'dvr-post-offset-minutes': 0,
+    tv_template: '',
+    movie_template: '',
+    tv_fallback_template: '',
+    movie_fallback_template: '',
+    comskip_enabled: false,
+    comskip_custom_path: '',
+    comskip_mode: 'cut',
+    comskip_hw_accel: 'none',
+    pre_offset_minutes: 0,
+    post_offset_minutes: 0,
   };
 };

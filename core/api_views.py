@@ -1,37 +1,44 @@
 # core/api_views.py
 
-import json
 import ipaddress
 import logging
+from django.conf import settings as django_settings
+from django.db import models
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.shortcuts import get_object_or_404
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes, action
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from drf_spectacular.utils import extend_schema
 from .models import (
     UserAgent,
     StreamProfile,
+    OutputProfile,
     CoreSettings,
-    STREAM_HASH_KEY,
-    NETWORK_ACCESS,
+    STREAM_SETTINGS_KEY,
+    DVR_SETTINGS_KEY,
+    NETWORK_ACCESS_KEY,
     PROXY_SETTINGS_KEY,
 )
 from .serializers import (
     UserAgentSerializer,
     StreamProfileSerializer,
+    OutputProfileSerializer,
     CoreSettingsSerializer,
     ProxySettingsSerializer,
 )
 
 import socket
+import threading
 import requests
 import os
+from django.core.cache import cache
 from core.tasks import rehash_streams
 from apps.accounts.permissions import (
     Authenticated,
+    IsAdmin,
+    IsStandardUser,
+    permission_classes_by_action,
 )
 from dispatcharr.utils import get_client_ip
 
@@ -47,6 +54,12 @@ class UserAgentViewSet(viewsets.ModelViewSet):
     queryset = UserAgent.objects.all()
     serializer_class = UserAgentSerializer
 
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
+
 
 class StreamProfileViewSet(viewsets.ModelViewSet):
     """
@@ -55,6 +68,27 @@ class StreamProfileViewSet(viewsets.ModelViewSet):
 
     queryset = StreamProfile.objects.all()
     serializer_class = StreamProfileSerializer
+
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
+
+
+class OutputProfileViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint that allows output profiles to be viewed, created, edited, or deleted.
+    """
+
+    queryset = OutputProfile.objects.all()
+    serializer_class = OutputProfileSerializer
+
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
 
 
 class CoreSettingsViewSet(viewsets.ModelViewSet):
@@ -66,18 +100,36 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
     queryset = CoreSettings.objects.all()
     serializer_class = CoreSettingsSerializer
 
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
+
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
+        old_value = instance.value
         response = super().update(request, *args, **kwargs)
-        if instance.key == STREAM_HASH_KEY:
-            if instance.value != request.data["value"]:
-                rehash_streams.delay(request.data["value"].split(","))
 
-        # If DVR pre/post offsets changed, reschedule upcoming recordings
-        try:
-            from core.models import DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY
-            if instance.key in (DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY):
-                if instance.value != request.data.get("value"):
+        # If stream settings changed and m3u_hash_key is different, rehash streams
+        if instance.key == STREAM_SETTINGS_KEY:
+            new_value = request.data.get("value", {})
+            if isinstance(new_value, dict) and isinstance(old_value, dict):
+                old_hash = old_value.get("m3u_hash_key", "")
+                new_hash = new_value.get("m3u_hash_key", "")
+                if old_hash != new_hash:
+                    hash_keys = new_hash.split(",") if isinstance(new_hash, str) else new_hash
+                    rehash_streams.delay(hash_keys)
+
+        # If DVR settings changed and pre/post offsets are different, reschedule upcoming recordings
+        if instance.key == DVR_SETTINGS_KEY:
+            new_value = request.data.get("value", {})
+            if isinstance(new_value, dict) and isinstance(old_value, dict):
+                old_pre = old_value.get("pre_offset_minutes")
+                new_pre = new_value.get("pre_offset_minutes")
+                old_post = old_value.get("post_offset_minutes")
+                new_post = new_value.get("post_offset_minutes")
+                if old_pre != new_pre or old_post != new_post:
                     try:
                         # Prefer async task if Celery is available
                         from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change
@@ -86,24 +138,23 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
                         # Fallback to synchronous implementation
                         from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change_impl
                         reschedule_upcoming_recordings_for_offset_change_impl()
-        except Exception:
-            pass
 
         return response
 
     def create(self, request, *args, **kwargs):
         response = super().create(request, *args, **kwargs)
-        # If creating DVR pre/post offset settings, also reschedule upcoming recordings
+        # If creating DVR settings with offset values, reschedule upcoming recordings
         try:
             key = request.data.get("key")
-            from core.models import DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY
-            if key in (DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY):
-                try:
-                    from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change
-                    reschedule_upcoming_recordings_for_offset_change.delay()
-                except Exception:
-                    from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change_impl
-                    reschedule_upcoming_recordings_for_offset_change_impl()
+            if key == DVR_SETTINGS_KEY:
+                value = request.data.get("value", {})
+                if isinstance(value, dict) and ("pre_offset_minutes" in value or "post_offset_minutes" in value):
+                    try:
+                        from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change
+                        reschedule_upcoming_recordings_for_offset_change.delay()
+                    except Exception:
+                        from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change_impl
+                        reschedule_upcoming_recordings_for_offset_change_impl()
         except Exception:
             pass
         return response
@@ -111,13 +162,13 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
     def check(self, request, *args, **kwargs):
         data = request.data
 
-        if data.get("key") == NETWORK_ACCESS:
+        if data.get("key") == NETWORK_ACCESS_KEY:
             client_ip = ipaddress.ip_address(get_client_ip(request))
 
             in_network = {}
             invalid = []
 
-            value = json.loads(data.get("value", "{}"))
+            value = data.get("value", {})
             for key, val in value.items():
                 in_network[key] = []
                 cidrs = val.split(",")
@@ -142,7 +193,7 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
                     },
                     status=status.HTTP_200_OK,
                 )
-                
+
             response_data = {
                 **in_network,
                 "client_ip": str(client_ip)
@@ -157,12 +208,17 @@ class ProxySettingsViewSet(viewsets.ViewSet):
     """
     serializer_class = ProxySettingsSerializer
 
+    def get_permissions(self):
+        if self.action in ('list', 'retrieve'):
+            return [IsStandardUser()]
+        return [IsAdmin()]
+
     def _get_or_create_settings(self):
         """Get or create the proxy settings CoreSettings entry"""
         try:
             settings_obj = CoreSettings.objects.get(key=PROXY_SETTINGS_KEY)
-            settings_data = json.loads(settings_obj.value)
-        except (CoreSettings.DoesNotExist, json.JSONDecodeError):
+            settings_data = settings_obj.value
+        except CoreSettings.DoesNotExist:
             # Create default settings
             settings_data = {
                 "buffering_timeout": 15,
@@ -170,12 +226,13 @@ class ProxySettingsViewSet(viewsets.ViewSet):
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 5,
+                "new_client_behind_seconds": 5,
             }
             settings_obj, created = CoreSettings.objects.get_or_create(
                 key=PROXY_SETTINGS_KEY,
                 defaults={
                     "name": "Proxy Settings",
-                    "value": json.dumps(settings_data)
+                    "value": settings_data
                 }
             )
         return settings_obj, settings_data
@@ -197,8 +254,8 @@ class ProxySettingsViewSet(viewsets.ViewSet):
         serializer = ProxySettingsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        # Update the JSON data
-        settings_obj.value = json.dumps(serializer.validated_data)
+        # Update the JSON data - store as dict directly
+        settings_obj.value = serializer.validated_data
         settings_obj.save()
 
         return Response(serializer.validated_data)
@@ -213,8 +270,8 @@ class ProxySettingsViewSet(viewsets.ViewSet):
         serializer = ProxySettingsSerializer(data=updated_data)
         serializer.is_valid(raise_exception=True)
 
-        # Update the JSON data
-        settings_obj.value = json.dumps(serializer.validated_data)
+        # Update the JSON data - store as dict directly
+        settings_obj.value = serializer.validated_data
         settings_obj.save()
 
         return Response(serializer.validated_data)
@@ -229,10 +286,75 @@ class ProxySettingsViewSet(viewsets.ViewSet):
 
 
 
-@swagger_auto_schema(
-    method="get",
-    operation_description="Endpoint for environment details",
-    responses={200: "Environment variables"},
+_IP_CACHE_KEY = "dispatcharr:ip_lookup_result"
+_IP_CACHE_TTL = 3600  # 1 hour
+_IP_LOCK_KEY = "dispatcharr:ip_lookup_lock"
+
+
+def _perform_ip_lookup():
+    """Run IP and geolocation lookups in a background thread and cache the result."""
+    public_ip = None
+    local_ip = None
+    country_code = None
+    country_name = None
+    city = None
+
+    try:
+        r = requests.get("https://api64.ipify.org?format=json", timeout=5)
+        r.raise_for_status()
+        public_ip = r.json().get("ip")
+    except requests.RequestException:
+        pass
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("203.0.113.1", 80))
+            local_ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        pass
+
+    try:
+        ipaddress.ip_address(public_ip)
+    except (ValueError, TypeError):
+        public_ip = None
+
+    if public_ip:
+        try:
+            r = requests.get(f"https://ipapi.co/{public_ip}/json/", timeout=5)
+            if r.status_code == requests.codes.ok:
+                geo = r.json()
+                country_code = geo.get("country_code")
+                country_name = geo.get("country_name")
+                city = geo.get("city")
+            else:
+                r = requests.get("http://ip-api.com/json/", timeout=5)
+                if r.status_code == requests.codes.ok:
+                    geo = r.json()
+                    country_code = geo.get("countryCode")
+                    country_name = geo.get("country")
+                    city = geo.get("city")
+        except Exception as e:
+            logger.error(f"Error during geo lookup: {e}")
+
+    result = {
+        "public_ip": public_ip,
+        "local_ip": local_ip,
+        "country_code": country_code,
+        "country_name": country_name,
+        "city": city,
+    }
+    cache.set(_IP_CACHE_KEY, result, _IP_CACHE_TTL)
+    cache.delete(_IP_LOCK_KEY)
+
+    from core.utils import send_websocket_update
+    send_websocket_update("updates", "update", {"type": "ip_lookup_complete", **result})
+
+
+@extend_schema(
+    description="Endpoint for environment details",
 )
 @api_view(["GET"])
 @permission_classes([Authenticated])
@@ -241,55 +363,29 @@ def environment(request):
     local_ip = None
     country_code = None
     country_name = None
+    city = None
+    ip_lookup_pending = False
 
-    # 1) Get the public IP from ipify.org API
-    try:
-        r = requests.get("https://api64.ipify.org?format=json", timeout=5)
-        r.raise_for_status()
-        public_ip = r.json().get("ip")
-    except requests.RequestException as e:
-        public_ip = f"Error: {e}"
+    ip_lookup_env_disabled = not getattr(django_settings, "ENABLE_IP_LOOKUP", True)
+    ip_lookup_db_enabled = CoreSettings.get_system_settings().get("enable_ip_lookup", True)
+    ip_lookup_enabled = not ip_lookup_env_disabled and ip_lookup_db_enabled
 
-    # 2) Get the local IP by connecting to a public DNS server
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # connect to a "public" address so the OS can determine our local interface
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-    except Exception as e:
-        local_ip = f"Error: {e}"
+    if ip_lookup_enabled:
+        cached = cache.get(_IP_CACHE_KEY)
+        if cached is not None:
+            public_ip = cached.get("public_ip")
+            local_ip = cached.get("local_ip")
+            country_code = cached.get("country_code")
+            country_name = cached.get("country_name")
+            city = cached.get("city")
+        else:
+            if cache.add(_IP_LOCK_KEY, True, 30):
+                threading.Thread(target=_perform_ip_lookup, daemon=True).start()
+            ip_lookup_pending = True
 
-    # 3) Get geolocation data from ipapi.co or ip-api.com
-    if public_ip and "Error" not in public_ip:
-        try:
-            # Attempt to get geo information from ipapi.co first
-            r = requests.get(f"https://ipapi.co/{public_ip}/json/", timeout=5)
+    # Get environment mode and TLS status from settings
+    postgres_ssl = getattr(django_settings, "POSTGRES_SSL", False)
 
-            if r.status_code == requests.codes.ok:
-                geo = r.json()
-                country_code = geo.get("country_code")  # e.g. "US"
-                country_name = geo.get("country_name")  # e.g. "United States"
-
-            else:
-                # If ipapi.co fails, fallback to ip-api.com
-                # only supports http requests for free tier
-                r = requests.get("http://ip-api.com/json/", timeout=5)
-
-                if r.status_code == requests.codes.ok:
-                    geo = r.json()
-                    country_code = geo.get("countryCode")  # e.g. "US"
-                    country_name = geo.get("country")  # e.g. "United States"
-
-                else:
-                    raise Exception("Geo lookup failed with both services")
-
-        except Exception as e:
-            logger.error(f"Error during geo lookup: {e}")
-            country_code = None
-            country_name = None
-
-    # 4) Get environment mode from system environment variable
     return Response(
         {
             "authenticated": True,
@@ -297,18 +393,30 @@ def environment(request):
             "local_ip": local_ip,
             "country_code": country_code,
             "country_name": country_name,
-            "env_mode": "dev" if os.getenv("DISPATCHARR_ENV") == "dev" else "prod",
+            "city": city,
+            "ip_lookup_enabled": ip_lookup_enabled,
+            "ip_lookup_env_disabled": ip_lookup_env_disabled,
+            "ip_lookup_pending": ip_lookup_pending,
+            "env_mode": os.getenv("DISPATCHARR_ENV", "aio"),
+            "redis_tls": {
+                "enabled": getattr(django_settings, "REDIS_SSL", False),
+                "verify": getattr(django_settings, "REDIS_SSL_VERIFY", True),
+                "mtls": bool(getattr(django_settings, "REDIS_SSL_CERT", "") and getattr(django_settings, "REDIS_SSL_KEY", "")),
+            },
+            "postgres_tls": {
+                "enabled": postgres_ssl,
+                "ssl_mode": getattr(django_settings, "POSTGRES_SSL_MODE", "verify-full") if postgres_ssl else None,
+                "mtls": bool(getattr(django_settings, "POSTGRES_SSL_CERT", "") and getattr(django_settings, "POSTGRES_SSL_KEY", "")),
+            },
         }
     )
 
 
-@swagger_auto_schema(
-    method="get",
-    operation_description="Get application version information",
-    responses={200: "Version information"},
+@extend_schema(
+    description="Get application version information",
 )
-
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def version(request):
     # Import version information
     from version import __version__, __timestamp__
@@ -321,10 +429,8 @@ def version(request):
     )
 
 
-@swagger_auto_schema(
-    method="post",
-    operation_description="Trigger rehashing of all streams",
-    responses={200: "Rehash task started"},
+@extend_schema(
+    description="Trigger rehashing of all streams",
 )
 @api_view(["POST"])
 @permission_classes([Authenticated])
@@ -332,8 +438,8 @@ def rehash_streams_endpoint(request):
     """Trigger the rehash streams task"""
     try:
         # Get the current hash keys from settings
-        hash_key_setting = CoreSettings.objects.get(key=STREAM_HASH_KEY)
-        hash_keys = hash_key_setting.value.split(",")
+        hash_key = CoreSettings.get_m3u_hash_key()
+        hash_keys = hash_key.split(",") if isinstance(hash_key, str) else hash_key
 
         # Queue the rehash task
         task = rehash_streams.delay(hash_keys)
@@ -344,10 +450,10 @@ def rehash_streams_endpoint(request):
             "task_id": task.id
         }, status=status.HTTP_200_OK)
 
-    except CoreSettings.DoesNotExist:
+    except Exception as e:
         return Response({
             "success": False,
-            "message": "Hash key settings not found"
+            "message": f"Error triggering rehash: {str(e)}"
         }, status=status.HTTP_400_BAD_REQUEST)
 
     except Exception as e:
@@ -371,9 +477,8 @@ class TimezoneListView(APIView):
     def get_permissions(self):
         return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Get list of all supported timezones",
-        responses={200: openapi.Response('List of timezones with grouping by region')}
+    @extend_schema(
+        description="Get list of all supported timezones",
     )
     def get(self, request):
         import pytz
@@ -461,3 +566,159 @@ def get_system_events(request):
         return Response({
             'error': 'Failed to fetch system events'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ─────────────────────────────
+# System Notifications API
+# ─────────────────────────────
+from .models import SystemNotification, NotificationDismissal
+from .serializers import SystemNotificationSerializer, NotificationDismissalSerializer
+from django.utils import timezone as dj_timezone
+
+
+class SystemNotificationViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint for system notifications.
+    Users can view active notifications and dismiss them.
+    Admins can create and manage notifications.
+    """
+    serializer_class = SystemNotificationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        Return notifications based on user permissions.
+        Filter out expired and dismissed notifications for regular users.
+        Evaluate conditions for developer notifications.
+        """
+        from core.developer_notifications import evaluate_conditions
+        from django.core.cache import cache
+
+        user = self.request.user
+        now = dj_timezone.now()
+
+        queryset = SystemNotification.objects.filter(is_active=True)
+
+        # Filter out expired notifications
+        queryset = queryset.filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=now)
+        )
+
+        # Filter admin-only notifications for non-admins
+        if getattr(user, 'user_level', 0) < 10:
+            queryset = queryset.filter(admin_only=False)
+
+        # For developer notifications, evaluate conditions
+        # Cache the evaluation per notification to avoid repeated condition checks
+        notifications_to_exclude = []
+        developer_notifications = queryset.filter(source=SystemNotification.Source.DEVELOPER)
+
+        for notification in developer_notifications:
+            action_data = notification.action_data or {}
+            conditions = action_data.get('condition', [])
+
+            if not conditions:
+                continue
+
+            # Cache key based on notification ID and current settings
+            # Cache for 5 minutes to balance freshness with performance
+            cache_key = f'dev_notif_condition_{notification.id}_{user.id}'
+            should_show = cache.get(cache_key)
+
+            if should_show is None:
+                should_show = evaluate_conditions(conditions, user)
+                cache.set(cache_key, should_show, timeout=300)  # 5 minutes
+
+            if not should_show:
+                notifications_to_exclude.append(notification.id)
+
+        if notifications_to_exclude:
+            queryset = queryset.exclude(id__in=notifications_to_exclude)
+
+        return queryset
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+
+    def list(self, request):
+        """
+        List all active notifications for the current user.
+        Optionally filter by dismissed status.
+        """
+        queryset = self.get_queryset()
+
+        # Optional: filter out already dismissed notifications
+        include_dismissed = request.query_params.get('include_dismissed', 'false').lower() == 'true'
+        if not include_dismissed:
+            dismissed_ids = NotificationDismissal.objects.filter(
+                user=request.user
+            ).values_list('notification_id', flat=True)
+            queryset = queryset.exclude(id__in=dismissed_ids)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'notifications': serializer.data,
+            'count': len(serializer.data),
+            'unread_count': queryset.count()
+        })
+
+    @action(detail=True, methods=['post'], url_path='dismiss')
+    def dismiss(self, request, pk=None):
+        """Dismiss a notification for the current user."""
+        notification = self.get_object()
+        action_taken = request.data.get('action_taken', None)
+
+        dismissal, created = NotificationDismissal.objects.get_or_create(
+            user=request.user,
+            notification=notification,
+            defaults={'action_taken': action_taken}
+        )
+
+        if not created and action_taken:
+            dismissal.action_taken = action_taken
+            dismissal.save()
+
+        return Response({
+            'success': True,
+            'message': 'Notification dismissed',
+            'notification_key': notification.notification_key
+        })
+
+    @action(detail=False, methods=['post'], url_path='dismiss-all')
+    def dismiss_all(self, request):
+        """Dismiss all notifications for the current user."""
+        notifications = self.get_queryset()
+
+        # Get notifications not yet dismissed
+        dismissed_ids = NotificationDismissal.objects.filter(
+            user=request.user
+        ).values_list('notification_id', flat=True)
+        to_dismiss = notifications.exclude(id__in=dismissed_ids)
+
+        # Create dismissals for all
+        dismissals = [
+            NotificationDismissal(user=request.user, notification=n)
+            for n in to_dismiss
+        ]
+        NotificationDismissal.objects.bulk_create(dismissals, ignore_conflicts=True)
+
+        return Response({
+            'success': True,
+            'dismissed_count': len(dismissals)
+        })
+
+    @action(detail=False, methods=['get'], url_path='count')
+    def unread_count(self, request):
+        """Get count of unread notifications."""
+        queryset = self.get_queryset()
+        dismissed_ids = NotificationDismissal.objects.filter(
+            user=request.user
+        ).values_list('notification_id', flat=True)
+        unread_count = queryset.exclude(id__in=dismissed_ids).count()
+
+        return Response({
+            'unread_count': unread_count
+        })
+

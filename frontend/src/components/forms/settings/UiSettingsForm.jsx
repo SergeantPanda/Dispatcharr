@@ -1,24 +1,44 @@
 import useSettingsStore from '../../../store/settings.jsx';
 import useLocalStorage from '../../../hooks/useLocalStorage.jsx';
+import useTablePreferences from '../../../hooks/useTablePreferences.jsx';
+import useOutputProfilesStore from '../../../store/outputProfiles.jsx';
+import {
+  getPlayerPrefs,
+  savePlayerPrefs,
+} from '../../../utils/components/FloatingVideoUtils.js';
 import {
   buildTimeZoneOptions,
   getDefaultTimeZone,
 } from '../../../utils/dateTimeUtils.js';
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { showNotification } from '../../../utils/notificationUtils.js';
-import { Select } from '@mantine/core';
+import { Select, Switch, Stack } from '@mantine/core';
 import { saveTimeZoneSetting } from '../../../utils/forms/settings/UiSettingsFormUtils.js';
 
 const UiSettingsForm = React.memo(() => {
   const settings = useSettingsStore((s) => s.settings);
+  const outputProfiles = useOutputProfilesStore((s) => s.profiles);
 
-  const [tableSize, setTableSize] = useLocalStorage('table-size', 'default');
+  const [webPlayerProfileId, setWebPlayerProfileId] = useState(
+    () => getPlayerPrefs().webPlayerOutputProfileId ?? null
+  );
+
   const [timeFormat, setTimeFormat] = useLocalStorage('time-format', '12h');
   const [dateFormat, setDateFormat] = useLocalStorage('date-format', 'mdy');
   const [timeZone, setTimeZone] = useLocalStorage(
     'time-zone',
     getDefaultTimeZone()
   );
+
+  // Use shared table preferences hook
+  const { headerPinned, setHeaderPinned, tableSize, setTableSize } =
+    useTablePreferences();
 
   const timeZoneOptions = useMemo(
     () => buildTimeZoneOptions(timeZone),
@@ -45,12 +65,11 @@ const UiSettingsForm = React.memo(() => {
 
   useEffect(() => {
     if (settings) {
-      const tzSetting = settings['system-time-zone'];
-      if (tzSetting?.value) {
+      const systemSettings = settings['system_settings'];
+      const tzValue = systemSettings?.value?.time_zone;
+      if (tzValue) {
         timeZoneSyncedRef.current = true;
-        setTimeZone((prev) =>
-          prev === tzSetting.value ? prev : tzSetting.value
-        );
+        setTimeZone((prev) => (prev === tzValue ? prev : tzValue));
       } else if (!timeZoneSyncedRef.current && timeZone) {
         timeZoneSyncedRef.current = true;
         persistTimeZoneSetting(timeZone);
@@ -75,11 +94,20 @@ const UiSettingsForm = React.memo(() => {
           persistTimeZoneSetting(value);
         }
         break;
+      case 'header-pinned':
+        setHeaderPinned(value);
+        break;
+      case 'web-player-profile': {
+        const id = value ? Number(value) : null;
+        setWebPlayerProfileId(id);
+        savePlayerPrefs({ webPlayerOutputProfileId: id });
+        break;
+      }
     }
   };
 
   return (
-    <>
+    <Stack gap="md">
       <Select
         label="Table Size"
         value={tableSize}
@@ -98,6 +126,14 @@ const UiSettingsForm = React.memo(() => {
             label: 'Large',
           },
         ]}
+      />
+      <Switch
+        label="Pin Table Headers"
+        description="Keep table headers visible when scrolling"
+        checked={headerPinned}
+        onChange={(event) =>
+          onUISettingsChange('header-pinned', event.currentTarget.checked)
+        }
       />
       <Select
         label="Time format"
@@ -137,7 +173,19 @@ const UiSettingsForm = React.memo(() => {
         onChange={(val) => onUISettingsChange('time-zone', val)}
         data={timeZoneOptions}
       />
-    </>
+      <Select
+        label="Web Player Output Profile"
+        description="Output profile applied when previewing streams in the browser player"
+        clearable
+        placeholder="None"
+        value={webPlayerProfileId ? String(webPlayerProfileId) : null}
+        onChange={(val) => onUISettingsChange('web-player-profile', val)}
+        data={outputProfiles.map((p) => ({
+          value: String(p.id),
+          label: p.name,
+        }))}
+      />
+    </Stack>
   );
 });
 

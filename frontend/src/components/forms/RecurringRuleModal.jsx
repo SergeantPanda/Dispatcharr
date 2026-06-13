@@ -1,34 +1,59 @@
 import useChannelsStore from '../../store/channels.jsx';
 import {
-  parseDate,
+  format,
+  getNow,
   RECURRING_DAY_OPTIONS,
+  toDate,
   toTimeString,
   useDateTimeFormat,
   useTimeHelpers,
 } from '../../utils/dateTimeUtils.js';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from '@mantine/form';
-import dayjs from 'dayjs';
-import { notifications } from '@mantine/notifications';
-import { Badge, Button, Card, Group, Modal, MultiSelect, Select, Stack, Switch, Text, TextInput } from '@mantine/core';
+import {
+  Badge,
+  Button,
+  Card,
+  Group,
+  Modal,
+  MultiSelect,
+  Select,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+} from '@mantine/core';
 import { DatePickerInput, TimeInput } from '@mantine/dates';
 import { deleteRecordingById } from '../../utils/cards/RecordingCardUtils.js';
 import {
   deleteRecurringRuleById,
-  getChannelOptions,
+  getFormDefaults,
   getUpcomingOccurrences,
   updateRecurringRule,
   updateRecurringRuleEnabled,
 } from '../../utils/forms/RecurringRuleModalUtils.js';
+import { showNotification } from '../../utils/notificationUtils.js';
+import {
+  getChannelsSummary,
+  getRecurringFormDefaults,
+  recurringFormValidators,
+  sortedChannelOptions,
+} from '../../utils/forms/RecordingUtils.js';
 
-const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
-  const channels = useChannelsStore((s) => s.channels);
+const RecurringRuleModal = ({
+  opened,
+  onClose,
+  ruleId,
+  recording: sourceRecording,
+  onEditOccurrence,
+}) => {
+  const [allChannels, setAllChannels] = useState([]);
   const recurringRules = useChannelsStore((s) => s.recurringRules);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
-  const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const recordings = useChannelsStore((s) => s.recordings);
   const { toUserTime, userNow } = useTimeHelpers();
-  const [timeformat, dateformat] = useDateTimeFormat();
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+    useDateTimeFormat();
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -37,71 +62,40 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
   const rule = recurringRules.find((r) => r.id === ruleId);
 
   const channelOptions = useMemo(() => {
-    return getChannelOptions(channels);
-  }, [channels]);
+    return sortedChannelOptions(allChannels);
+  }, [allChannels]);
 
   const form = useForm({
     mode: 'controlled',
-    initialValues: {
-      channel_id: '',
-      days_of_week: [],
-      rule_name: '',
-      start_time: dayjs().startOf('hour').format('HH:mm'),
-      end_time: dayjs().startOf('hour').add(1, 'hour').format('HH:mm'),
-      start_date: dayjs().toDate(),
-      end_date: dayjs().toDate(),
-      enabled: true,
-    },
-    validate: {
-      channel_id: (value) => (value ? null : 'Select a channel'),
-      days_of_week: (value) =>
-        value && value.length ? null : 'Pick at least one day',
-      end_time: (value, values) => {
-        if (!value) return 'Select an end time';
-        const startValue = dayjs(
-          values.start_time,
-          ['HH:mm', 'hh:mm A', 'h:mm A'],
-          true
-        );
-        const endValue = dayjs(value, ['HH:mm', 'hh:mm A', 'h:mm A'], true);
-        if (
-          startValue.isValid() &&
-          endValue.isValid() &&
-          endValue.diff(startValue, 'minute') === 0
-        ) {
-          return 'End time must differ from start time';
-        }
-        return null;
-      },
-      end_date: (value, values) => {
-        const endDate = dayjs(value);
-        const startDate = dayjs(values.start_date);
-        if (!value) return 'Select an end date';
-        if (startDate.isValid() && endDate.isBefore(startDate, 'day')) {
-          return 'End date cannot be before start date';
-        }
-        return null;
-      },
-    },
+    initialValues: { ...getRecurringFormDefaults(), enabled: true },
+    validate: recurringFormValidators,
   });
 
   useEffect(() => {
     if (opened && rule) {
-      form.setValues({
-        channel_id: `${rule.channel}`,
-        days_of_week: (rule.days_of_week || []).map((d) => String(d)),
-        rule_name: rule.name || '',
-        start_time: toTimeString(rule.start_time),
-        end_time: toTimeString(rule.end_time),
-        start_date: parseDate(rule.start_date) || dayjs().toDate(),
-        end_date: parseDate(rule.end_date),
-        enabled: Boolean(rule.enabled),
-      });
+      form.setValues(getFormDefaults(rule));
     } else {
       form.reset();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened, ruleId, rule]);
+
+  useEffect(() => {
+    if (!opened) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const chans = await getChannelsSummary();
+        if (!cancelled) setAllChannels(Array.isArray(chans) ? chans : []);
+      } catch (e) {
+        console.warn('Failed to load channels for recurring rule modal', e);
+        if (!cancelled) setAllChannels([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [opened]);
 
   const upcomingOccurrences = useMemo(() => {
     return getUpcomingOccurrences(recordings, userNow, ruleId, toUserTime);
@@ -112,8 +106,8 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
     setSaving(true);
     try {
       await updateRecurringRule(ruleId, values);
-      await Promise.all([fetchRecurringRules(), fetchRecordings()]);
-      notifications.show({
+      await fetchRecurringRules(); // recordings_refreshed WS event handles recording list update
+      showNotification({
         title: 'Recurring rule updated',
         message: 'Schedule adjustments saved',
         color: 'green',
@@ -132,8 +126,8 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
     setDeleting(true);
     try {
       await deleteRecurringRuleById(ruleId);
-      await Promise.all([fetchRecurringRules(), fetchRecordings()]);
-      notifications.show({
+      await fetchRecurringRules(); // recordings_refreshed WS event handles recording list update
+      showNotification({
         title: 'Recurring rule removed',
         message: 'All future occurrences were cancelled',
         color: 'red',
@@ -152,8 +146,8 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
     setSaving(true);
     try {
       await updateRecurringRuleEnabled(ruleId, checked);
-      await Promise.all([fetchRecurringRules(), fetchRecordings()]);
-      notifications.show({
+      await fetchRecurringRules(); // recordings_refreshed WS event handles recording list update
+      showNotification({
         title: checked ? 'Recurring rule enabled' : 'Recurring rule paused',
         message: checked
           ? 'Future occurrences will resume'
@@ -173,8 +167,8 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
     setBusyOccurrence(occurrence.id);
     try {
       await deleteRecordingById(occurrence.id);
-      await fetchRecordings();
-      notifications.show({
+      // recording_cancelled WS event handles recording list update
+      showNotification({
         title: 'Occurrence cancelled',
         message: 'The selected airing was removed',
         color: 'yellow',
@@ -190,7 +184,45 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
   if (!rule) {
     return (
       <Modal opened={opened} onClose={onClose} title="Recurring Rule" centered>
-        <Text size="sm">Recurring rule not found.</Text>
+        <Stack gap="md">
+          <Text size="sm">
+            The recurring rule for this recording no longer exists.
+          </Text>
+          {sourceRecording && (
+            <>
+              <Text size="sm" c="dimmed">
+                Would you like to delete this recording?
+              </Text>
+              <Group justify="flex-end">
+                <Button variant="default" onClick={onClose}>
+                  Cancel
+                </Button>
+                <Button
+                  color="red"
+                  loading={deleting}
+                  onClick={async () => {
+                    setDeleting(true);
+                    try {
+                      await deleteRecordingById(sourceRecording.id);
+                      showNotification({
+                        title: 'Recording deleted',
+                        color: 'green',
+                        autoClose: 2500,
+                      });
+                      onClose();
+                    } catch (e) {
+                      console.error('Failed to delete orphaned recording', e);
+                    } finally {
+                      setDeleting(false);
+                    }
+                  }}
+                >
+                  Delete Recording
+                </Button>
+              </Group>
+            </>
+          )}
+        </Stack>
       </Modal>
     );
   }
@@ -198,73 +230,71 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
   const handleEnableChange = (event) => {
     form.setFieldValue('enabled', event.currentTarget.checked);
     handleToggleEnabled(event.currentTarget.checked);
-  }
+  };
 
   const handleStartDateChange = (value) => {
-    form.setFieldValue('start_date', value || dayjs().toDate());
-  }
+    form.setFieldValue('start_date', value || toDate(getNow()));
+  };
 
   const handleEndDateChange = (value) => {
     form.setFieldValue('end_date', value);
-  }
+  };
 
   const handleStartTimeChange = (value) => {
     form.setFieldValue('start_time', toTimeString(value));
-  }
+  };
 
   const handleEndTimeChange = (value) => {
     form.setFieldValue('end_time', toTimeString(value));
-  }
+  };
 
   const UpcomingList = () => {
-    return <Stack gap="xs">
-      {upcomingOccurrences.map((occ) => {
-        const occStart = toUserTime(occ.start_time);
-        const occEnd = toUserTime(occ.end_time);
+    return (
+      <Stack gap="xs">
+        {upcomingOccurrences.map((occ) => {
+          const occStart = toUserTime(occ.start_time);
+          const occEnd = toUserTime(occ.end_time);
 
-        return (
-          <Card
-            key={`occ-${occ.id}`}
-            withBorder
-            padding="sm"
-            radius="md"
-          >
-            <Group justify="space-between" align="center">
-              <Stack gap={2} flex={1}>
-                <Text fw={600} size="sm">
-                  {occStart.format(`${dateformat}, YYYY`)}
-                </Text>
-                <Text size="xs" c="dimmed">
-                  {occStart.format(timeformat)} – {occEnd.format(timeformat)}
-                </Text>
-              </Stack>
-              <Group gap={6}>
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  onClick={() => {
-                    onClose();
-                    onEditOccurrence?.(occ);
-                  }}
-                >
-                  Edit
-                </Button>
-                <Button
-                  size="xs"
-                  color="red"
-                  variant="light"
-                  loading={busyOccurrence === occ.id}
-                  onClick={() => handleCancelOccurrence(occ)}
-                >
-                  Cancel
-                </Button>
+          return (
+            <Card key={`occ-${occ.id}`} withBorder padding="sm" radius="md">
+              <Group justify="space-between" align="center">
+                <Stack gap={2} flex={1}>
+                  <Text fw={600} size="sm">
+                    {format(occStart, `${dateformat}, YYYY`)}
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    {format(occStart, timeformat)} –{' '}
+                    {format(occEnd, timeformat)}
+                  </Text>
+                </Stack>
+                <Group gap={6}>
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={() => {
+                      onClose();
+                      onEditOccurrence?.(occ);
+                    }}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    size="xs"
+                    color="red"
+                    variant="light"
+                    loading={busyOccurrence === occ.id}
+                    onClick={() => handleCancelOccurrence(occ)}
+                  >
+                    Cancel
+                  </Button>
+                </Group>
               </Group>
-            </Group>
-          </Card>
-        );
-      })}
-    </Stack>;
-  }
+            </Card>
+          );
+        })}
+      </Stack>
+    );
+  };
 
   return (
     <Modal
@@ -277,7 +307,8 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
       <Stack gap="md">
         <Group justify="space-between" align="center">
           <Text fw={600}>
-            {channels?.[rule.channel]?.name || `Channel ${rule.channel}`}
+            {allChannels.find((c) => c.id === rule.channel)?.name ||
+              `Channel ${rule.channel}`}
           </Text>
           <Switch
             size="sm"
@@ -371,7 +402,9 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
             <Text size="sm" c="dimmed">
               No future airings currently scheduled.
             </Text>
-          ) : <UpcomingList />}
+          ) : (
+            <UpcomingList />
+          )}
         </Stack>
       </Stack>
     </Modal>

@@ -1,56 +1,114 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useFormik } from 'formik';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { yupResolver } from '@hookform/resolvers/yup';
 import * as Yup from 'yup';
 import useChannelsStore from '../../store/channels';
 import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
-import useStreamsStore from '../../store/streams';
 import ChannelGroupForm from './ChannelGroup';
-import usePlaylistsStore from '../../store/playlists';
 import logo from '../../images/logo.png';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
+import { useEpgPreview } from '../../hooks/useEpgPreview';
 import useLogosStore from '../../store/logos';
 import LazyLogo from '../LazyLogo';
 import LogoForm from './Logo';
 import {
+  ActionIcon,
   Box,
   Button,
-  Modal,
-  TextInput,
-  NativeSelect,
-  Text,
-  Group,
-  ActionIcon,
   Center,
-  Grid,
-  Flex,
-  Select,
   Divider,
-  Stack,
-  useMantineTheme,
-  Popover,
-  ScrollArea,
-  Tooltip,
+  Flex,
+  Group,
+  Modal,
   NumberInput,
-  Image,
+  Popover,
+  PopoverDropdown,
+  PopoverTarget,
+  ScrollArea,
+  Select,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+  Tooltip,
   UnstyledButton,
+  useMantineTheme,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
-import { ListOrdered, SquarePlus, SquareX, X, Zap } from 'lucide-react';
+import { ListOrdered, SquarePlus, Undo2, X, Zap } from 'lucide-react';
+import ProgramPreview from '../ProgramPreview';
 import useEPGsStore from '../../store/epgs';
-
 import { FixedSizeList as List } from 'react-window';
-import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
+import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
+import {
+  showNotification,
+  updateNotification,
+} from '../../utils/notificationUtils.js';
+import {
+  addChannel,
+  clearChannelOverrides,
+  createLogo,
+  getChannelFormDefaultValues,
+  getFkProviderHint,
+  getFormattedValues,
+  getProviderFormValue,
+  getProviderHint,
+  handleEpgUpdate,
+  isFormFieldOverridden,
+  matchChannelEpg,
+  OVERRIDABLE_FIELDS,
+  OVERRIDE_FIELD_LABELS,
+  requeryChannels,
+} from '../../utils/forms/ChannelUtils.js';
 
-const ChannelForm = ({ channel = null, isOpen, onClose }) => {
+const validationSchema = Yup.object({
+  name: Yup.string().required('Name is required'),
+  channel_group_id: Yup.string().required('Channel group is required'),
+});
+
+// Provider hint plus a reset-to-provider icon for auto-synced
+// channels; rendered as the field's `description` prop.
+const ProviderHintRow = ({ channel, field, formValue, hintText, onReset }) => {
+  if (!hintText) return null;
+  const overridden = isFormFieldOverridden(channel, field, formValue);
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <Text size="xs" c="dimmed" component="span">
+        {hintText}
+      </Text>
+      {overridden && (
+        <Tooltip label="Reset to provider value" withArrow>
+          <ActionIcon
+            size="xs"
+            variant="subtle"
+            color="orange"
+            onClick={onReset}
+            aria-label={`Reset ${field} to provider value`}
+          >
+            <Undo2 size={11} />
+          </ActionIcon>
+        </Tooltip>
+      )}
+    </span>
+  );
+};
+
+const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
   const theme = useMantineTheme();
 
   const listRef = useRef(null);
   const logoListRef = useRef(null);
   const groupListRef = useRef(null);
 
+  // Local copy so in-modal mutations (clear overrides, etc.) update the
+  // form immediately. Reset on each open from `channelProp`; mutated in
+  // place with API responses.
+  const [channel, setChannel] = useState(channelProp);
+  useEffect(() => {
+    setChannel(channelProp);
+  }, [channelProp]);
+
   const channelGroups = useChannelsStore((s) => s.channelGroups);
-  const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
 
   const {
     logos: channelLogos,
@@ -65,9 +123,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   useEffect(() => {
     ensureLogosLoaded();
   }, [ensureLogosLoaded]);
-  const streams = useStreamsStore((state) => state.streams);
+
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
-  const playlists = usePlaylistsStore((s) => s.playlists);
   const epgs = useEPGsStore((s) => s.epgs);
   const tvgs = useEPGsStore((s) => s.tvgs);
   const tvgsById = useEPGsStore((s) => s.tvgsById);
@@ -86,21 +143,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const [autoMatchLoading, setAutoMatchLoading] = useState(false);
   const groupOptions = Object.values(channelGroups);
 
-  const addStream = (stream) => {
-    const streamSet = new Set(channelStreams);
-    streamSet.add(stream);
-    setChannelStreams(Array.from(streamSet));
-  };
-
-  const removeStream = (stream) => {
-    const streamSet = new Set(channelStreams);
-    streamSet.delete(stream);
-    setChannelStreams(Array.from(streamSet));
-  };
-
   const handleLogoSuccess = ({ logo }) => {
     if (logo && logo.id) {
-      formik.setFieldValue('logo_id', logo.id);
+      setValue('logo_id', logo.id);
       ensureLogosLoaded(); // Refresh logos
     }
     setLogoModalOpen(false);
@@ -109,7 +154,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const handleAutoMatchEpg = async () => {
     // Only attempt auto-match for existing channels (editing mode)
     if (!channel || !channel.id) {
-      notifications.show({
+      showNotification({
         title: 'Info',
         message: 'Auto-match is only available when editing existing channels.',
         color: 'blue',
@@ -118,43 +163,57 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     }
 
     setAutoMatchLoading(true);
+    let accepted = false;
     try {
-      const response = await API.matchChannelEpg(channel.id);
+      const response = await matchChannelEpg(channel);
+
+      if (response?.accepted) {
+        accepted = true;
+        showNotification({
+          title: 'Matching in Progress',
+          message:
+            response.message ||
+            'EPG auto-match is running. Results will appear when complete.',
+          color: 'blue',
+        });
+        return;
+      }
 
       if (response.matched) {
-        // Update the form with the new EPG data
-        if (response.channel && response.channel.epg_data_id) {
-          formik.setFieldValue('epg_data_id', response.channel.epg_data_id);
+        if (response.channel?.epg_data_id) {
+          setValue('epg_data_id', response.channel.epg_data_id);
         }
 
-        notifications.show({
+        showNotification({
           title: 'Success',
           message: response.message,
           color: 'green',
         });
       } else {
-        notifications.show({
+        showNotification({
           title: 'No Match Found',
           message: response.message,
           color: 'orange',
         });
       }
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to auto-match EPG data',
         color: 'red',
       });
       console.error('Auto-match error:', error);
     } finally {
-      setAutoMatchLoading(false);
+      if (!accepted) {
+        setAutoMatchLoading(false);
+      }
     }
   };
 
   const handleSetNameFromEpg = () => {
-    const epgDataId = formik.values.epg_data_id;
+    const epgDataId = watch('epg_data_id');
     if (!epgDataId) {
-      notifications.show({
+      showNotification({
         title: 'No EPG Selected',
         message: 'Please select an EPG source first.',
         color: 'orange',
@@ -164,14 +223,14 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
     const tvg = tvgsById[epgDataId];
     if (tvg && tvg.name) {
-      formik.setFieldValue('name', tvg.name);
-      notifications.show({
+      setValue('name', tvg.name);
+      showNotification({
         title: 'Success',
         message: `Channel name set to "${tvg.name}"`,
         color: 'green',
       });
     } else {
-      notifications.show({
+      showNotification({
         title: 'No Name Available',
         message: 'No name found in the selected EPG data.',
         color: 'orange',
@@ -180,9 +239,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   };
 
   const handleSetLogoFromEpg = async () => {
-    const epgDataId = formik.values.epg_data_id;
+    const epgDataId = watch('epg_data_id');
     if (!epgDataId) {
-      notifications.show({
+      showNotification({
         title: 'No EPG Selected',
         message: 'Please select an EPG source first.',
         color: 'orange',
@@ -192,7 +251,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
     const tvg = tvgsById[epgDataId];
     if (!tvg || !tvg.icon_url) {
-      notifications.show({
+      showNotification({
         title: 'No EPG Icon',
         message: 'EPG data does not have an icon URL.',
         color: 'orange',
@@ -202,20 +261,20 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
     try {
       // Try to find a logo that matches the EPG icon URL - check ALL logos to avoid duplicates
-      let matchingLogo = Object.values(allLogos).find(
+      const matchingLogo = Object.values(allLogos).find(
         (logo) => logo.url === tvg.icon_url
       );
 
       if (matchingLogo) {
-        formik.setFieldValue('logo_id', matchingLogo.id);
-        notifications.show({
+        setValue('logo_id', matchingLogo.id);
+        showNotification({
           title: 'Success',
           message: `Logo set to "${matchingLogo.name}"`,
           color: 'green',
         });
       } else {
         // Logo doesn't exist - create it
-        notifications.show({
+        showNotification({
           id: 'creating-logo',
           title: 'Creating Logo',
           message: `Creating new logo from EPG icon URL...`,
@@ -229,11 +288,11 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
           };
 
           // Create logo by calling the Logo API directly
-          const newLogo = await API.createLogo(newLogoData);
+          const newLogo = await createLogo(newLogoData);
 
-          formik.setFieldValue('logo_id', newLogo.id);
+          setValue('logo_id', newLogo.id);
 
-          notifications.update({
+          updateNotification({
             id: 'creating-logo',
             title: 'Success',
             message: `Created and assigned new logo "${newLogo.name}"`,
@@ -242,7 +301,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
             autoClose: 5000,
           });
         } catch (createError) {
-          notifications.update({
+          updateNotification({
             id: 'creating-logo',
             title: 'Error',
             message: 'Failed to create logo from EPG icon URL',
@@ -254,7 +313,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
         }
       }
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to set logo from EPG data',
         color: 'red',
@@ -264,9 +323,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   };
 
   const handleSetTvgIdFromEpg = () => {
-    const epgDataId = formik.values.epg_data_id;
+    const epgDataId = watch('epg_data_id');
     if (!epgDataId) {
-      notifications.show({
+      showNotification({
         title: 'No EPG Selected',
         message: 'Please select an EPG source first.',
         color: 'orange',
@@ -276,14 +335,14 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
     const tvg = tvgsById[epgDataId];
     if (tvg && tvg.tvg_id) {
-      formik.setFieldValue('tvg_id', tvg.tvg_id);
-      notifications.show({
+      setValue('tvg_id', tvg.tvg_id);
+      showNotification({
         title: 'Success',
         message: `TVG-ID set to "${tvg.tvg_id}"`,
         color: 'green',
       });
     } else {
-      notifications.show({
+      showNotification({
         title: 'No TVG-ID Available',
         message: 'No TVG-ID found in the selected EPG data.',
         color: 'orange',
@@ -291,130 +350,173 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     }
   };
 
-  const formik = useFormik({
-    initialValues: {
-      name: '',
-      channel_number: '', // Change from 0 to empty string for consistency
-      channel_group_id:
-        Object.keys(channelGroups).length > 0
-          ? Object.keys(channelGroups)[0]
-          : '',
-      stream_profile_id: '0',
-      tvg_id: '',
-      tvc_guide_stationid: '',
-      epg_data_id: '',
-      logo_id: '',
-      user_level: '0',
-    },
-    validationSchema: Yup.object({
-      name: Yup.string().required('Name is required'),
-      channel_group_id: Yup.string().required('Channel group is required'),
-    }),
-    onSubmit: async (values, { setSubmitting }) => {
-      let response;
+  const defaultValues = useMemo(
+    () => getChannelFormDefaultValues(channel, channelGroups),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [channel]
+  );
 
-      try {
-        const formattedValues = { ...values };
-
-        // Convert empty or "0" stream_profile_id to null for the API
-        if (
-          !formattedValues.stream_profile_id ||
-          formattedValues.stream_profile_id === '0'
-        ) {
-          formattedValues.stream_profile_id = null;
-        }
-
-        // Ensure tvg_id is properly included (no empty strings)
-        formattedValues.tvg_id = formattedValues.tvg_id || null;
-
-        // Ensure tvc_guide_stationid is properly included (no empty strings)
-        formattedValues.tvc_guide_stationid =
-          formattedValues.tvc_guide_stationid || null;
-
-        if (channel) {
-          // If there's an EPG to set, use our enhanced endpoint
-          if (values.epg_data_id !== (channel.epg_data_id ?? '')) {
-            // Use the special endpoint to set EPG and trigger refresh
-            const epgResponse = await API.setChannelEPG(
-              channel.id,
-              values.epg_data_id
-            );
-
-            // Remove epg_data_id from values since we've handled it separately
-            const { epg_data_id, ...otherValues } = formattedValues;
-
-            // Update other channel fields if needed
-            if (Object.keys(otherValues).length > 0) {
-              response = await API.updateChannel({
-                id: channel.id,
-                ...otherValues,
-                streams: channelStreams.map((stream) => stream.id),
-              });
-            }
-          } else {
-            // No EPG change, regular update
-            response = await API.updateChannel({
-              id: channel.id,
-              ...formattedValues,
-              streams: channelStreams.map((stream) => stream.id),
-            });
-          }
-        } else {
-          // New channel creation - use the standard method
-          response = await API.addChannel({
-            ...formattedValues,
-            streams: channelStreams.map((stream) => stream.id),
-          });
-        }
-      } catch (error) {
-        console.error('Error saving channel:', error);
-      }
-
-      formik.resetForm();
-      API.requeryChannels();
-
-      // Refresh channel profiles to update the membership information
-      useChannelsStore.getState().fetchChannelProfiles();
-
-      setSubmitting(false);
-      setTvgFilter('');
-      setLogoFilter('');
-      onClose();
-    },
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    watch,
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm({
+    defaultValues,
+    resolver: yupResolver(validationSchema),
   });
 
   useEffect(() => {
-    if (channel) {
-      if (channel.epg_data_id) {
-        const epgSource = epgs[tvgsById[channel.epg_data_id]?.epg_source];
-        setSelectedEPG(epgSource ? `${epgSource.id}` : '');
+    const onMatchResult = (event) => {
+      const data = event.detail;
+      if (!channel?.id || String(data.channel_id) !== String(channel.id)) {
+        return;
       }
 
-      formik.setValues({
-        name: channel.name || '',
-        channel_number:
-          channel.channel_number !== null ? channel.channel_number : '',
-        channel_group_id: channel.channel_group_id
-          ? `${channel.channel_group_id}`
-          : '',
-        stream_profile_id: channel.stream_profile_id
-          ? `${channel.stream_profile_id}`
-          : '0',
-        tvg_id: channel.tvg_id || '',
-        tvc_guide_stationid: channel.tvc_guide_stationid || '',
-        epg_data_id: channel.epg_data_id ?? '',
-        logo_id: channel.logo_id ? `${channel.logo_id}` : '',
-        user_level: `${channel.user_level}`,
-      });
+      if (data.matched && data.channel?.epg_data_id) {
+        setValue('epg_data_id', data.channel.epg_data_id);
+      }
 
-      setChannelStreams(channel.streams || []);
+      showNotification({
+        title: data.matched ? 'Success' : 'No Match Found',
+        message: data.message,
+        color: data.matched ? 'green' : 'orange',
+      });
+      setAutoMatchLoading(false);
+    };
+
+    window.addEventListener('single-channel-epg-match', onMatchResult);
+    return () =>
+      window.removeEventListener('single-channel-epg-match', onMatchResult);
+  }, [channel?.id, setValue]);
+
+  useEffect(() => {
+    if (!autoMatchLoading) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setAutoMatchLoading(false);
+      showNotification({
+        title: 'Matching Timed Out',
+        message:
+          'EPG auto-match is taking longer than expected. Check back shortly or try again.',
+        color: 'orange',
+      });
+    }, 180_000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [autoMatchLoading]);
+
+  const clearOverrides = async () => {
+    if (!channel) return;
+    try {
+      const updated = await clearChannelOverrides(channel.id);
+      // Update local state first so the form reflects the cleared
+      // overrides immediately; the table-store refresh is best-effort.
+      if (updated && typeof updated === 'object') {
+        setChannel(updated);
+      }
+      requeryChannels();
+      showNotification({
+        title: 'Overrides Cleared',
+        message: 'Channel values now follow the provider.',
+        color: 'green',
+      });
+    } catch (error) {
+      showNotification({
+        title: 'Clear Failed',
+        message:
+          error?.body?.detail || error?.message || 'Could not clear overrides.',
+        color: 'red',
+      });
+    }
+  };
+
+  // Computed from live form values so per-field resets update the
+  // Clear-all button immediately, before submit.
+  const watchedFormValues = watch();
+  const overriddenFieldLabels = useMemo(() => {
+    if (!channel) return [];
+    return OVERRIDABLE_FIELDS.filter((field) =>
+      isFormFieldOverridden(channel, field, watchedFormValues[field])
+    ).map((field) => OVERRIDE_FIELD_LABELS[field]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel, JSON.stringify(watchedFormValues)]);
+  const hasAnyOverride = overriddenFieldLabels.length > 0;
+
+  const onSubmit = async (values) => {
+    let saveFailed = false;
+    try {
+      const formattedValues = getFormattedValues(values);
+
+      if (channel) {
+        await handleEpgUpdate(channel, values, formattedValues, channelStreams);
+      } else {
+        // New channel creation - use the standard method
+        await addChannel({
+          ...formattedValues,
+          streams: channelStreams.map((stream) => stream.id),
+        });
+      }
+    } catch (error) {
+      console.error('Error saving channel:', error);
+      saveFailed = true;
+      showNotification({
+        title: 'Save Failed',
+        message:
+          error?.body?.detail || error?.message || 'Failed to save channel.',
+        color: 'red',
+      });
+    }
+
+    if (saveFailed) {
+      // Keep the form open with the user's edits intact so they can correct
+      // a validation error without retyping.
+      return;
+    }
+
+    showNotification({
+      title: 'Saved',
+      message: channel
+        ? `Channel "${values.name}" updated.`
+        : `Channel "${values.name}" created.`,
+      color: 'green',
+    });
+
+    reset();
+    requeryChannels();
+
+    // Refresh channel profiles to update the membership information
+    useChannelsStore.getState().fetchChannelProfiles();
+
+    setTvgFilter('');
+    setLogoFilter('');
+    onClose();
+  };
+
+  useEffect(() => {
+    reset(defaultValues);
+    setChannelStreams(channel?.streams || []);
+
+    if (channel?.epg_data_id) {
+      const epgSource = epgs[tvgsById[channel.epg_data_id]?.epg_source];
+      setSelectedEPG(epgSource ? `${epgSource.id}` : '');
     } else {
-      formik.resetForm();
+      setSelectedEPG('');
+    }
+
+    if (!channel) {
       setTvgFilter('');
       setLogoFilter('');
-      setChannelStreams([]); // Ensure streams are cleared when adding a new channel
     }
-  }, [channel, tvgsById, channelGroups]);
+  }, [defaultValues, channel, reset, epgs, tvgsById]);
+
+  const epgDataId = watch('epg_data_id');
+  const { currentProgram, isLoadingProgram, hasFetchedProgram } =
+    useEpgPreview(epgDataId);
 
   // Memoize logo options to prevent infinite re-renders during background loading
   const logoOptions = useMemo(() => {
@@ -431,10 +533,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     // If a new group was created and returned, update the form with it
     if (newGroup && newGroup.id) {
       // Preserve all current form values while updating just the channel_group_id
-      formik.setValues({
-        ...formik.values,
-        channel_group_id: `${newGroup.id}`,
-      });
+      setValue('channel_group_id', `${newGroup.id}`);
     }
   };
 
@@ -442,13 +541,21 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     return <></>;
   }
 
+  // Case- and accent-insensitive.
+  const foldText = (text) =>
+    text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+  // Every term must match, against name and id combined.
+  const tvgFilterTerms = foldText(tvgFilter).split(/\s+/).filter(Boolean);
   const filteredTvgs = tvgs
     .filter((tvg) => tvg.epg_source == selectedEPG)
-    .filter(
-      (tvg) =>
-        tvg.name.toLowerCase().includes(tvgFilter.toLowerCase()) ||
-        tvg.tvg_id.toLowerCase().includes(tvgFilter.toLowerCase())
-    );
+    .filter((tvg) => {
+      const haystack = foldText(`${tvg.name} ${tvg.tvg_id}`);
+      return tvgFilterTerms.every((term) => haystack.includes(term));
+    });
 
   const filteredLogos = logoOptions.filter((logo) =>
     logo.name.toLowerCase().includes(logoFilter.toLowerCase())
@@ -472,16 +579,28 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
         }
         styles={{ content: { '--mantine-color-body': '#27272A' } }}
       >
-        <form onSubmit={formik.handleSubmit}>
+        <form onSubmit={handleSubmit(onSubmit)}>
+          {channel?.auto_created && channel?.source_stream && (
+            <Text size="xs" c="dimmed" mb="xs">
+              Auto-created from:{' '}
+              <Text component="span" fw={500} c="gray.3">
+                {channel.source_stream.account_name || 'Unknown provider'}
+              </Text>
+              {channel.source_stream.name
+                ? ` / ${channel.source_stream.name}`
+                : ''}
+            </Text>
+          )}
           <Group justify="space-between" align="top">
-            <Stack gap="5" style={{ flex: 1 }}>
+            {/* Col 1: Identity - Channel Name, Number, Group, Logo */}
+            <Stack gap="5" style={{ flex: 1, minWidth: 0 }}>
               <TextInput
                 id="name"
                 name="name"
                 label={
                   <Group gap="xs">
                     <span>Channel Name</span>
-                    {formik.values.epg_data_id && (
+                    {watch('epg_data_id') && (
                       <Button
                         size="xs"
                         variant="transparent"
@@ -495,11 +614,50 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                     )}
                   </Group>
                 }
-                value={formik.values.name}
-                onChange={formik.handleChange}
-                error={formik.errors.name ? formik.touched.name : ''}
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="name"
+                    formValue={watch('name')}
+                    hintText={getProviderHint(channel, 'name')}
+                    onReset={() =>
+                      setValue('name', getProviderFormValue(channel, 'name'), {
+                        shouldDirty: true,
+                      })
+                    }
+                  />
+                }
+                {...register('name')}
+                error={errors.name?.message}
                 size="xs"
                 style={{ flex: 1 }}
+              />
+
+              <NumberInput
+                id="channel_number"
+                name="channel_number"
+                label="Channel # (blank to auto-assign)"
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="channel_number"
+                    formValue={watch('channel_number')}
+                    hintText={getProviderHint(channel, 'channel_number')}
+                    onReset={() =>
+                      setValue(
+                        'channel_number',
+                        getProviderFormValue(channel, 'channel_number'),
+                        { shouldDirty: true }
+                      )
+                    }
+                  />
+                }
+                value={watch('channel_number')}
+                onChange={(value) => setValue('channel_number', value)}
+                error={errors.channel_number?.message}
+                size="xs"
+                step={0.1}
+                precision={1}
               />
 
               <Flex gap="sm">
@@ -509,23 +667,41 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                   // position="bottom-start"
                   withArrow
                 >
-                  <Popover.Target>
+                  <PopoverTarget>
                     <TextInput
                       id="channel_group_id"
                       name="channel_group_id"
                       label="Channel Group"
+                      description={
+                        <ProviderHintRow
+                          channel={channel}
+                          field="channel_group_id"
+                          formValue={watch('channel_group_id')}
+                          hintText={getFkProviderHint(
+                            channel,
+                            'channel_group_id',
+                            channelGroups
+                          )}
+                          onReset={() =>
+                            setValue(
+                              'channel_group_id',
+                              getProviderFormValue(channel, 'channel_group_id')
+                            )
+                          }
+                        />
+                      }
                       readOnly
                       value={
-                        channelGroups[formik.values.channel_group_id]
-                          ? channelGroups[formik.values.channel_group_id].name
+                        channelGroups[watch('channel_group_id')]
+                          ? channelGroups[watch('channel_group_id')].name
                           : ''
                       }
                       onClick={() => setGroupPopoverOpened(true)}
                       size="xs"
                     />
-                  </Popover.Target>
+                  </PopoverTarget>
 
-                  <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                  <PopoverDropdown onMouseDown={(e) => e.stopPropagation()}>
                     <Group>
                       <TextInput
                         placeholder="Filter"
@@ -557,7 +733,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                             >
                               <UnstyledButton
                                 onClick={() => {
-                                  formik.setFieldValue(
+                                  setValue(
                                     'channel_group_id',
                                     filteredGroups[index].id
                                   );
@@ -580,30 +756,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         )}
                       </List>
                     </ScrollArea>
-                  </Popover.Dropdown>
+                  </PopoverDropdown>
                 </Popover>
 
-                {/* <Select
-                  id="channel_group_id"
-                  name="channel_group_id"
-                  label="Channel Group"
-                  value={formik.values.channel_group_id}
-                  searchable
-                  onChange={(value) => {
-                    formik.setFieldValue('channel_group_id', value); // Update Formik's state with the new value
-                  }}
-                  error={
-                    formik.errors.channel_group_id
-                      ? formik.touched.channel_group_id
-                      : ''
-                  }
-                  data={Object.values(channelGroups).map((option, index) => ({
-                    value: `${option.id}`,
-                    label: option.name,
-                  }))}
-                  size="xs"
-                  style={{ flex: 1 }}
-                /> */}
                 <Flex align="flex-end">
                   <ActionIcon
                     color={theme.tailwind.green[5]}
@@ -618,49 +773,6 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 </Flex>
               </Flex>
 
-              <Select
-                id="stream_profile_id"
-                label="Stream Profile"
-                name="stream_profile_id"
-                value={formik.values.stream_profile_id}
-                onChange={(value) => {
-                  formik.setFieldValue('stream_profile_id', value); // Update Formik's state with the new value
-                }}
-                error={
-                  formik.errors.stream_profile_id
-                    ? formik.touched.stream_profile_id
-                    : ''
-                }
-                data={[{ value: '0', label: '(use default)' }].concat(
-                  streamProfiles.map((option) => ({
-                    value: `${option.id}`,
-                    label: option.name,
-                  }))
-                )}
-                size="xs"
-              />
-
-              <Select
-                label="User Level Access"
-                data={Object.entries(USER_LEVELS).map(([, value]) => {
-                  return {
-                    label: USER_LEVEL_LABELS[value],
-                    value: `${value}`,
-                  };
-                })}
-                value={formik.values.user_level}
-                onChange={(value) => {
-                  formik.setFieldValue('user_level', value);
-                }}
-                error={
-                  formik.errors.user_level ? formik.touched.user_level : ''
-                }
-              />
-            </Stack>
-
-            <Divider size="sm" orientation="vertical" />
-
-            <Stack justify="flex-start" style={{ flex: 1 }}>
               <Group justify="space-between">
                 <Popover
                   opened={logoPopoverOpened}
@@ -677,14 +789,14 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                   // position="bottom-start"
                   withArrow
                 >
-                  <Popover.Target>
+                  <PopoverTarget>
                     <TextInput
                       id="logo_id"
                       name="logo_id"
                       label={
                         <Group gap="xs">
                           <span>Logo</span>
-                          {formik.values.epg_data_id && (
+                          {watch('epg_data_id') && (
                             <Button
                               size="xs"
                               variant="transparent"
@@ -698,10 +810,26 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                           )}
                         </Group>
                       }
-                      readOnly
-                      value={
-                        channelLogos[formik.values.logo_id]?.name || 'Default'
+                      description={
+                        <ProviderHintRow
+                          channel={channel}
+                          field="logo_id"
+                          formValue={watch('logo_id')}
+                          hintText={getFkProviderHint(
+                            channel,
+                            'logo_id',
+                            channelLogos
+                          )}
+                          onReset={() =>
+                            setValue(
+                              'logo_id',
+                              getProviderFormValue(channel, 'logo_id')
+                            )
+                          }
+                        />
                       }
+                      readOnly
+                      value={channelLogos[watch('logo_id')]?.name || 'Default'}
                       onClick={() => {
                         console.log(
                           'Logo input clicked, setting popover opened to true'
@@ -710,9 +838,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       }}
                       size="xs"
                     />
-                  </Popover.Target>
+                  </PopoverTarget>
 
-                  <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                  <PopoverDropdown onMouseDown={(e) => e.stopPropagation()}>
                     <Group>
                       <TextInput
                         placeholder="Filter"
@@ -756,10 +884,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                                 borderRadius: '4px',
                               }}
                               onClick={() => {
-                                formik.setFieldValue(
-                                  'logo_id',
-                                  filteredLogos[index].id
-                                );
+                                setValue('logo_id', filteredLogos[index].id);
                                 setLogoPopoverOpened(false);
                               }}
                               onMouseEnter={(e) => {
@@ -805,12 +930,12 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         </List>
                       )}
                     </ScrollArea>
-                  </Popover.Dropdown>
+                  </PopoverDropdown>
                 </Popover>
 
                 <Stack gap="xs" align="center">
                   <LazyLogo
-                    logoId={formik.values.logo_id}
+                    logoId={watch('logo_id')}
                     alt="channel logo"
                     style={{ height: 40 }}
                   />
@@ -828,33 +953,19 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
             <Divider size="sm" orientation="vertical" />
 
-            <Stack gap="5" style={{ flex: 1 }} justify="flex-start">
-              <NumberInput
-                id="channel_number"
-                name="channel_number"
-                label="Channel # (blank to auto-assign)"
-                value={formik.values.channel_number}
-                onChange={(value) =>
-                  formik.setFieldValue('channel_number', value)
-                }
-                error={
-                  formik.errors.channel_number
-                    ? formik.touched.channel_number
-                    : ''
-                }
-                size="xs"
-                step={0.1} // Add step prop to allow decimal inputs
-                precision={1} // Specify decimal precision
-                removeTrailingZeros // Optional: remove trailing zeros for cleaner display
-              />
-
+            {/* Col 2: Guide Data - TVG-ID, Gracenote StationId, EPG, Program Preview */}
+            <Stack
+              gap="5"
+              style={{ flex: 1, minWidth: 0 }}
+              justify="flex-start"
+            >
               <TextInput
                 id="tvg_id"
                 name="tvg_id"
                 label={
                   <Group gap="xs">
                     <span>TVG-ID</span>
-                    {formik.values.epg_data_id && (
+                    {watch('epg_data_id') && (
                       <Button
                         size="xs"
                         variant="transparent"
@@ -868,9 +979,23 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                     )}
                   </Group>
                 }
-                value={formik.values.tvg_id}
-                onChange={formik.handleChange}
-                error={formik.errors.tvg_id ? formik.touched.tvg_id : ''}
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="tvg_id"
+                    formValue={watch('tvg_id')}
+                    hintText={getProviderHint(channel, 'tvg_id')}
+                    onReset={() =>
+                      setValue(
+                        'tvg_id',
+                        getProviderFormValue(channel, 'tvg_id'),
+                        { shouldDirty: true }
+                      )
+                    }
+                  />
+                }
+                {...register('tvg_id')}
+                error={errors.tvg_id?.message}
                 size="xs"
               />
 
@@ -878,23 +1003,32 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 id="tvc_guide_stationid"
                 name="tvc_guide_stationid"
                 label="Gracenote StationId"
-                value={formik.values.tvc_guide_stationid}
-                onChange={formik.handleChange}
-                error={
-                  formik.errors.tvc_guide_stationid
-                    ? formik.touched.tvc_guide_stationid
-                    : ''
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="tvc_guide_stationid"
+                    formValue={watch('tvc_guide_stationid')}
+                    hintText={getProviderHint(channel, 'tvc_guide_stationid')}
+                    onReset={() =>
+                      setValue(
+                        'tvc_guide_stationid',
+                        getProviderFormValue(channel, 'tvc_guide_stationid'),
+                        { shouldDirty: true }
+                      )
+                    }
+                  />
                 }
+                {...register('tvc_guide_stationid')}
+                error={errors.tvc_guide_stationid?.message}
                 size="xs"
               />
 
               <Popover
                 opened={epgPopoverOpened}
                 onChange={setEpgPopoverOpened}
-                // position="bottom-start"
                 withArrow
               >
-                <Popover.Target>
+                <PopoverTarget>
                   <TextInput
                     id="epg_data_id"
                     name="epg_data_id"
@@ -904,9 +1038,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         <Button
                           size="xs"
                           variant="transparent"
-                          onClick={() =>
-                            formik.setFieldValue('epg_data_id', null)
-                          }
+                          onClick={() => setValue('epg_data_id', null)}
                         >
                           Use Dummy
                         </Button>
@@ -931,9 +1063,27 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         </Button>
                       </Group>
                     }
+                    description={
+                      <ProviderHintRow
+                        channel={channel}
+                        field="epg_data_id"
+                        formValue={watch('epg_data_id')}
+                        hintText={getFkProviderHint(
+                          channel,
+                          'epg_data_id',
+                          tvgsById
+                        )}
+                        onReset={() =>
+                          setValue(
+                            'epg_data_id',
+                            getProviderFormValue(channel, 'epg_data_id')
+                          )
+                        }
+                      />
+                    }
                     readOnly
                     value={(() => {
-                      const tvg = tvgsById[formik.values.epg_data_id];
+                      const tvg = tvgsById[watch('epg_data_id')];
                       const epgSource = tvg && epgs[tvg.epg_source];
                       const tvgLabel = tvg ? tvg.name || tvg.id : '';
                       if (epgSource && tvgLabel) {
@@ -953,7 +1103,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                           color="white"
                           onClick={(e) => {
                             e.stopPropagation();
-                            formik.setFieldValue('epg_data_id', null);
+                            setValue('epg_data_id', null);
                           }}
                           title="Create new group"
                           size="small"
@@ -964,18 +1114,21 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       </Tooltip>
                     }
                   />
-                </Popover.Target>
+                </PopoverTarget>
 
-                <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                <PopoverDropdown onMouseDown={(e) => e.stopPropagation()}>
                   <Group>
                     <Select
                       label="Source"
                       value={selectedEPG}
                       onChange={setSelectedEPG}
-                      data={Object.values(epgs).map((epg) => ({
-                        value: `${epg.id}`,
-                        label: epg.name,
-                      }))}
+                      data={Object.values(epgs)
+                        .filter((epg) => epg.is_active)
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map((epg) => ({
+                          value: `${epg.id}`,
+                          label: epg.name,
+                        }))}
                       size="xs"
                       mb="xs"
                     />
@@ -983,6 +1136,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                     {/* Filter Input */}
                     <TextInput
                       label="Filter"
+                      name="tvg-filter"
                       value={tvgFilter}
                       onChange={(event) =>
                         setTvgFilter(event.currentTarget.value)
@@ -1012,12 +1166,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                             size="xs"
                             onClick={() => {
                               if (filteredTvgs[index].id == '0') {
-                                formik.setFieldValue('epg_data_id', null);
+                                setValue('epg_data_id', null);
                               } else {
-                                formik.setFieldValue(
-                                  'epg_data_id',
-                                  filteredTvgs[index].id
-                                );
+                                setValue('epg_data_id', filteredTvgs[index].id);
                                 // Also update selectedEPG to match the EPG source of the selected tvg
                                 if (filteredTvgs[index].epg_source) {
                                   setSelectedEPG(
@@ -1038,8 +1189,126 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       )}
                     </List>
                   </ScrollArea>
-                </Popover.Dropdown>
+                </PopoverDropdown>
               </Popover>
+
+              {(isLoadingProgram || hasFetchedProgram || currentProgram) && (
+                <Box mt="xs" p="xs">
+                  <ProgramPreview
+                    program={currentProgram}
+                    loading={isLoadingProgram}
+                    fetched={hasFetchedProgram}
+                    label="Current Program:"
+                  />
+                </Box>
+              )}
+            </Stack>
+
+            <Divider size="sm" orientation="vertical" />
+
+            {/* Col 3: Behavior/Access - Stream Profile, User Level, Mature Content, Hidden */}
+            <Stack justify="flex-start" style={{ flex: 1, minWidth: 0 }}>
+              <Select
+                id="stream_profile_id"
+                label="Stream Profile"
+                name="stream_profile_id"
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="stream_profile_id"
+                    formValue={watch('stream_profile_id')}
+                    hintText={getFkProviderHint(
+                      channel,
+                      'stream_profile_id',
+                      streamProfiles.reduce((acc, p) => {
+                        acc[p.id] = p;
+                        return acc;
+                      }, {})
+                    )}
+                    onReset={() =>
+                      setValue(
+                        'stream_profile_id',
+                        getProviderFormValue(channel, 'stream_profile_id')
+                      )
+                    }
+                  />
+                }
+                value={watch('stream_profile_id')}
+                onChange={(value) => {
+                  setValue('stream_profile_id', value);
+                }}
+                error={errors.stream_profile_id?.message}
+                data={[{ value: '0', label: '(use default)' }].concat(
+                  streamProfiles.map((option) => ({
+                    value: `${option.id}`,
+                    label: option.name,
+                  }))
+                )}
+                size="xs"
+              />
+
+              <Select
+                label="User Level Access"
+                data={Object.entries(USER_LEVELS).map(([, value]) => {
+                  return {
+                    label: USER_LEVEL_LABELS[value],
+                    value: `${value}`,
+                  };
+                })}
+                value={watch('user_level')}
+                onChange={(value) => {
+                  setValue('user_level', value);
+                }}
+                error={errors.user_level?.message}
+              />
+
+              <Tooltip label="Mark as mature/adult content (18+)" withArrow>
+                <Box>
+                  <Switch
+                    label="Mature Content"
+                    checked={watch('is_adult')}
+                    onChange={(event) =>
+                      setValue('is_adult', event.currentTarget.checked)
+                    }
+                    size="md"
+                  />
+                </Box>
+              </Tooltip>
+              <Tooltip
+                label="Hides this channel from HDHR, M3U, EPG, and XC client output and preserves it from auto-cleanup. To hide channels per-user, use channel profiles instead."
+                withArrow
+                multiline
+                w={320}
+              >
+                <Box>
+                  <Switch
+                    label="Hidden"
+                    checked={watch('hidden_from_output')}
+                    onChange={(event) =>
+                      setValue(
+                        'hidden_from_output',
+                        event.currentTarget.checked
+                      )
+                    }
+                    size="md"
+                  />
+                </Box>
+              </Tooltip>
+              {channel?.auto_created && hasAnyOverride && (
+                <Tooltip
+                  label={`Currently overriding: ${overriddenFieldLabels.join(', ')}. Clear all overrides to follow the provider values again on the next refresh.`}
+                  withArrow
+                >
+                  <Button
+                    variant="light"
+                    color="orange"
+                    size="xs"
+                    onClick={clearOverrides}
+                  >
+                    Clear All Overrides ({overriddenFieldLabels.length})
+                  </Button>
+                </Tooltip>
+              )}
             </Stack>
           </Group>
 
@@ -1047,11 +1316,11 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
             <Button
               type="submit"
               variant="default"
-              disabled={formik.isSubmitting}
-              loading={formik.isSubmitting}
+              disabled={isSubmitting}
+              loading={isSubmitting}
               loaderProps={{ type: 'dots' }}
             >
-              {formik.isSubmitting ? 'Saving...' : 'Submit'}
+              {isSubmitting ? 'Saving...' : 'Submit'}
             </Button>
           </Flex>
         </form>

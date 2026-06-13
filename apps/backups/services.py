@@ -23,15 +23,40 @@ def get_backup_dir() -> Path:
 
 
 def _is_postgresql() -> bool:
-    """Check if we're using PostgreSQL."""
-    return settings.DATABASES["default"]["ENGINE"] == "django.db.backends.postgresql"
+    return "postgresql" in settings.DATABASES["default"]["ENGINE"]
 
 
 def _get_pg_env() -> dict:
-    """Get environment variables for PostgreSQL commands."""
+    """Get environment variables for PostgreSQL commands.
+
+    Includes PGPASSWORD for password auth and PGSSL* variables for TLS.
+    Reads TLS config from DATABASES['default']['OPTIONS'], which is
+    populated by settings.py when POSTGRES_SSL=true.
+    """
     db_config = settings.DATABASES["default"]
     env = os.environ.copy()
-    env["PGPASSWORD"] = db_config.get("PASSWORD", "")
+
+    password = db_config.get("PASSWORD", "")
+    if password:
+        env["PGPASSWORD"] = password
+    else:
+        env.pop("PGPASSWORD", None)
+
+    # Propagate TLS configuration from Django OPTIONS to libpq env vars.
+    options = db_config.get("OPTIONS", {})
+    _ssl_env_map = {
+        "sslmode": "PGSSLMODE",
+        "sslrootcert": "PGSSLROOTCERT",
+        "sslcert": "PGSSLCERT",
+        "sslkey": "PGSSLKEY",
+    }
+    # Always strip inherited PGSSL* vars first, then set only what is explicitly configured
+    for opt_key, env_key in _ssl_env_map.items():
+        env.pop(env_key, None)
+        value = options.get(opt_key)
+        if value:
+            env[env_key] = value
+
     return env
 
 
@@ -72,17 +97,47 @@ def _dump_postgresql(output_file: Path) -> None:
     logger.debug(f"pg_dump output: {result.stderr}")
 
 
+def _clean_postgresql_schema() -> None:
+    """Drop and recreate the public schema to ensure a completely clean restore."""
+    logger.info("[PG_CLEAN] Dropping and recreating public schema...")
+
+    # Commands to drop and recreate schema
+    sql_commands = "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO public;"
+
+    cmd = [
+        "psql",
+        *_get_pg_args(),
+        "-c", sql_commands,
+    ]
+
+    result = subprocess.run(
+        cmd,
+        env=_get_pg_env(),
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        logger.error(f"[PG_CLEAN] Failed to clean schema: {result.stderr}")
+        raise RuntimeError(f"Failed to clean PostgreSQL schema: {result.stderr}")
+
+    logger.info("[PG_CLEAN] Schema cleaned successfully")
+
+
 def _restore_postgresql(dump_file: Path) -> None:
     """Restore PostgreSQL database using pg_restore."""
     logger.info("[PG_RESTORE] Starting pg_restore...")
     logger.info(f"[PG_RESTORE] Dump file: {dump_file}")
+
+    # Drop and recreate schema to ensure a completely clean restore
+    _clean_postgresql_schema()
 
     pg_args = _get_pg_args()
     logger.info(f"[PG_RESTORE] Connection args: {pg_args}")
 
     cmd = [
         "pg_restore",
-        "--clean",  # Clean (drop) database objects before recreating
+        "--no-owner",  # Skip ownership commands (we already created schema)
         *pg_args,
         "-v",  # Verbose
         str(dump_file),
@@ -115,30 +170,25 @@ def _restore_postgresql(dump_file: Path) -> None:
 
 
 def _dump_sqlite(output_file: Path) -> None:
-    """Dump SQLite database using sqlite3 .backup command."""
-    logger.info("Dumping SQLite database with sqlite3 .backup...")
+    import sqlite3 as _sqlite3
+    logger.info("Dumping SQLite database...")
     db_path = Path(settings.DATABASES["default"]["NAME"])
 
     if not db_path.exists():
         raise FileNotFoundError(f"SQLite database not found: {db_path}")
 
-    # Use sqlite3 .backup command via stdin for reliable execution
-    result = subprocess.run(
-        ["sqlite3", str(db_path)],
-        input=f".backup '{output_file}'\n",
-        capture_output=True,
-        text=True,
-    )
+    src = _sqlite3.connect(str(db_path))
+    dst = _sqlite3.connect(str(output_file))
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
 
-    if result.returncode != 0:
-        logger.error(f"sqlite3 backup failed: {result.stderr}")
-        raise RuntimeError(f"sqlite3 backup failed: {result.stderr}")
-
-    # Verify the backup file was created
     if not output_file.exists():
-        raise RuntimeError("sqlite3 backup failed: output file not created")
+        raise RuntimeError("SQLite backup failed: output file not created")
 
-    logger.info(f"sqlite3 backup completed successfully: {output_file}")
+    logger.info(f"SQLite backup completed successfully: {output_file}")
 
 
 def _restore_sqlite(dump_file: Path) -> None:
@@ -160,23 +210,20 @@ def _restore_sqlite(dump_file: Path) -> None:
     # We can simply copy it over the existing database
     shutil.copy2(dump_file, db_path)
 
-    # Verify the restore worked by checking if sqlite3 can read it
-    result = subprocess.run(
-        ["sqlite3", str(db_path)],
-        input=".tables\n",
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        logger.error(f"sqlite3 verification failed: {result.stderr}")
-        # Try to restore from backup
+    # Verify the restore worked by checking if the file is a readable SQLite database
+    import sqlite3 as _sqlite3
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        conn.close()
+    except _sqlite3.DatabaseError as exc:
+        logger.error(f"SQLite verification failed: {exc}")
         if backup_current and backup_current.exists():
             shutil.copy2(backup_current, db_path)
             logger.info("Restored original database from backup")
-        raise RuntimeError(f"sqlite3 restore verification failed: {result.stderr}")
+        raise RuntimeError(f"SQLite restore verification failed: {exc}") from exc
 
-    logger.info("sqlite3 restore completed successfully")
+    logger.info("SQLite restore completed successfully")
 
 
 def create_backup() -> Path:

@@ -3,14 +3,19 @@ import useAuthStore from './store/auth';
 import useChannelsStore from './store/channels';
 import useLogosStore from './store/logos';
 import useUserAgentsStore from './store/userAgents';
+import useServerGroupsStore from './store/serverGroups';
 import usePlaylistsStore from './store/playlists';
 import useEPGsStore from './store/epgs';
 import useStreamsStore from './store/streams';
 import useStreamProfilesStore from './store/streamProfiles';
+import useOutputProfilesStore from './store/outputProfiles';
 import useSettingsStore from './store/settings';
 import { notifications } from '@mantine/notifications';
 import useChannelsTableStore from './store/channelsTable';
+import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
+import useConnectStore from './store/connect';
+import Limiter from './utils';
 
 // If needed, you can set a base host or keep it empty if relative requests
 const host = import.meta.env.DEV
@@ -103,6 +108,41 @@ export default class API {
     return await useAuthStore.getState().getToken();
   }
 
+  /**
+   * Fetch all pages for a paginated endpoint when you already know totalCount.
+   * Builds page calls from totalCount and pageSize and aggregates all results.
+   * - endpoint: path like "/api/channels/channels/"
+   * - params: URLSearchParams for filters (will not be mutated)
+   * - totalCount: total number of matching items
+   * - pageSize: items per page
+   * Returns a flat array of results. Supports both array and {results, next} responses.
+   */
+  static async fetchAllByCount(endpoint, params, totalCount, pageSize = 200) {
+    const total = Number(totalCount) || 0;
+    const size = Number(pageSize) || 200;
+    const totalPages = Math.max(1, Math.ceil(total / size));
+
+    const requests = [];
+    for (let page = 1; page <= totalPages; page++) {
+      const q = new URLSearchParams(params || new URLSearchParams());
+      q.set('page', String(page));
+      q.set('page_size', String(size));
+      const url = `${host}${endpoint}?${q.toString()}`;
+      requests.push(request(url));
+    }
+
+    const responses = await Promise.all(requests);
+    const all = [];
+    for (const data of responses) {
+      if (Array.isArray(data)) {
+        all.push(...data);
+      } else if (Array.isArray(data?.results)) {
+        all.push(...data.results);
+      }
+    }
+    return all;
+  }
+
   static async fetchSuperUser() {
     try {
       return await request(`${host}/api/accounts/initialize-superuser/`, {
@@ -170,18 +210,137 @@ export default class API {
 
   static async logout() {
     return await request(`${host}/api/accounts/auth/logout/`, {
-      auth: true,  // Send JWT token so backend can identify the user
+      auth: true, // Send JWT token so backend can identify the user
       method: 'POST',
     });
   }
 
   static async getChannels() {
     try {
-      const response = await request(`${host}/api/channels/channels/`);
+      // Paginate through channels to avoid heavy single response
+      const pageSize = 200;
+      const allChannels = [];
 
-      return response;
+      // Get first page to get total results count
+      const data = await request(
+        `${host}/api/channels/channels/?page=1&page_size=${pageSize}`
+      );
+
+      // Backward compatibility: if endpoint returns an array (legacy), just return it
+      if (Array.isArray(data)) {
+        return data;
+      }
+
+      allChannels.concat(Array.isArray(data?.results) ? data.results : []);
+
+      const totalPages = Math.max(1, Math.ceil(data.count / pageSize)) - 1;
+      const apiCalls = [];
+      for (let page = 2; page <= totalPages; page++) {
+        apiCalls.push(
+          new Promise(async (resolve) => {
+            const response = await request(
+              `${host}/api/channels/channels/?page=${page}&page_size=${pageSize}`
+            );
+
+            return resolve(
+              Array.isArray(response?.results) ? response.results : []
+            );
+          })
+        );
+      }
+
+      const allResults = await Limiter.all(5, apiCalls);
+
+      return allResults;
     } catch (e) {
       errorNotification('Failed to retrieve channels', e);
+    }
+  }
+
+  /**
+   * Retrieve a lightweight summary of channels (id, name, logo_id,
+   * channel_number, uuid, epg_data_id, channel_group_id).
+   * Designed for the TV Guide where full channel data is not needed.
+   */
+  static async getChannelsSummary(params = new URLSearchParams()) {
+    try {
+      const url = `${host}/api/channels/channels/summary/?${params.toString()}`;
+      const data = await request(url);
+      return Array.isArray(data) ? data : [];
+    } catch (e) {
+      errorNotification('Failed to retrieve channel summary', e);
+      return [];
+    }
+  }
+
+  // Repack visible auto-created channels into [start, end]; override
+  // pins are reservations and hidden non-pinned channels release their
+  // number.
+  static async repackGroupChannels(accountId, channelGroupId) {
+    try {
+      const params = new URLSearchParams({
+        channel_group_id: String(channelGroupId),
+      });
+      const url = `${host}/api/m3u/accounts/${accountId}/repack-group/?${params.toString()}`;
+      return await request(url, { method: 'POST' });
+    } catch (e) {
+      errorNotification('Failed to re-pack group channels', e);
+      return null;
+    }
+  }
+
+  // Returns occupants whose effective channel_number falls in [start, end].
+  // Pass `signal` from an AbortController on per-keystroke calls so an
+  // out-of-order response cannot overwrite newer state.
+  static async getChannelsInRange(start, end, { signal } = {}) {
+    try {
+      const params = new URLSearchParams({ start: String(start) });
+      if (end !== undefined && end !== null && end !== '') {
+        params.set('end', String(end));
+      }
+      const url = `${host}/api/channels/channels/numbers-in-range/?${params.toString()}`;
+      return await request(url, { signal });
+    } catch (e) {
+      if (e?.name === 'AbortError') {
+        throw e;
+      }
+      // Silent failure is correct here: the warning is purely advisory and
+      // should not block the user from saving when the server is flaky.
+      return { occupants: [] };
+    }
+  }
+
+  // Server-side regex preview for a group's streams. Returns find_matches,
+  // filter_matches, and exclude_matches plus accurate counts across the
+  // whole group (capped at 5000 scanned streams server-side). Used by the
+  // auto-sync gear modal so the user sees real matches and totals rather
+  // than a small client-side sample. The three patterns are independent;
+  // any combination can be supplied per call.
+  static async getStreamsRegexPreview(
+    channelGroupName,
+    { find, replace, match, exclude, limit = 10, signal, m3uAccountId } = {}
+  ) {
+    try {
+      const params = new URLSearchParams({
+        channel_group: channelGroupName,
+      });
+      if (m3uAccountId !== undefined && m3uAccountId !== null) {
+        params.set('m3u_account_id', String(m3uAccountId));
+      }
+      if (find) params.set('find', find);
+      if (replace !== undefined && replace !== null) {
+        params.set('replace', replace);
+      }
+      if (match) params.set('match', match);
+      if (exclude) params.set('exclude', exclude);
+      params.set('limit', String(limit));
+      const url = `${host}/api/channels/streams/regex-preview/?${params.toString()}`;
+      return await request(url, { signal });
+    } catch (e) {
+      if (e?.name === 'AbortError') {
+        throw e;
+      }
+      return null;
     }
   }
 
@@ -197,7 +356,70 @@ export default class API {
 
       return response;
     } catch (e) {
+      // Handle invalid page error by resetting to page 1 and retrying
+      if (e.body?.detail === 'Invalid page.') {
+        const currentPagination = useChannelsTableStore.getState().pagination;
+
+        // Only retry if we're not already on page 1
+        if (currentPagination.pageIndex > 0) {
+          // Reset to page 1
+          useChannelsTableStore.getState().setPagination({
+            ...currentPagination,
+            pageIndex: 0,
+          });
+
+          // Update params to page 1 and retry
+          const newParams = new URLSearchParams(params);
+          newParams.set('page', '1');
+
+          const response = await request(
+            `${host}/api/channels/channels/?${newParams.toString()}`
+          );
+
+          useChannelsTableStore.getState().queryChannels(response, newParams);
+          return response;
+        }
+      }
+
       errorNotification('Failed to fetch channels', e);
+    }
+  }
+
+  /**
+   * Retrieve channels matching the provided query params, paging until complete.
+   * Does NOT touch any table/store state; returns a plain array.
+   */
+  static async getChannelsForParams(params) {
+    try {
+      const pageSize = 200;
+      const query = new URLSearchParams(params);
+      let page = 1;
+      let all = [];
+
+      while (true) {
+        query.set('page', String(page));
+        query.set('page_size', String(pageSize));
+        const url = `${host}/api/channels/channels/?${query.toString()}`;
+        const data = await request(url);
+
+        if (Array.isArray(data)) {
+          // Legacy array response
+          all = data;
+          break;
+        }
+
+        const results = Array.isArray(data?.results) ? data.results : [];
+        all = all.concat(results);
+
+        const hasMore = Boolean(data?.next);
+        if (!hasMore || results.length === 0) break;
+        page += 1;
+      }
+
+      return all;
+    } catch (e) {
+      errorNotification('Failed to retrieve channels for query', e);
+      throw e;
     }
   }
 
@@ -217,11 +439,40 @@ export default class API {
 
       return response;
     } catch (e) {
+      // Handle invalid page error by resetting to page 1 and retrying
+      if (e.body?.detail === 'Invalid page.') {
+        const currentPagination = useChannelsTableStore.getState().pagination;
+
+        // Only retry if we're not already on page 1
+        if (currentPagination.pageIndex > 0) {
+          // Reset to page 1
+          useChannelsTableStore.getState().setPagination({
+            ...currentPagination,
+            pageIndex: 0,
+          });
+
+          // Update params to page 1 and retry
+          const newParams = new URLSearchParams(API.lastQueryParams);
+          newParams.set('page', '1');
+          API.lastQueryParams = newParams;
+
+          const [response, ids] = await Promise.all([
+            request(`${host}/api/channels/channels/?${newParams.toString()}`),
+            API.getAllChannelIds(newParams),
+          ]);
+
+          useChannelsTableStore.getState().queryChannels(response, newParams);
+          useChannelsTableStore.getState().setAllQueryIds(ids);
+
+          return response;
+        }
+      }
+
       errorNotification('Failed to fetch channels', e);
     }
   }
 
-  static async getAllChannelIds(params) {
+  static async getAllChannelIds(params = new URLSearchParams()) {
     try {
       const response = await request(
         `${host}/api/channels/channels/ids/?${params.toString()}`
@@ -331,10 +582,20 @@ export default class API {
         channelData.channel_number === '' ||
         channelData.channel_number === null ||
         channelData.channel_number === undefined ||
-        (typeof channelData.channel_number === 'string' && channelData.channel_number.trim() === '')
+        (typeof channelData.channel_number === 'string' &&
+          channelData.channel_number.trim() === '')
       ) {
         delete channelData.channel_number;
       }
+
+      // Add channel profile IDs based on current selection
+      const selectedProfileId = useChannelsStore.getState().selectedProfileId;
+      if (selectedProfileId && selectedProfileId !== '0') {
+        // Specific profile selected - add only to that profile
+        channelData.channel_profile_ids = [parseInt(selectedProfileId)];
+      }
+      // If selectedProfileId is '0' or not set, don't include channel_profile_ids
+      // which will trigger the backend's default behavior of adding to all profiles
 
       if (channel.logo_file) {
         // Must send FormData for file upload
@@ -371,6 +632,7 @@ export default class API {
       });
 
       useChannelsStore.getState().removeChannels([id]);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete channel', e);
     }
@@ -385,6 +647,7 @@ export default class API {
       });
 
       useChannelsStore.getState().removeChannels(channel_ids);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete channels', e);
     }
@@ -438,9 +701,83 @@ export default class API {
       );
 
       useChannelsStore.getState().updateChannel(response);
+      if (Object.prototype.hasOwnProperty.call(payload, 'streams')) {
+        await API.requeryStreams();
+      }
       return response;
     } catch (e) {
       errorNotification('Failed to update channel', e);
+    }
+  }
+
+  /**
+   * PATCHes only the stream order for a channel
+   * without triggering requeryStreams or requeryChannels. The caller is
+   * responsible for optimistic UI updates.
+   */
+  static async reorderChannelStreams(channelId, streamIds) {
+    try {
+      await request(`${host}/api/channels/channels/${channelId}/`, {
+        method: 'PATCH',
+        body: { id: channelId, streams: streamIds },
+      });
+      // Update the channelsTable store in-place with the new stream order
+      const store = useChannelsTableStore.getState();
+      const channel = store.channels.find((c) => c.id === channelId);
+      if (channel) {
+        // Reorder the existing stream objects to match streamIds
+        const streamMap = new Map(channel.streams.map((s) => [s.id, s]));
+        const reorderedStreams = streamIds
+          .map((id) => streamMap.get(id))
+          .filter(Boolean);
+        store.updateChannel({ ...channel, streams: reorderedStreams });
+      }
+    } catch (e) {
+      errorNotification('Failed to reorder streams', e);
+      // On failure, requery to restore correct state
+      await API.requeryChannels();
+    }
+  }
+
+  /**
+   * PATCHes the channel with the
+   * combined stream list and updates the channelsTable store in-place
+   * using the stream objects the caller already has. Skips requeryStreams
+   * (stream data doesn't change) and requeryChannels (we build the
+   * result locally).
+   *
+   * @param {number} channelId
+   * @param {Array} existingStreams - current channel.streams (full objects)
+   * @param {Array} newStreams      - stream objects to append
+   */
+  static async addStreamsToChannel(channelId, existingStreams, newStreams) {
+    try {
+      const existing = existingStreams || [];
+      // Deduplicate by ID, preserving order (existing first, new appended)
+      const seen = new Set(existing.map((s) => s.id));
+      const merged = [...existing];
+      for (const s of newStreams) {
+        if (!seen.has(s.id)) {
+          seen.add(s.id);
+          merged.push(s);
+        }
+      }
+
+      await request(`${host}/api/channels/channels/${channelId}/`, {
+        method: 'PATCH',
+        body: { id: channelId, streams: merged.map((s) => s.id) },
+      });
+
+      // Update the channelsTable store in-place with the merged streams
+      const store = useChannelsTableStore.getState();
+      const channel = store.channels.find((c) => c.id === channelId);
+      if (channel) {
+        store.updateChannel({ ...channel, streams: merged });
+      }
+    } catch (e) {
+      errorNotification('Failed to add streams to channel', e);
+      // On failure, requery to restore correct state
+      await API.requeryChannels();
     }
   }
 
@@ -492,6 +829,61 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
+    }
+  }
+
+  // Server-side regex rename of channel names for selected IDs
+  static async bulkRegexRenameChannels(
+    channelIds,
+    find,
+    replace = '',
+    flags = 'g'
+  ) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/edit/bulk-regex/`,
+        {
+          method: 'POST',
+          body: {
+            channel_ids: channelIds,
+            find,
+            replace,
+            flags,
+          },
+        }
+      );
+
+      // Optional success notification
+      if (response?.success) {
+        notifications.show({
+          title: 'Channel Names Updated',
+          message: `Renamed ${response.updated_count} channel(s) via regex`,
+          color: 'green',
+          autoClose: 4000,
+        });
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to apply regex renames', e);
+    }
+  }
+
+  static async reorderChannel(channelId, insertAfterId) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/${channelId}/reorder/`,
+        {
+          method: 'POST',
+          body: {
+            insert_after_id: insertAfterId,
+          },
+        }
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to reorder channel', e);
     }
   }
 
@@ -627,7 +1019,11 @@ export default class API {
     }
   }
 
-  static async createChannelsFromStreamsAsync(streamIds, channelProfileIds = null, startingChannelNumber = null) {
+  static async createChannelsFromStreamsAsync(
+    streamIds,
+    channelProfileIds = null,
+    startingChannelNumber = null
+  ) {
     try {
       const requestBody = {
         stream_ids: streamIds,
@@ -684,11 +1080,72 @@ export default class API {
     }
   }
 
+  /**
+   * Fetches a stats delta for a channel's streams. Errors are swallowed
+   * since this is a background refresh.
+   */
+  static async getChannelStreamStats(channelId, since, ids) {
+    try {
+      const params = new URLSearchParams();
+      if (since) params.set('since', since);
+      if (Array.isArray(ids) && ids.length > 0) {
+        params.set('ids', ids.join(','));
+      }
+      const qs = params.toString();
+      const response = await request(
+        `${host}/api/channels/channels/${channelId}/streams/stats/${qs ? `?${qs}` : ''}`
+      );
+      return Array.isArray(response) ? response : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
   static async queryStreams(params) {
     try {
       const response = await request(
         `${host}/api/channels/streams/?${params.toString()}`
       );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch streams', e);
+    }
+  }
+
+  static async queryStreamsTable(params) {
+    try {
+      API.lastStreamQueryParams = params;
+      useStreamsTableStore.getState().setLastQueryParams(params);
+
+      const response = await request(
+        `${host}/api/channels/streams/?${params.toString()}`
+      );
+
+      useStreamsTableStore.getState().queryStreams(response, params);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch streams', e);
+    }
+  }
+
+  static async requeryStreams() {
+    const params =
+      useStreamsTableStore.getState().lastQueryParams ||
+      API.lastStreamQueryParams;
+    if (!params) {
+      return null;
+    }
+
+    try {
+      const [response, ids] = await Promise.all([
+        request(`${host}/api/channels/streams/?${params.toString()}`),
+        API.getAllStreamIds(params),
+      ]);
+
+      useStreamsTableStore.getState().queryStreams(response, params);
+      useStreamsTableStore.getState().setAllQueryIds(ids);
 
       return response;
     } catch (e) {
@@ -718,6 +1175,20 @@ export default class API {
     }
   }
 
+  static async getStreamFilterOptions(params) {
+    try {
+      const response = await request(
+        `${host}/api/channels/streams/filter-options/?${params.toString()}`
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve filter options', e);
+      // Return safe defaults to prevent crashes during container startup
+      return { groups: [], m3u_accounts: [] };
+    }
+  }
+
   static async addStream(values) {
     try {
       const response = await request(`${host}/api/channels/streams/`, {
@@ -729,6 +1200,7 @@ export default class API {
         useStreamsStore.getState().addStream(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to add stream', e);
@@ -747,6 +1219,7 @@ export default class API {
         useStreamsStore.getState().updateStream(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to update stream', e);
@@ -760,6 +1233,7 @@ export default class API {
       });
 
       useStreamsStore.getState().removeStreams([id]);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete stream', e);
     }
@@ -773,6 +1247,7 @@ export default class API {
       });
 
       useStreamsStore.getState().removeStreams(ids);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete streams', e);
     }
@@ -831,6 +1306,59 @@ export default class API {
     }
   }
 
+  static async getServerGroups() {
+    try {
+      const response = await request(`${host}/api/m3u/server-groups/`);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve server groups', e);
+    }
+  }
+
+  static async addServerGroup(values) {
+    try {
+      const response = await request(`${host}/api/m3u/server-groups/`, {
+        method: 'POST',
+        body: values,
+      });
+
+      useServerGroupsStore.getState().addServerGroup(response);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create server group', e);
+    }
+  }
+
+  static async updateServerGroup(values) {
+    try {
+      const { id, ...payload } = values;
+      const response = await request(`${host}/api/m3u/server-groups/${id}/`, {
+        method: 'PUT',
+        body: payload,
+      });
+
+      useServerGroupsStore.getState().updateServerGroup(response);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update server group', e);
+    }
+  }
+
+  static async deleteServerGroup(id) {
+    try {
+      await request(`${host}/api/m3u/server-groups/${id}/`, {
+        method: 'DELETE',
+      });
+
+      useServerGroupsStore.getState().removeServerGroups([id]);
+    } catch (e) {
+      errorNotification('Failed to delete server group', e);
+    }
+  }
+
   static async getPlaylist(id) {
     try {
       const response = await request(`${host}/api/m3u/accounts/${id}/`);
@@ -882,6 +1410,7 @@ export default class API {
       if (values.file) {
         body = new FormData();
         for (const prop in values) {
+          if (values[prop] === null || values[prop] === undefined) continue;
           body.append(prop, values[prop]);
         }
       } else {
@@ -938,17 +1467,34 @@ export default class API {
   }
 
   static async deletePlaylist(id) {
+    // Cascade-deletes auto-created channels owned by the account; the
+    // response includes the deleted count for the confirmation toast.
     try {
-      await request(`${host}/api/m3u/accounts/${id}/`, {
+      const response = await request(`${host}/api/m3u/accounts/${id}/`, {
         method: 'DELETE',
       });
-
       usePlaylistsStore.getState().removePlaylists([id]);
-      // @TODO: MIGHT need to optimize this later if someone has thousands of channels
-      // but I'm feeling laze right now
-      // useChannelsStore.getState().fetchChannels();
+      return response || {};
     } catch (e) {
       errorNotification(`Failed to delete playlist ${id}`, e);
+      throw e;
+    }
+  }
+
+  // Used by the Delete Playlist confirmation dialog to render an accurate
+  // "Also delete N auto-created channels?" option before the user commits.
+  static async getPlaylistAutoCreatedChannelsCount(id) {
+    try {
+      const response = await request(
+        `${host}/api/m3u/accounts/${id}/auto-created-channels-count/`
+      );
+      return response;
+    } catch (e) {
+      console.error(
+        `Failed to fetch auto-created channel count for playlist ${id}`,
+        e
+      );
+      return { count: 0, sample_names: [] };
     }
   }
 
@@ -978,6 +1524,7 @@ export default class API {
 
         body = new FormData();
         for (const prop in values) {
+          if (values[prop] === null || values[prop] === undefined) continue;
           body.append(prop, values[prop]);
         }
       } else {
@@ -1006,7 +1553,6 @@ export default class API {
   static async getEPGs() {
     try {
       const response = await request(`${host}/api/epg/sources/`);
-
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve EPGs', e);
@@ -1021,6 +1567,35 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to retrieve EPG data', e);
     }
+  }
+
+  static async getCurrentPrograms(channelUUIDs = null) {
+    try {
+      const response = await request(`${host}/api/epg/current-programs/`, {
+        method: 'POST',
+        body: { channel_uuids: channelUUIDs },
+      });
+
+      return response;
+    } catch (e) {
+      console.error('Failed to retrieve current programs', e);
+      return [];
+    }
+  }
+
+  static async getCurrentProgramForEpg(epgId) {
+    const response = await request(`${host}/api/epg/current-programs/`, {
+      method: 'POST',
+      body: { epg_data_ids: [epgId] },
+    });
+
+    if (response && response.length > 0) {
+      if (response[0].parsing) {
+        return { parsing: true };
+      }
+      return response[0];
+    }
+    return null;
   }
 
   // Notice there's a duplicated "refreshPlaylist" method above;
@@ -1126,11 +1701,11 @@ export default class API {
     }
   }
 
-  static async refreshEPG(id) {
+  static async refreshEPG(id, force = false) {
     try {
       const response = await request(`${host}/api/epg/import/`, {
         method: 'POST',
-        body: { id },
+        body: { id, force },
       });
 
       return response;
@@ -1147,9 +1722,15 @@ export default class API {
       errorNotification('Failed to retrieve timezones', e);
       // Return fallback data instead of throwing
       return {
-        timezones: ['UTC', 'US/Eastern', 'US/Central', 'US/Mountain', 'US/Pacific'],
+        timezones: [
+          'UTC',
+          'US/Eastern',
+          'US/Central',
+          'US/Mountain',
+          'US/Pacific',
+        ],
         grouped: {},
-        count: 5
+        count: 5,
       };
     }
   }
@@ -1208,6 +1789,53 @@ export default class API {
     }
   }
 
+  static async getOutputProfiles() {
+    try {
+      const response = await request(`${host}/api/core/outputprofiles/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve output profiles', e);
+    }
+  }
+
+  static async addOutputProfile(values) {
+    try {
+      const response = await request(`${host}/api/core/outputprofiles/`, {
+        method: 'POST',
+        body: values,
+      });
+      useOutputProfilesStore.getState().addOutputProfile(response);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create output profile', e);
+    }
+  }
+
+  static async updateOutputProfile(values) {
+    const { id, ...payload } = values;
+    try {
+      const response = await request(`${host}/api/core/outputprofiles/${id}/`, {
+        method: 'PUT',
+        body: payload,
+      });
+      useOutputProfilesStore.getState().updateOutputProfile(response);
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to update output profile ${id}`, e);
+    }
+  }
+
+  static async deleteOutputProfile(id) {
+    try {
+      await request(`${host}/api/core/outputprofiles/${id}/`, {
+        method: 'DELETE',
+      });
+      useOutputProfilesStore.getState().removeOutputProfiles([id]);
+    } catch (e) {
+      errorNotification(`Failed to delete output profile ${id}`, e);
+    }
+  }
+
   static async getGrid() {
     try {
       const response = await request(`${host}/api/epg/grid/`);
@@ -1215,6 +1843,16 @@ export default class API {
       return response.data;
     } catch (e) {
       errorNotification('Failed to retrieve program grid', e);
+    }
+  }
+
+  static async getProgramDetail(programId) {
+    try {
+      const response = await request(`${host}/api/epg/programs/${programId}/`);
+      return response;
+    } catch (e) {
+      console.warn('Failed to retrieve program detail', e);
+      return null;
     }
   }
 
@@ -1263,9 +1901,7 @@ export default class API {
       });
 
       const playlist = await API.getPlaylist(accountId);
-      usePlaylistsStore
-        .getState()
-        .updateProfiles(playlist.id, playlist.profiles);
+      usePlaylistsStore.getState().updatePlaylist(playlist);
     } catch (e) {
       errorNotification(`Failed to update profile for account ${accountId}`, e);
     }
@@ -1273,16 +1909,22 @@ export default class API {
 
   static async refreshAccountInfo(profileId) {
     try {
-      const response = await request(`${host}/api/m3u/refresh-account-info/${profileId}/`, {
-        method: 'POST',
-      });
+      const response = await request(
+        `${host}/api/m3u/refresh-account-info/${profileId}/`,
+        {
+          method: 'POST',
+        }
+      );
       return response;
     } catch (e) {
       // If it's a structured error response, return it instead of throwing
       if (e.body && typeof e.body === 'object') {
         return e.body;
       }
-      errorNotification(`Failed to refresh account info for profile ${profileId}`, e);
+      errorNotification(
+        `Failed to refresh account info for profile ${profileId}`,
+        e
+      );
       throw e;
     }
   }
@@ -1409,7 +2051,11 @@ export default class API {
       });
 
       // Wait for the task to complete using token for auth
-      const result = await API.waitForBackupTask(response.task_id, onProgress, response.task_token);
+      const result = await API.waitForBackupTask(
+        response.task_id,
+        onProgress,
+        response.task_token
+      );
       return result;
     } catch (e) {
       errorNotification('Failed to create backup', e);
@@ -1422,13 +2068,10 @@ export default class API {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await request(
-        `${host}/api/backups/upload/`,
-        {
-          method: 'POST',
-          body: formData,
-        }
-      );
+      const response = await request(`${host}/api/backups/upload/`, {
+        method: 'POST',
+        body: formData,
+      });
       return response;
     } catch (e) {
       errorNotification('Failed to upload backup', e);
@@ -1451,7 +2094,9 @@ export default class API {
   static async getDownloadToken(filename) {
     // Get a download token from the server
     try {
-      const response = await request(`${host}/api/backups/${encodeURIComponent(filename)}/download-token/`);
+      const response = await request(
+        `${host}/api/backups/${encodeURIComponent(filename)}/download-token/`
+      );
       return response.token;
     } catch (e) {
       throw e;
@@ -1495,7 +2140,11 @@ export default class API {
 
       // Wait for the task to complete using token for auth
       // Token-based auth allows status polling even after DB restore invalidates user sessions
-      const result = await API.waitForBackupTask(response.task_id, onProgress, response.task_token);
+      const result = await API.waitForBackupTask(
+        response.task_id,
+        onProgress,
+        response.task_token
+      );
       return result;
     } catch (e) {
       errorNotification('Failed to restore backup', e);
@@ -1559,28 +2208,40 @@ export default class API {
     }
   }
 
-  static async importPlugin(file) {
+  static async importPlugin(file, overwrite = false, silent = false) {
     try {
       const form = new FormData();
       form.append('file', file);
+      if (overwrite) form.append('overwrite', 'true');
       const response = await request(`${host}/api/plugins/plugins/import/`, {
         method: 'POST',
         body: form,
       });
       return response;
     } catch (e) {
-      // Show only the concise error message for plugin import
-      const msg = (e?.body && (e.body.error || e.body.detail)) || e?.message || 'Failed to import plugin';
-      notifications.show({ title: 'Import failed', message: msg, color: 'red' });
+      if (!silent) {
+        const msg =
+          (e?.body && (e.body.error || e.body.detail)) ||
+          e?.message ||
+          'Failed to import plugin';
+        notifications.show({
+          title: 'Import failed',
+          message: msg,
+          color: 'red',
+        });
+      }
       throw e;
     }
   }
 
   static async deletePlugin(key) {
     try {
-      const response = await request(`${host}/api/plugins/plugins/${key}/delete/`, {
-        method: 'DELETE',
-      });
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/delete/`,
+        {
+          method: 'DELETE',
+        }
+      );
       return response;
     } catch (e) {
       errorNotification('Failed to delete plugin', e);
@@ -1599,15 +2260,19 @@ export default class API {
       return response?.settings || {};
     } catch (e) {
       errorNotification('Failed to update plugin settings', e);
+      throw e;
     }
   }
 
   static async runPluginAction(key, action, params = {}) {
     try {
-      const response = await request(`${host}/api/plugins/plugins/${key}/run/`, {
-        method: 'POST',
-        body: { action, params },
-      });
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/run/`,
+        {
+          method: 'POST',
+          body: { action, params },
+        }
+      );
       return response;
     } catch (e) {
       errorNotification('Failed to run plugin action', e);
@@ -1616,13 +2281,140 @@ export default class API {
 
   static async setPluginEnabled(key, enabled) {
     try {
-      const response = await request(`${host}/api/plugins/plugins/${key}/enabled/`, {
-        method: 'POST',
-        body: { enabled },
-      });
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/enabled/`,
+        {
+          method: 'POST',
+          body: { enabled },
+        }
+      );
       return response;
     } catch (e) {
       errorNotification('Failed to update plugin enabled state', e);
+    }
+  }
+
+  // Plugin Repos API
+  static async getPluginRepos() {
+    try {
+      return await request(`${host}/api/plugins/repos/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve plugin repos', e);
+      return [];
+    }
+  }
+
+  static async addPluginRepo(data) {
+    try {
+      return await request(`${host}/api/plugins/repos/`, {
+        method: 'POST',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to add plugin repo', e);
+      throw e;
+    }
+  }
+
+  static async deletePluginRepo(id) {
+    try {
+      return await request(`${host}/api/plugins/repos/${id}/`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to delete plugin repo', e);
+      throw e;
+    }
+  }
+
+  static async updatePluginRepo(id, data) {
+    try {
+      return await request(`${host}/api/plugins/repos/${id}/`, {
+        method: 'PUT',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to update plugin repo', e);
+    }
+  }
+
+  static async refreshPluginRepo(id) {
+    try {
+      return await request(`${host}/api/plugins/repos/${id}/refresh/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to refresh plugin repo', e);
+    }
+  }
+
+  static async getAvailablePlugins() {
+    try {
+      const response = await request(`${host}/api/plugins/repos/available/`);
+      return response.plugins || [];
+    } catch (e) {
+      errorNotification('Failed to retrieve available plugins', e);
+      return [];
+    }
+  }
+
+  static async getPluginDetailManifest(repoId, manifestUrl) {
+    try {
+      const response = await request(
+        `${host}/api/plugins/repos/plugin-detail/`,
+        {
+          method: 'POST',
+          body: { repo_id: repoId, manifest_url: manifestUrl },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve plugin details', e);
+      return null;
+    }
+  }
+
+  static async getPluginRepoSettings() {
+    try {
+      return await request(`${host}/api/plugins/repos/settings/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve repo settings', e);
+      return null;
+    }
+  }
+
+  static async updatePluginRepoSettings(data) {
+    try {
+      return await request(`${host}/api/plugins/repos/settings/`, {
+        method: 'PUT',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to update repo settings', e);
+      return null;
+    }
+  }
+
+  static async installPluginFromRepo(data) {
+    try {
+      return await request(`${host}/api/plugins/repos/install/`, {
+        method: 'POST',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to install plugin', e);
+      return null;
+    }
+  }
+
+  static async previewPluginRepo(url, publicKey) {
+    try {
+      return await request(`${host}/api/plugins/repos/preview/`, {
+        method: 'POST',
+        body: { url, public_key: publicKey || '' },
+      });
+    } catch {
+      return null;
     }
   }
 
@@ -1801,7 +2593,7 @@ export default class API {
       if (!logoIds || logoIds.length === 0) return [];
 
       const params = new URLSearchParams();
-      logoIds.forEach(id => params.append('ids', id));
+      logoIds.forEach((id) => params.append('ids', id));
       // Disable pagination for ID-based queries to get all matching logos
       params.append('no_pagination', 'true');
 
@@ -2112,6 +2904,24 @@ export default class API {
     }
   }
 
+  static async duplicateChannelProfile(id, name) {
+    try {
+      const response = await request(
+        `${host}/api/channels/profiles/${id}/duplicate/`,
+        {
+          method: 'POST',
+          body: { name },
+        }
+      );
+
+      useChannelsStore.getState().addProfile(response);
+
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to duplicate channel profile ${id}`, e);
+    }
+  }
+
   static async deleteChannelProfile(id) {
     try {
       await request(`${host}/api/channels/profiles/${id}/`, {
@@ -2250,10 +3060,13 @@ export default class API {
 
   static async updateRecurringRule(ruleId, payload) {
     try {
-      const response = await request(`${host}/api/channels/recurring-rules/${ruleId}/`, {
-        method: 'PATCH',
-        body: payload,
-      });
+      const response = await request(
+        `${host}/api/channels/recurring-rules/${ruleId}/`,
+        {
+          method: 'PATCH',
+          body: payload,
+        }
+      );
       return response;
     } catch (e) {
       errorNotification(`Failed to update recurring rule ${ruleId}`, e);
@@ -2272,19 +3085,78 @@ export default class API {
 
   static async deleteRecording(id) {
     try {
-      await request(`${host}/api/channels/recordings/${id}/`, { method: 'DELETE' });
+      await request(`${host}/api/channels/recordings/${id}/`, {
+        method: 'DELETE',
+      });
       // Optimistically remove locally for instant UI update
-      try { useChannelsStore.getState().removeRecording(id); } catch {}
+      try {
+        useChannelsStore.getState().removeRecording(id);
+      } catch {}
     } catch (e) {
       errorNotification(`Failed to delete recording ${id}`, e);
     }
   }
 
-  static async runComskip(recordingId) {
+  static async stopRecording(id) {
     try {
-      const resp = await request(`${host}/api/channels/recordings/${recordingId}/comskip/`, {
+      await request(`${host}/api/channels/recordings/${id}/stop/`, {
         method: 'POST',
       });
+    } catch (e) {
+      errorNotification(`Failed to stop recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async extendRecording(id, extraMinutes) {
+    try {
+      const resp = await request(
+        `${host}/api/channels/recordings/${id}/extend/`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ extra_minutes: extraMinutes }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      return resp;
+    } catch (e) {
+      errorNotification(`Failed to extend recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async refreshArtwork(id) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/refresh-artwork/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification(`Failed to refresh artwork for recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async updateRecordingMetadata(id, { title, description }) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/update-metadata/`, {
+        method: 'POST',
+        body: JSON.stringify({ title, description }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (e) {
+      errorNotification(`Failed to update recording metadata`, e);
+      throw e;
+    }
+  }
+
+  static async runComskip(recordingId) {
+    try {
+      const resp = await request(
+        `${host}/api/channels/recordings/${recordingId}/comskip/`,
+        {
+          method: 'POST',
+        }
+      );
       // Refresh recordings list to reflect comskip status when done later
       // This endpoint just queues the task; the websocket/refresh will update eventually
       return resp;
@@ -2319,10 +3191,14 @@ export default class API {
     }
   }
 
-  static async deleteSeriesRule(tvgId) {
+  static async deleteSeriesRule(tvgId, title) {
     try {
-      const encodedTvgId = encodeURIComponent(tvgId);
-      await request(`${host}/api/channels/series-rules/${encodedTvgId}/`, { method: 'DELETE' });
+      const params = new URLSearchParams();
+      if (tvgId) params.set('tvg_id', tvgId);
+      if (title) params.set('title', title);
+      await request(`${host}/api/channels/series-rules/?${params}`, {
+        method: 'DELETE',
+      });
       notifications.show({ title: 'Series rule removed' });
     } catch (e) {
       errorNotification('Failed to remove series rule', e);
@@ -2332,9 +3208,12 @@ export default class API {
 
   static async deleteAllUpcomingRecordings() {
     try {
-      const resp = await request(`${host}/api/channels/recordings/bulk-delete-upcoming/`, {
-        method: 'POST',
-      });
+      const resp = await request(
+        `${host}/api/channels/recordings/bulk-delete-upcoming/`,
+        {
+          method: 'POST',
+        }
+      );
       notifications.show({ title: `Removed ${resp.removed || 0} upcoming` });
       useChannelsStore.getState().fetchRecordings();
       return resp;
@@ -2355,12 +3234,28 @@ export default class API {
     }
   }
 
-  static async bulkRemoveSeriesRecordings({ tvg_id, title = null, scope = 'title' }) {
+  static async previewSeriesRule(values, { signal } = {}) {
+    // Throws on error so callers can ignore aborted requests vs real failures.
+    return request(`${host}/api/channels/series-rules/preview/`, {
+      method: 'POST',
+      body: values,
+      signal,
+    });
+  }
+
+  static async bulkRemoveSeriesRecordings({
+    tvg_id,
+    title = null,
+    scope = 'title',
+  }) {
     try {
-      const resp = await request(`${host}/api/channels/series-rules/bulk-remove/`, {
-        method: 'POST',
-        body: { tvg_id, title, scope },
-      });
+      const resp = await request(
+        `${host}/api/channels/series-rules/bulk-remove/`,
+        {
+          method: 'POST',
+          body: { tvg_id, title, scope },
+        }
+      );
       notifications.show({ title: `Removed ${resp.removed || 0} scheduled` });
       return resp;
     } catch (e) {
@@ -2427,8 +3322,6 @@ export default class API {
           color: 'blue',
         });
 
-        // First fetch the complete channel data
-        await useChannelsStore.getState().fetchChannels();
         // Then refresh the current table view
         this.requeryChannels();
       }
@@ -2455,6 +3348,13 @@ export default class API {
     return await request(`${host}/api/accounts/users/me/`);
   }
 
+  static async updateMe(data) {
+    return await request(`${host}/api/accounts/users/me/`, {
+      method: 'PATCH',
+      body: data,
+    });
+  }
+
   static async getUsers() {
     try {
       const response = await request(`${host}/api/accounts/users/`);
@@ -2479,12 +3379,71 @@ export default class API {
     }
   }
 
-  static async updateUser(id, body) {
+  static async generateApiKey({ user_id = null, name = '' } = {}) {
     try {
-      const response = await request(`${host}/api/accounts/users/${id}/`, {
-        method: 'PATCH',
+      const body = {};
+      if (user_id) body.user_id = user_id;
+      if (name) body.name = name;
+
+      const response = await request(
+        `${host}/api/accounts/api-keys/generate/`,
+        {
+          method: 'POST',
+          body,
+        }
+      );
+
+      // If the backend returned an updated user, refresh the users store
+      try {
+        if (response && response.user) {
+          useUsersStore.getState().updateUser(response.user);
+        }
+      } catch (e) {
+        // ignore store update errors
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to generate API key', e);
+    }
+  }
+
+  static async revokeApiKey({ user_id = null } = {}) {
+    try {
+      const body = {};
+      if (user_id) {
+        body.user_id = user_id;
+      }
+
+      const response = await request(`${host}/api/accounts/api-keys/revoke/`, {
+        method: 'POST',
         body,
       });
+
+      // If the backend returned an updated user, refresh the users store
+      try {
+        if (response && response.user) {
+          useUsersStore.getState().updateUser(response.user);
+        }
+      } catch (e) {
+        // ignore store update errors
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to revoke API key', e);
+    }
+  }
+
+  static async updateUser(id, body, self = false) {
+    try {
+      const response = await request(
+        `${host}/api/accounts/users/${self ? 'me' : id}/`,
+        {
+          method: 'PATCH',
+          body,
+        }
+      );
 
       useUsersStore.getState().updateUser(response);
 
@@ -2522,13 +3481,10 @@ export default class API {
     try {
       // Use POST for large ID lists to avoid URL length limitations
       if (ids.length > 50) {
-        const response = await request(
-          `${host}/api/channels/streams/by-ids/`,
-          {
-            method: 'POST',
-            body: { ids },
-          }
-        );
+        const response = await request(`${host}/api/channels/streams/by-ids/`, {
+          method: 'POST',
+          body: { ids },
+        });
         return response;
       } else {
         // Use GET for small ID lists for backward compatibility
@@ -2545,6 +3501,23 @@ export default class API {
     }
   }
 
+  static async getChannelsByUUIDs(uuids) {
+    try {
+      // Use POST for large lists
+      const response = await request(
+        `${host}/api/channels/channels/by-uuids/`,
+        {
+          method: 'POST',
+          body: { uuids },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve channels by UUIDs', e);
+      throw e;
+    }
+  }
+
   // VOD Methods
   static async getMovies(params = new URLSearchParams()) {
     try {
@@ -2554,8 +3527,9 @@ export default class API {
       return response;
     } catch (e) {
       // Don't show error notification for "Invalid page" errors as they're handled gracefully
-      const isInvalidPage = e.body?.detail?.includes('Invalid page') ||
-                           e.message?.includes('Invalid page');
+      const isInvalidPage =
+        e.body?.detail?.includes('Invalid page') ||
+        e.message?.includes('Invalid page');
 
       if (!isInvalidPage) {
         errorNotification('Failed to retrieve movies', e);
@@ -2572,8 +3546,9 @@ export default class API {
       return response;
     } catch (e) {
       // Don't show error notification for "Invalid page" errors as they're handled gracefully
-      const isInvalidPage = e.body?.detail?.includes('Invalid page') ||
-                           e.message?.includes('Invalid page');
+      const isInvalidPage =
+        e.body?.detail?.includes('Invalid page') ||
+        e.message?.includes('Invalid page');
 
       if (!isInvalidPage) {
         errorNotification('Failed to retrieve series', e);
@@ -2584,7 +3559,10 @@ export default class API {
 
   static async getAllContent(params = new URLSearchParams()) {
     try {
-      console.log('Calling getAllContent with URL:', `${host}/api/vod/all/?${params.toString()}`);
+      console.log(
+        'Calling getAllContent with URL:',
+        `${host}/api/vod/all/?${params.toString()}`
+      );
       const response = await request(
         `${host}/api/vod/all/?${params.toString()}`
       );
@@ -2597,8 +3575,9 @@ export default class API {
       console.error('Error message:', e.message);
 
       // Don't show error notification for "Invalid page" errors as they're handled gracefully
-      const isInvalidPage = e.body?.detail?.includes('Invalid page') ||
-                           e.message?.includes('Invalid page');
+      const isInvalidPage =
+        e.body?.detail?.includes('Invalid page') ||
+        e.message?.includes('Invalid page');
 
       if (!isInvalidPage) {
         errorNotification('Failed to retrieve content', e);
@@ -2616,10 +3595,11 @@ export default class API {
     }
   }
 
-  static async getMovieProviderInfo(movieId) {
+  static async getMovieProviderInfo(movieId, relationId = null) {
     try {
+      const params = relationId ? `?relation_id=${relationId}` : '';
       const response = await request(
-        `${host}/api/vod/movies/${movieId}/provider-info/`
+        `${host}/api/vod/movies/${movieId}/provider-info/${params}`
       );
       return response;
     } catch (e) {
@@ -2658,30 +3638,16 @@ export default class API {
     }
   }
 
-  static async getSeriesInfo(seriesId) {
+  static async getSeriesInfo(seriesId, relationId = null) {
     try {
-      // Call the provider-info endpoint that includes episodes
+      const params = new URLSearchParams({ include_episodes: 'true' });
+      if (relationId) params.set('relation_id', relationId);
       const response = await request(
-        `${host}/api/vod/series/${seriesId}/provider-info/?include_episodes=true`
+        `${host}/api/vod/series/${seriesId}/provider-info/?${params}`
       );
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve series info', e);
-    }
-  }
-
-  static async updateVODPosition(vodUuid, clientId, position) {
-    try {
-      const response = await request(
-        `${host}/proxy/vod/stream/${vodUuid}/position/`,
-        {
-          method: 'POST',
-          body: { client_id: clientId, position },
-        }
-      );
-      return response;
-    } catch (e) {
-      errorNotification('Failed to update playback position', e);
     }
   }
 
@@ -2699,6 +3665,306 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve system events', e);
+    }
+  }
+
+  // ─────────────────────────────
+  // System Notifications
+  // ─────────────────────────────
+
+  /**
+   * Get all active notifications for the current user
+   * @param {boolean} includeDismissed - Whether to include already dismissed notifications
+   */
+  static async getNotifications(includeDismissed = false) {
+    try {
+      const params = new URLSearchParams();
+      if (includeDismissed) {
+        params.append('include_dismissed', 'true');
+      }
+      const response = await request(
+        `${host}/api/core/notifications/?${params.toString()}`
+      );
+
+      // Update the store with fetched notifications
+      const { default: useNotificationsStore } =
+        await import('./store/notifications');
+      useNotificationsStore.getState().setNotifications(response.notifications);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve notifications', e);
+    }
+  }
+
+  // Get unread notification count
+  static async getNotificationCount() {
+    try {
+      const response = await request(`${host}/api/core/notifications/count/`);
+
+      // Update the store with the count
+      const { default: useNotificationsStore } =
+        await import('./store/notifications');
+      useNotificationsStore.getState().setUnreadCount(response.unread_count);
+
+      return response;
+    } catch (e) {
+      // Silent fail for count - not critical
+      console.error('Failed to get notification count:', e);
+      return { unread_count: 0 };
+    }
+  }
+
+  /**
+   * Dismiss a specific notification
+   * @param {number} notificationId - The notification ID to dismiss
+   * @param {string} actionTaken - Optional action taken (e.g., 'applied', 'ignored')
+   */
+  static async dismissNotification(notificationId, actionTaken = null) {
+    try {
+      const body = {};
+      if (actionTaken) {
+        body.action_taken = actionTaken;
+      }
+
+      const response = await request(
+        `${host}/api/core/notifications/${notificationId}/dismiss/`,
+        {
+          method: 'POST',
+          body,
+        }
+      );
+
+      // Update the store
+      const { default: useNotificationsStore } =
+        await import('./store/notifications');
+      useNotificationsStore
+        .getState()
+        .dismissNotification(response.notification_key);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to dismiss notification', e);
+    }
+  }
+
+  // Dismiss all notifications
+  static async dismissAllNotifications() {
+    try {
+      const response = await request(
+        `${host}/api/core/notifications/dismiss-all/`,
+        {
+          method: 'POST',
+        }
+      );
+
+      // Update the store
+      const { default: useNotificationsStore } =
+        await import('./store/notifications');
+      useNotificationsStore.getState().dismissAllNotifications();
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to dismiss all notifications', e);
+    }
+  }
+
+  static async getConnectIntegrations() {
+    try {
+      return await request(`${host}/api/connect/integrations/`);
+    } catch (e) {
+      errorNotification('Failed to fetch connect integrations', e);
+    }
+  }
+
+  static async createConnectIntegration(values) {
+    try {
+      const response = await request(`${host}/api/connect/integrations/`, {
+        method: 'POST',
+        body: values,
+      });
+
+      useConnectStore.getState().addIntegration(response);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create integration', e);
+    }
+  }
+
+  static async updateConnectIntegration(id, values) {
+    try {
+      const response = await request(
+        `${host}/api/connect/integrations/${id}/`,
+        {
+          method: 'PUT',
+          body: values,
+        }
+      );
+
+      if (response.id) {
+        useConnectStore.getState().updateIntegration(response);
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update integration', e);
+    }
+  }
+
+  static async deleteConnectIntegration(id) {
+    try {
+      await request(`${host}/api/connect/integrations/${id}/`, {
+        method: 'DELETE',
+      });
+
+      useConnectStore.getState().removeIntegration(id);
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete integration', e);
+      throw e;
+    }
+  }
+
+  static async createConnectSubscription(values) {
+    try {
+      await request(`${host}/api/connect/subscriptions/`, {
+        method: 'POST',
+        body: values,
+      });
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to create subscription', e);
+    }
+  }
+
+  static async listConnectSubscriptions(integrationId) {
+    try {
+      return await request(
+        `${host}/api/connect/integrations/${integrationId}/subscriptions/`
+      );
+    } catch (e) {
+      errorNotification('Failed to fetch subscriptions', e);
+    }
+  }
+
+  static async setConnectSubscriptions(integrationId, subscriptions) {
+    // subscriptions: [{ event, enabled, payload_template }]
+    console.log(subscriptions);
+    try {
+      const response = await request(
+        `${host}/api/connect/integrations/${integrationId}/subscriptions/set/`,
+        {
+          method: 'PUT',
+          body: subscriptions,
+        }
+      );
+
+      useConnectStore
+        .getState()
+        .updateIntegrationSubscriptions(integrationId, response);
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to set subscriptions', e);
+      throw e;
+    }
+  }
+
+  static async getConnectLogs(params = {}) {
+    try {
+      const search = new URLSearchParams();
+      if (params.page) search.set('page', params.page);
+      if (params.page_size) search.set('page_size', params.page_size);
+      if (params.type) search.set('type', params.type);
+      if (params.integration) search.set('integration', params.integration);
+
+      return await request(
+        `${host}/api/connect/logs/${search.toString() ? `?${search.toString()}` : ''}`
+      );
+    } catch (e) {
+      errorNotification('Failed to fetch connect logs', e);
+    }
+  }
+
+  static async getSDLineups(sourceId) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve Schedules Direct lineups', e);
+    }
+  }
+
+  static async addSDLineup(sourceId, lineup) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`,
+        {
+          method: 'POST',
+          body: { lineup },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to add lineup ${lineup}`, e);
+    }
+  }
+
+  static async deleteSDLineup(sourceId, lineup) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`,
+        {
+          method: 'DELETE',
+          body: { lineup },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to remove lineup ${lineup}`, e);
+    }
+  }
+
+  static async updateEpgSourceSettings(sourceId, settings) {
+    try {
+      // Read current custom_properties from the store to merge, not replace
+      const epgs = useEPGsStore.getState().epgs;
+      const source = epgs[sourceId];
+      const cp = { ...(source?.custom_properties || {}), ...settings };
+
+      const response = await request(`${host}/api/epg/sources/${sourceId}/`, {
+        method: 'PATCH',
+        body: { custom_properties: cp },
+      });
+
+      useEPGsStore.getState().updateEPG(response);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update EPG source settings', e);
+    }
+  }
+
+  static async updateSDSettings(sourceId, settings) {
+    return API.updateEpgSourceSettings(sourceId, settings);
+  }
+
+  static async searchSDLineups(sourceId, country, postalcode) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/search/`,
+        {
+          method: 'POST',
+          body: { country, postalcode },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to search Schedules Direct lineups', e);
     }
   }
 }

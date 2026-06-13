@@ -1,29 +1,29 @@
-import ipaddress
 from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse
-from rest_framework.response import Response
+import json
 from django.urls import reverse
-from apps.channels.models import Channel, ChannelProfile, ChannelGroup
+from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
+from apps.channels.utils import format_channel_number
+from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
 from apps.accounts.models import User
-from core.models import CoreSettings, NETWORK_ACCESS
 from dispatcharr.utils import network_access_allowed
 from django.utils import timezone as django_timezone
 from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta
-import html  # Add this import for XML escaping
-import json  # Add this import for JSON parsing
-import time  # Add this import for keep-alive delays
+import html
+import time
 from tzlocal import get_localzone
-from urllib.parse import urlparse
+from urllib.parse import urlencode
 import base64
 import logging
 from django.db.models.functions import Lower
 import os
 from apps.m3u.utils import calculate_tuner_count
+from apps.proxy.utils import get_user_active_connections
 import regex
-from core.utils import log_system_event
+from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
 
 logger = logging.getLogger(__name__)
@@ -126,16 +126,20 @@ def generate_m3u(request, profile_name=None, user=None):
     # Check if this is a POST request with data (which we don't want to allow)
     if request.method == "POST" and request.body:
         if request.body.decode() != '{}':
-            return HttpResponseForbidden("POST requests with body are not allowed, body is: {}".format(request.body.decode()))
+            return HttpResponseForbidden("POST requests with body are not allowed.")
 
     if user is not None:
-        if user.user_level == 0:
+        if user.user_level < 10:
             user_profile_count = user.channel_profiles.count()
 
             # If user has ALL profiles or NO profiles, give unrestricted access
             if user_profile_count == 0:
                 # No profile filtering - user sees all channels based on user_level
-                channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+                filters = {"user_level__lte": user.user_level}
+                # Hide adult content if user preference is set
+                if (user.custom_properties or {}).get('hide_adult_content', False):
+                    filters["is_adult"] = False
+                base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo')
             else:
                 # User has specific limited profiles assigned
                 filters = {
@@ -143,11 +147,12 @@ def generate_m3u(request, profile_name=None, user=None):
                     "user_level__lte": user.user_level,
                     "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
                 }
-                channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
+                # Hide adult content if user preference is set
+                if (user.custom_properties or {}).get('hide_adult_content', False):
+                    filters["is_adult"] = False
+                base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo').distinct()
         else:
-            channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
-                "channel_number"
-            )
+            base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('channel_group', 'logo')
 
     else:
         if profile_name is not None:
@@ -156,18 +161,40 @@ def generate_m3u(request, profile_name=None, user=None):
             except ChannelProfile.DoesNotExist:
                 logger.warning("Requested channel profile (%s) during m3u generation does not exist", profile_name)
                 raise Http404(f"Channel profile '{profile_name}' not found")
-            channels = Channel.objects.filter(
+            base_qs = Channel.objects.filter(
                 channelprofilemembership__channel_profile=channel_profile,
                 channelprofilemembership__enabled=True
-            ).order_by('channel_number')
+            ).select_related('channel_group', 'logo')
         else:
-            channels = Channel.objects.order_by("channel_number")
+            base_qs = Channel.objects.select_related('channel_group', 'logo')
+
+    # Resolve effective (override | provider) values at SQL level so ordering,
+    # naming, and logo resolution honor user overrides. `exclude(hidden_from_output=True)`
+    # is the consumer-facing hide guarantee.
+    from apps.channels.managers import with_effective_values
+    channels = (
+        with_effective_values(base_qs, select_related_fks=True)
+        .exclude(hidden_from_output=True)
+        .order_by("effective_channel_number")
+    )
 
     # Check if the request wants to use direct logo URLs instead of cache
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
 
     # Check if direct stream URLs should be used instead of proxy
     use_direct_urls = request.GET.get('direct', 'false').lower() == 'true'
+
+    # Output profile ID to append to proxy stream URLs (triggers pre-delivery transcode)
+    output_profile_id = request.GET.get('output_profile')
+
+    # Output format to append to proxy stream URLs (native ?output_format= or XC-style ?output=)
+    output_format_param = request.GET.get('output_format') or request.GET.get('output')
+
+    # Prefetch streams only when direct URLs are requested (avoids N+1 per channel)
+    if use_direct_urls:
+        channels = channels.prefetch_related(
+            Prefetch('streams', queryset=Stream.objects.order_by('channelstream__order'))
+        )
 
     # Get the source to use for tvg-id value
     # Options: 'channel_number' (default), 'tvg_id', 'gracenote'
@@ -177,20 +204,34 @@ def generate_m3u(request, profile_name=None, user=None):
     # Check if this is an XC API request (has username/password in GET params and user is authenticated)
     xc_username = request.GET.get('username')
     xc_password = request.GET.get('password')
+    is_xc_request = user is not None and xc_username and xc_password
+    _base_url = build_absolute_uri_with_port(request, '')
 
-    if user is not None and xc_username and xc_password:
+    if is_xc_request:
         # This is an XC API request - use XC-style EPG URL
-        base_url = build_absolute_uri_with_port(request, '')
-        epg_url = f"{base_url}/xmltv.php?username={xc_username}&password={xc_password}"
+        epg_url = f"{_base_url}/xmltv.php?username={xc_username}&password={xc_password}"
+        # Build the query-string suffix for stream URLs once - it's the same for every channel
+        xc_qs = {}
+        if output_profile_id:
+            xc_qs['output_profile'] = output_profile_id
+        if output_format_param:
+            xc_qs['output_format'] = output_format_param
+        xc_qs_suffix = f"?{urlencode(xc_qs)}" if xc_qs else ""
     else:
+        # Pre-compute proxy query-string suffix (same for every channel in this request)
+        proxy_qs = {}
+        if output_profile_id:
+            proxy_qs['output_profile'] = output_profile_id
+        if output_format_param:
+            proxy_qs['output_format'] = output_format_param
+        proxy_qs_suffix = f"?{urlencode(proxy_qs)}" if proxy_qs else ""
         # Regular request - use standard EPG endpoint
         epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
 
         # Optionally preserve certain query parameters
-        preserved_params = ['tvg_id_source', 'cachedlogos', 'days']
+        preserved_params = ['tvg_id_source', 'cachedlogos', 'days', 'prev_days']
         query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
         if query_params:
-            from urllib.parse import urlencode
             epg_url = f"{epg_base_url}?{urlencode(query_params)}"
         else:
             epg_url = epg_base_url
@@ -198,69 +239,80 @@ def generate_m3u(request, profile_name=None, user=None):
     # Add x-tvg-url and url-tvg attribute for EPG URL
     m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
 
-    # Start building M3U content
-    for channel in channels:
-        group_title = channel.channel_group.name if channel.channel_group else "Default"
+    # Host/port/scheme are constant per request; precompute URL prefixes once.
+    _stream_url_prefix = None if is_xc_request else f"{_base_url}/proxy/ts/stream/"
+    _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
 
-        # Format channel number as integer if it has no decimal component
-        if channel.channel_number is not None:
-            if channel.channel_number == int(channel.channel_number):
-                formatted_channel_number = int(channel.channel_number)
-            else:
-                formatted_channel_number = channel.channel_number
-        else:
-            formatted_channel_number = ""
+    # Start building M3U content
+    channel_count = 0
+    for channel in channels:
+        channel_count += 1
+        effective_group = channel.effective_channel_group_obj
+        effective_logo = channel.effective_logo_obj
+        effective_name = channel.effective_name
+        effective_tvg_id_val = channel.effective_tvg_id
+        effective_tvc_guide = channel.effective_tvc_guide_stationid
+        effective_number = channel.effective_channel_number
+
+        group_title = effective_group.name if effective_group else "Default"
+
+        formatted_channel_number = format_channel_number(effective_number)
 
         # Determine the tvg-id based on the selected source
-        if tvg_id_source == 'tvg_id' and channel.tvg_id:
-            tvg_id = channel.tvg_id
-        elif tvg_id_source == 'gracenote' and channel.tvc_guide_stationid:
-            tvg_id = channel.tvc_guide_stationid
+        if tvg_id_source == 'tvg_id' and effective_tvg_id_val:
+            tvg_id = effective_tvg_id_val
+        elif tvg_id_source == 'gracenote' and effective_tvc_guide:
+            tvg_id = effective_tvc_guide
         else:
             # Default to channel number (original behavior)
             tvg_id = str(formatted_channel_number) if formatted_channel_number != "" else str(channel.id)
 
-        tvg_name = channel.name
+        tvg_name = effective_name
 
         tvg_logo = ""
-        if channel.logo:
+        if effective_logo:
             if use_cached_logos:
-                # Use cached logo as before
-                tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
+                tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
             else:
                 # Try to find direct logo URL from channel's streams
-                direct_logo = channel.logo.url if channel.logo.url.startswith(('http://', 'https://')) else None
+                direct_logo = effective_logo.url if effective_logo.url.startswith(('http://', 'https://')) else None
                 # If direct logo found, use it; otherwise fall back to cached version
                 if direct_logo:
                     tvg_logo = direct_logo
                 else:
-                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
+                    tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
 
         # create possible gracenote id insertion
         tvc_guide_stationid = ""
-        if channel.tvc_guide_stationid:
+        if effective_tvc_guide:
             tvc_guide_stationid = (
-                f'tvc-guide-stationid="{channel.tvc_guide_stationid}" '
+                f'tvc-guide-stationid="{effective_tvc_guide}" '
             )
 
         extinf_line = (
             f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}" tvg-logo="{tvg_logo}" '
-            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{channel.name}\n'
+            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{effective_name}\n'
         )
 
-        # Determine the stream URL based on the direct parameter
-        if use_direct_urls:
+        # Determine the stream URL based on request type
+        if is_xc_request:
+            stream_url = f"{_base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_qs_suffix}"
+        elif use_direct_urls:
             # Try to get the first stream's direct URL
-            first_stream = channel.streams.order_by('channelstream__order').first()
+            all_streams = channel.streams.all()
+            first_stream = all_streams[0] if all_streams else None
             if first_stream and first_stream.url:
                 # Use the direct stream URL
                 stream_url = first_stream.url
             else:
                 # Fall back to proxy URL if no direct URL available
-                stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
+                stream_url = f"{_stream_url_prefix}{channel.uuid}"
         else:
             # Standard behavior - use proxy URL
-            stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
+            stream_url = f"{_stream_url_prefix}{channel.uuid}{proxy_qs_suffix}"
 
         m3u_content += extinf_line + stream_url + "\n"
 
@@ -275,7 +327,7 @@ def generate_m3u(request, profile_name=None, user=None):
             event_type='m3u_download',
             profile=profile_name or 'all',
             user=user.username if user else 'anonymous',
-            channels=channels.count(),
+            channels=channel_count,
             client_ip=client_ip,
             user_agent=user_agent,
         )
@@ -500,6 +552,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
     output_timezone_value = custom_properties.get('output_timezone', '')  # Optional: display times in different timezone
     program_duration = custom_properties.get('program_duration', 180)  # Minutes
     title_template = custom_properties.get('title_template', '')
+    subtitle_template = custom_properties.get('subtitle_template', '')
     description_template = custom_properties.get('description_template', '')
 
     # Templates for upcoming/ended programs
@@ -905,6 +958,11 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     title_parts.append(all_groups['title'])
                 main_event_title = ' - '.join(title_parts) if title_parts else channel_name
 
+            if subtitle_template:
+                main_event_subtitle = format_template(subtitle_template, all_groups)
+            else:
+                main_event_subtitle = None
+
             if description_template:
                 main_event_description = format_template(description_template, all_groups)
             else:
@@ -955,6 +1013,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "start_time": program_start_utc,
                         "end_time": program_end_utc,
                         "title": upcoming_title,
+                        "sub_title": None,  # No subtitle for filler programs
                         "description": upcoming_description,
                         "custom_properties": program_custom_properties,
                         "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -994,6 +1053,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     "start_time": event_start_utc,
                     "end_time": event_end_utc,
                     "title": main_event_title,
+                    "sub_title": main_event_subtitle,
                     "description": main_event_description,
                     "custom_properties": main_event_custom_properties,
                     "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -1038,6 +1098,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "start_time": program_start_utc,
                         "end_time": program_end_utc,
                         "title": ended_title,
+                        "sub_title": None,  # No subtitle for filler programs
                         "description": ended_description,
                         "custom_properties": program_custom_properties,
                         "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -1098,6 +1159,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "start_time": program_start_utc,
                         "end_time": program_end_utc,
                         "title": program_title,
+                        "sub_title": None,  # No subtitle for filler programs
                         "description": program_description,
                         "custom_properties": program_custom_properties,
                         "channel_logo_url": channel_logo_url,
@@ -1124,6 +1186,11 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     elif 'title' in all_groups and all_groups['title']:
                         title_parts.append(all_groups['title'])
                     title = ' - '.join(title_parts) if title_parts else channel_name
+
+                if subtitle_template:
+                    subtitle = format_template(subtitle_template, all_groups)
+                else:
+                    subtitle = None
 
                 if description_template:
                     description = format_template(description_template, all_groups)
@@ -1161,6 +1228,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     "start_time": program_start_utc,
                     "end_time": program_end_utc,
                     "title": title,
+                    "sub_title": subtitle,
                     "description": description,
                     "custom_properties": program_custom_properties,
                     "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -1197,9 +1265,14 @@ def generate_dummy_epg(
 
         # Create program entry with escaped channel name
         xml_lines.append(
-            f'  <programme start="{start_str}" stop="{stop_str}" channel="{program["channel_id"]}">'
+            f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(program["channel_id"])}">'
         )
         xml_lines.append(f"    <title>{html.escape(program['title'])}</title>")
+
+        # Add subtitle if available
+        if program.get('sub_title'):
+            xml_lines.append(f"    <sub-title>{html.escape(program['sub_title'])}</sub-title>")
+
         xml_lines.append(f"    <desc>{html.escape(program['description'])}</desc>")
 
         # Add custom_properties if present
@@ -1236,7 +1309,28 @@ def generate_epg(request, profile_name=None, user=None):
     """
     # Check cache for recent identical request (helps with double-GET from browsers)
     from django.core.cache import cache
-    cache_params = f"{profile_name or 'all'}:{user.username if user else 'anonymous'}:{request.GET.urlencode()}"
+    # Resolve all effective parameter values once here so they are reused for both
+    # the cache key and inside epg_generator() via closure.
+    # The cache key is built from resolved values only — not from the raw query string —
+    # so equivalent requests (e.g. days=7 via URL param vs. user default of 7) share
+    # the same cache entry regardless of how the value was supplied.
+    user_custom = (user.custom_properties or {}) if user else {}
+    try:
+        num_days = int(request.GET.get('days', user_custom.get('epg_days', 0)))
+        num_days = max(0, min(num_days, 365))
+    except (ValueError, TypeError):
+        num_days = 0
+    try:
+        prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
+        prev_days = max(0, min(prev_days, 30))
+    except (ValueError, TypeError):
+        prev_days = 0
+    use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
+    tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
+    cache_params = (
+        f"{profile_name or 'all'}:{user.username if user else 'anonymous'}"
+        f":d={num_days}:p={prev_days}:logos={use_cached_logos}:tvgid={tvg_id_source}"
+    )
     content_cache_key = f"epg_content:{cache_params}"
 
     cached_content = cache.get(content_cache_key)
@@ -1248,8 +1342,7 @@ def generate_epg(request, profile_name=None, user=None):
         return response
 
     def epg_generator():
-        """Generator function that yields EPG data with keep-alives during processing"""
-        # Send initial HTTP headers as comments (these will be ignored by XML parsers but keep connection alive)
+        """Generator function that yields EPG data with keep-alives during processing."""
 
         xml_lines = []
         xml_lines.append('<?xml version="1.0" encoding="UTF-8"?>')
@@ -1259,13 +1352,17 @@ def generate_epg(request, profile_name=None, user=None):
 
         # Get channels based on user/profile
         if user is not None:
-            if user.user_level == 0:
+            if user.user_level < 10:
                 user_profile_count = user.channel_profiles.count()
 
                 # If user has ALL profiles or NO profiles, give unrestricted access
                 if user_profile_count == 0:
                     # No profile filtering - user sees all channels based on user_level
-                    channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+                    filters = {"user_level__lte": user.user_level}
+                    # Hide adult content if user preference is set
+                    if (user.custom_properties or {}).get('hide_adult_content', False):
+                        filters["is_adult"] = False
+                    base_qs = Channel.objects.filter(**filters).select_related('logo', 'epg_data__epg_source')
                 else:
                     # User has specific limited profiles assigned
                     filters = {
@@ -1273,11 +1370,12 @@ def generate_epg(request, profile_name=None, user=None):
                         "user_level__lte": user.user_level,
                         "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
                     }
-                    channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
+                    # Hide adult content if user preference is set
+                    if (user.custom_properties or {}).get('hide_adult_content', False):
+                        filters["is_adult"] = False
+                    base_qs = Channel.objects.filter(**filters).select_related('logo', 'epg_data__epg_source').distinct()
             else:
-                channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
-                    "channel_number"
-                )
+                base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('logo', 'epg_data__epg_source')
         else:
             if profile_name is not None:
                 try:
@@ -1285,36 +1383,30 @@ def generate_epg(request, profile_name=None, user=None):
                 except ChannelProfile.DoesNotExist:
                     logger.warning("Requested channel profile (%s) during epg generation does not exist", profile_name)
                     raise Http404(f"Channel profile '{profile_name}' not found")
-                channels = Channel.objects.filter(
+                base_qs = Channel.objects.filter(
                     channelprofilemembership__channel_profile=channel_profile,
                     channelprofilemembership__enabled=True,
-                ).order_by("channel_number")
+                ).select_related('logo', 'epg_data__epg_source')
             else:
-                channels = Channel.objects.all().order_by("channel_number")
+                base_qs = Channel.objects.all().select_related('logo', 'epg_data__epg_source')
 
-        # Check if the request wants to use direct logo URLs instead of cache
-        use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
+        # Resolve effective values at SQL level and exclude hidden channels
+        # so output ordering/display honors user overrides.
+        from apps.channels.managers import with_effective_values
+        channels = (
+            with_effective_values(base_qs, select_related_fks=True)
+            .exclude(hidden_from_output=True)
+            .order_by("effective_channel_number")
+        )
 
-        # Get the source to use for tvg-id value
-        # Options: 'channel_number' (default), 'tvg_id', 'gracenote'
-        tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
-
-        # Get the number of days for EPG data
-        try:
-            # Default to 0 days (everything) for real EPG if not specified
-            days_param = request.GET.get('days', '0')
-            num_days = int(days_param)
-            # Set reasonable limits
-            num_days = max(0, min(num_days, 365))  # Between 0 and 365 days
-        except ValueError:
-            num_days = 0  # Default to all data if invalid value
 
         # For dummy EPG, use either the specified value or default to 3 days
         dummy_days = num_days if num_days > 0 else 3
 
-        # Calculate cutoff date for EPG data filtering (only if days > 0)
+        # Calculate cutoff dates for EPG data filtering
         now = django_timezone.now()
         cutoff_date = now + timedelta(days=num_days) if num_days > 0 else None
+        lookback_cutoff = now - timedelta(days=prev_days)
 
         # Build collision-free channel number mapping for XC clients (if user is authenticated)
         # XC clients require integer channel numbers, so we need to ensure no conflicts
@@ -1325,59 +1417,62 @@ def generate_epg(request, profile_name=None, user=None):
 
             # First pass: assign integers for channels that already have integer numbers
             for channel in channels:
-                if channel.channel_number == int(channel.channel_number):
-                    num = int(channel.channel_number)
+                effective_num = channel.effective_channel_number
+                if effective_num is not None and effective_num == int(effective_num):
+                    num = int(effective_num)
                     channel_num_map[channel.id] = num
                     used_numbers.add(num)
 
             # Second pass: assign integers for channels with float numbers
             for channel in channels:
-                if channel.channel_number != int(channel.channel_number):
-                    candidate = int(channel.channel_number)
+                effective_num = channel.effective_channel_number
+                if effective_num is not None and effective_num != int(effective_num):
+                    candidate = int(effective_num)
                     while candidate in used_numbers:
                         candidate += 1
                     channel_num_map[channel.id] = candidate
                     used_numbers.add(candidate)
 
+        # Host/port/scheme are constant per request; precompute logo URL prefix once.
+        _base_url = build_absolute_uri_with_port(request, "")
+        _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
+        _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+        _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+        _logo_url_suffix = "/" + _logo_suffix_raw
+
         # Process channels for the <channel> section
         for channel in channels:
-            # For XC clients (user is not None), use collision-free integer mapping
-            # For regular clients (user is None), use original formatting logic
+            effective_name = channel.effective_name
+            effective_epg_data = channel.effective_epg_data_obj
+            effective_logo = channel.effective_logo_obj
+            effective_number = channel.effective_channel_number
+
+            # user is set only for XC clients, which require integer channel numbers
             if user is not None:
-                # XC client - use collision-free integer
                 formatted_channel_number = channel_num_map[channel.id]
             else:
-                # Regular client - format channel number as integer if it has no decimal component
-                if channel.channel_number is not None:
-                    if channel.channel_number == int(channel.channel_number):
-                        formatted_channel_number = int(channel.channel_number)
-                    else:
-                        formatted_channel_number = channel.channel_number
-                else:
-                    formatted_channel_number = ""
+                formatted_channel_number = format_channel_number(effective_number)
 
             # Determine the channel ID based on the selected source
-            if tvg_id_source == 'tvg_id' and channel.tvg_id:
-                channel_id = channel.tvg_id
-            elif tvg_id_source == 'gracenote' and channel.tvc_guide_stationid:
-                channel_id = channel.tvc_guide_stationid
+            if tvg_id_source == 'tvg_id' and channel.effective_tvg_id:
+                channel_id = channel.effective_tvg_id
+            elif tvg_id_source == 'gracenote' and channel.effective_tvc_guide_stationid:
+                channel_id = channel.effective_tvc_guide_stationid
             else:
-                # Default to channel number (original behavior)
                 channel_id = str(formatted_channel_number) if formatted_channel_number != "" else str(channel.id)
 
-            # Add channel logo if available
             tvg_logo = ""
 
             # Check if this is a custom dummy EPG with channel logo URL template
-            if channel.epg_data and channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
-                epg_source = channel.epg_data.epg_source
+            if effective_epg_data and effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
+                epg_source = effective_epg_data.epg_source
                 if epg_source.custom_properties:
                     custom_props = epg_source.custom_properties
                     channel_logo_url_template = custom_props.get('channel_logo_url', '')
 
                     if channel_logo_url_template:
                         # Determine which name to use for pattern matching (same logic as program generation)
-                        pattern_match_name = channel.name
+                        pattern_match_name = effective_name
                         name_source = custom_props.get('name_source')
 
                         if name_source == 'stream':
@@ -1419,23 +1514,21 @@ def generate_epg(request, profile_name=None, user=None):
                                     tvg_logo = channel_logo_url_template
                                     logger.debug(f"Built channel logo URL from template: {tvg_logo}")
                             except Exception as e:
-                                logger.warning(f"Failed to build channel logo URL for {channel.name}: {e}")
+                                logger.warning(f"Failed to build channel logo URL for {effective_name}: {e}")
 
             # If no custom dummy logo, use regular logo logic
-            if not tvg_logo and channel.logo:
+            if not tvg_logo and effective_logo:
                 if use_cached_logos:
-                    # Use cached logo as before
-                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
+                    tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
                 else:
-                    # Try to find direct logo URL from channel's streams
-                    direct_logo = channel.logo.url if channel.logo.url.startswith(('http://', 'https://')) else None
-                    # If direct logo found, use it; otherwise fall back to cached version
+                    # Use direct URL if available, otherwise fall back to cached version
+                    direct_logo = effective_logo.url if effective_logo.url.startswith(('http://', 'https://')) else None
                     if direct_logo:
                         tvg_logo = direct_logo
                     else:
-                        tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
-            display_name = channel.name
-            xml_lines.append(f'  <channel id="{channel_id}">')
+                        tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
+            display_name = effective_name
+            xml_lines.append(f'  <channel id="{html.escape(channel_id)}">')
             xml_lines.append(f'    <display-name>{html.escape(display_name)}</display-name>')
             xml_lines.append(f'    <icon src="{html.escape(tvg_logo)}" />')
             xml_lines.append("  </channel>")
@@ -1445,40 +1538,35 @@ def generate_epg(request, profile_name=None, user=None):
         yield channel_xml
         xml_lines = []  # Clear to save memory
 
-        # Process programs for each channel
-        for channel in channels:
+        # Pre-pass: categorize channels into dummy and real EPG groups
+        dummy_program_list = []  # (channel_id, pattern_match_name, epg_source_or_None)
+        real_epg_map = {}  # epg_data_id -> [channel_id, ...]
+        dummy_epg_checked = {}  # epg_data_id -> bool (has stored programs)
 
-            # Use the same channel ID determination for program entries
-            if tvg_id_source == 'tvg_id' and channel.tvg_id:
-                channel_id = channel.tvg_id
-            elif tvg_id_source == 'gracenote' and channel.tvc_guide_stationid:
-                channel_id = channel.tvc_guide_stationid
+        for channel in channels:
+            effective_name = channel.effective_name
+            effective_epg_data = channel.effective_epg_data_obj
+            effective_epg_data_id = channel.effective_epg_data_id
+            effective_number = channel.effective_channel_number
+
+            # Determine channel_id (same logic as channel section)
+            if tvg_id_source == 'tvg_id' and channel.effective_tvg_id:
+                channel_id = channel.effective_tvg_id
+            elif tvg_id_source == 'gracenote' and channel.effective_tvc_guide_stationid:
+                channel_id = channel.effective_tvc_guide_stationid
             else:
-                # For XC clients (user is not None), use collision-free integer mapping
-                # For regular clients (user is None), use original formatting logic
                 if user is not None:
-                    # XC client - use collision-free integer from map
                     formatted_channel_number = channel_num_map[channel.id]
                 else:
-                    # Regular client - format channel number as before
-                    if channel.channel_number is not None:
-                        if channel.channel_number == int(channel.channel_number):
-                            formatted_channel_number = int(channel.channel_number)
-                        else:
-                            formatted_channel_number = channel.channel_number
-                    else:
-                        formatted_channel_number = ""
-                # Default to channel number
+                    formatted_channel_number = format_channel_number(effective_number)
                 channel_id = str(formatted_channel_number) if formatted_channel_number != "" else str(channel.id)
 
-            # Use EPG data name for display, but channel name for pattern matching
-            display_name = channel.epg_data.name if channel.epg_data else channel.name
-            # For dummy EPG pattern matching, determine which name to use
-            pattern_match_name = channel.name
+            display_name = effective_epg_data.name if effective_epg_data else effective_name
+            pattern_match_name = effective_name
 
             # Check if we should use stream name instead of channel name
-            if channel.epg_data and channel.epg_data.epg_source:
-                epg_source = channel.epg_data.epg_source
+            if effective_epg_data and effective_epg_data.epg_source:
+                epg_source = effective_epg_data.epg_source
                 if epg_source.custom_properties:
                     custom_props = epg_source.custom_properties
                     name_source = custom_props.get('name_source')
@@ -1492,363 +1580,348 @@ def generate_epg(request, profile_name=None, user=None):
                             pattern_match_name = stream.name
                             logger.debug(f"Using stream name for parsing: {pattern_match_name} (stream index: {stream_index})")
                         else:
-                            logger.warning(f"Stream index {stream_index} not found for channel {channel.name}, falling back to channel name")
+                            logger.warning(f"Stream index {stream_index} not found for channel {effective_name}, falling back to channel name")
 
-            if not channel.epg_data:
-                # Use the enhanced dummy EPG generation function with defaults
-                program_length_hours = 4  # Default to 4-hour program blocks
-                dummy_programs = generate_dummy_programs(
-                    channel_id, pattern_match_name,
-                    num_days=dummy_days,
-                    program_length_hours=program_length_hours,
-                    epg_source=None
+            if not effective_epg_data:
+                dummy_program_list.append((channel_id, pattern_match_name, None))
+            else:
+                if effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
+                    if effective_epg_data_id not in dummy_epg_checked:
+                        dummy_epg_checked[effective_epg_data_id] = effective_epg_data.programs.exists()
+                    if dummy_epg_checked[effective_epg_data_id]:
+                        real_epg_map.setdefault(effective_epg_data_id, []).append(channel_id)
+                    else:
+                        dummy_program_list.append((channel_id, pattern_match_name, effective_epg_data.epg_source))
+                    continue
+
+                real_epg_map.setdefault(effective_epg_data_id, []).append(channel_id)
+
+        # Emit dummy programmes
+        for channel_id, pattern_match_name, epg_source in dummy_program_list:
+            program_length_hours = 4
+            dummy_programs = generate_dummy_programs(
+                channel_id, pattern_match_name,
+                num_days=dummy_days,
+                program_length_hours=program_length_hours,
+                epg_source=epg_source
+            )
+            for program in dummy_programs:
+                start_str = program['start_time'].strftime("%Y%m%d%H%M%S %z")
+                stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
+                yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
+                yield f"    <title>{html.escape(program['title'])}</title>\n"
+                if program.get('sub_title'):
+                    yield f"    <sub-title>{html.escape(program['sub_title'])}</sub-title>\n"
+                yield f"    <desc>{html.escape(program['description'])}</desc>\n"
+                custom_data = program.get('custom_properties', {})
+                if 'categories' in custom_data:
+                    for cat in custom_data['categories']:
+                        yield f"    <category>{html.escape(cat)}</category>\n"
+                if 'date' in custom_data:
+                    yield f"    <date>{html.escape(custom_data['date'])}</date>\n"
+                if custom_data.get('live', False):
+                    yield f"    <live />\n"
+                if custom_data.get('new', False):
+                    yield f"    <new />\n"
+                if 'icon' in custom_data:
+                    yield f'    <icon src="{html.escape(custom_data["icon"])}" />\n'
+                yield f"  </programme>\n"
+
+        # Emit real programmes: single bulk query, chunked to avoid server-side cursor issues.
+        all_epg_ids = list(real_epg_map.keys())
+        if all_epg_ids:
+            if num_days > 0:
+                programs_qs = ProgramData.objects.filter(
+                    epg_id__in=all_epg_ids,
+                    end_time__gte=lookback_cutoff,
+                    start_time__lt=cutoff_date,
+                )
+            else:
+                programs_qs = ProgramData.objects.filter(
+                    epg_id__in=all_epg_ids,
+                    end_time__gte=lookback_cutoff,
                 )
 
-                for program in dummy_programs:
-                    # Format times in XMLTV format
-                    start_str = program['start_time'].strftime("%Y%m%d%H%M%S %z")
-                    stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
+            programs_base_qs = programs_qs.order_by('epg_id', 'id').values(
+                'id', 'epg_id', 'start_time', 'end_time', 'title', 'sub_title',
+                'description', 'custom_properties',
+            )
 
-                    # Create program entry with escaped channel name
-                    yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">\n'
-                    yield f"    <title>{html.escape(program['title'])}</title>\n"
-                    yield f"    <desc>{html.escape(program['description'])}</desc>\n"
+            current_epg_id = None
+            channel_ids_for_epg = None
+            is_multi = False
+            multi_buffer = []
+            program_batch = []
+            batch_size = 1000
+            chunk_size = 5000
+            # Keyset pagination: track last (epg_id, id) instead of OFFSET
+            # to avoid skipping/duplicating rows if the table changes mid-stream.
+            last_epg_id = 0
+            last_id = 0
+            _poster_url_base = build_absolute_uri_with_port(request, "/api/epg/programs/")
 
-                    # Add custom_properties if present
-                    custom_data = program.get('custom_properties', {})
+            while True:
+                program_chunk = list(
+                    programs_base_qs.filter(epg_id__gte=last_epg_id)
+                    .exclude(epg_id=last_epg_id, id__lte=last_id)[:chunk_size]
+                )
 
-                    # Categories
-                    if 'categories' in custom_data:
-                        for cat in custom_data['categories']:
-                            yield f"    <category>{html.escape(cat)}</category>\n"
+                if not program_chunk:
+                    break
 
-                    # Date tag
-                    if 'date' in custom_data:
-                        yield f"    <date>{html.escape(custom_data['date'])}</date>\n"
+                # Advance keyset cursor to last row in this chunk
+                last_row = program_chunk[-1]
+                last_epg_id = last_row['epg_id']
+                last_id = last_row['id']
 
-                    # Live tag
-                    if custom_data.get('live', False):
-                        yield f"    <live />\n"
+                for prog in program_chunk:
+                    epg_id = prog['epg_id']
 
-                    # New tag
-                    if custom_data.get('new', False):
-                        yield f"    <new />\n"
+                    # When epg_id changes, flush multi-channel buffer for previous group
+                    if epg_id != current_epg_id:
+                        if is_multi and multi_buffer:
+                            escaped_primary = html.escape(channel_ids_for_epg[0])
+                            for extra_cid in channel_ids_for_epg[1:]:
+                                escaped_extra = html.escape(extra_cid)
+                                for xml_text in multi_buffer:
+                                    program_batch.append(xml_text.replace(
+                                        f'channel="{escaped_primary}"',
+                                        f'channel="{escaped_extra}"',
+                                        1,
+                                    ))
+                                    if len(program_batch) >= batch_size:
+                                        yield '\n'.join(program_batch) + '\n'
+                                        program_batch = []
+                            multi_buffer = []
 
-                    # Icon/poster URL
-                    if 'icon' in custom_data:
-                        yield f"    <icon src=\"{html.escape(custom_data['icon'])}\" />\n"
+                        current_epg_id = epg_id
+                        channel_ids_for_epg = real_epg_map[epg_id]
+                        is_multi = len(channel_ids_for_epg) > 1
 
-                    yield f"  </programme>\n"
+                    # Build programme XML for primary channel_id
+                    primary_cid = channel_ids_for_epg[0]
+                    start_str = prog['start_time'].strftime("%Y%m%d%H%M%S %z")
+                    stop_str = prog['end_time'].strftime("%Y%m%d%H%M%S %z")
 
-            else:
-                # Check if this is a dummy EPG with no programs (generate on-demand)
-                if channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
-                    # This is a custom dummy EPG - check if it has programs
-                    if not channel.epg_data.programs.exists():
-                        # No programs stored, generate on-demand using custom patterns
-                        # Use actual channel name for pattern matching
-                        program_length_hours = 4
-                        dummy_programs = generate_dummy_programs(
-                            channel_id, pattern_match_name,
-                            num_days=dummy_days,
-                            program_length_hours=program_length_hours,
-                            epg_source=channel.epg_data.epg_source
-                        )
+                    program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(primary_cid)}">']
+                    program_xml.append(f'    <title>{html.escape(prog["title"])}</title>')
 
-                        for program in dummy_programs:
-                            start_str = program['start_time'].strftime("%Y%m%d%H%M%S %z")
-                            stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
+                    if prog['sub_title']:
+                        program_xml.append(f"    <sub-title>{html.escape(prog['sub_title'])}</sub-title>")
 
-                            yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">\n'
-                            yield f"    <title>{html.escape(program['title'])}</title>\n"
-                            yield f"    <desc>{html.escape(program['description'])}</desc>\n"
+                    if prog['description']:
+                        program_xml.append(f"    <desc>{html.escape(prog['description'])}</desc>")
 
-                            # Add custom_properties if present
-                            custom_data = program.get('custom_properties', {})
+                    custom_data = prog['custom_properties'] or {}
+                    if custom_data:
 
-                            # Categories
-                            if 'categories' in custom_data:
-                                for cat in custom_data['categories']:
-                                    yield f"    <category>{html.escape(cat)}</category>\n"
+                        if "categories" in custom_data and custom_data["categories"]:
+                            for category in custom_data["categories"]:
+                                program_xml.append(f"    <category>{html.escape(category)}</category>")
 
-                            # Date tag
-                            if 'date' in custom_data:
-                                yield f"    <date>{html.escape(custom_data['date'])}</date>\n"
+                        if "keywords" in custom_data and custom_data["keywords"]:
+                            for keyword in custom_data["keywords"]:
+                                program_xml.append(f"    <keyword>{html.escape(keyword)}</keyword>")
 
-                            # Live tag
-                            if custom_data.get('live', False):
-                                yield f"    <live />\n"
+                        # onscreen_episode takes priority over episode for the onscreen system
+                        if "onscreen_episode" in custom_data:
+                            program_xml.append(f'    <episode-num system="onscreen">{html.escape(custom_data["onscreen_episode"])}</episode-num>')
+                        elif "episode" in custom_data:
+                            program_xml.append(f'    <episode-num system="onscreen">E{custom_data["episode"]}</episode-num>')
 
-                            # New tag
-                            if custom_data.get('new', False):
-                                yield f"    <new />\n"
+                        # Handle dd_progid format
+                        if 'dd_progid' in custom_data:
+                            program_xml.append(f'    <episode-num system="dd_progid">{html.escape(custom_data["dd_progid"])}</episode-num>')
 
-                            # Icon/poster URL
-                            if 'icon' in custom_data:
-                                yield f"    <icon src=\"{html.escape(custom_data['icon'])}\" />\n"
+                        # Handle external database IDs
+                        for system in ['thetvdb.com', 'themoviedb.org', 'imdb.com']:
+                            if f'{system}_id' in custom_data:
+                                program_xml.append(f'    <episode-num system="{system}">{html.escape(custom_data[f"{system}_id"])}</episode-num>')
 
-                            yield f"  </programme>\n"
+                        # Add season and episode numbers in xmltv_ns format if available
+                        if "season" in custom_data and "episode" in custom_data:
+                            season = (
+                                int(custom_data["season"]) - 1
+                                if str(custom_data["season"]).isdigit()
+                                else 0
+                            )
+                            episode = (
+                                int(custom_data["episode"]) - 1
+                                if str(custom_data["episode"]).isdigit()
+                                else 0
+                            )
+                            program_xml.append(f'    <episode-num system="xmltv_ns">{season}.{episode}.</episode-num>')
 
-                        continue  # Skip to next channel
+                        if "language" in custom_data:
+                            program_xml.append(f'    <language>{html.escape(custom_data["language"])}</language>')
 
-                # For real EPG data - filter only if days parameter was specified
-                if num_days > 0:
-                    programs_qs = channel.epg_data.programs.filter(
-                        start_time__gte=now,
-                        start_time__lt=cutoff_date
-                    ).order_by('id')  # Explicit ordering for consistent chunking
-                else:
-                    # Return all programs if days=0 or not specified
-                    programs_qs = channel.epg_data.programs.all().order_by('id')
+                        if "original_language" in custom_data:
+                            program_xml.append(f'    <orig-language>{html.escape(custom_data["original_language"])}</orig-language>')
 
-                # Process programs in chunks to avoid cursor timeout issues
-                program_batch = []
-                batch_size = 250
-                chunk_size = 1000  # Fetch 1000 programs at a time from DB
+                        if "length" in custom_data and isinstance(custom_data["length"], dict):
+                            length_value = custom_data["length"].get("value", "")
+                            length_units = custom_data["length"].get("units", "minutes")
+                            program_xml.append(f'    <length units="{html.escape(length_units)}">{html.escape(str(length_value))}</length>')
 
-                # Fetch chunks until no more results (avoids count() query)
-                offset = 0
-                while True:
-                    # Fetch a chunk of programs - this closes the cursor after fetching
-                    program_chunk = list(programs_qs[offset:offset + chunk_size])
+                        if "video" in custom_data and isinstance(custom_data["video"], dict):
+                            program_xml.append("    <video>")
+                            for attr in ['present', 'colour', 'aspect', 'quality']:
+                                if attr in custom_data["video"]:
+                                    program_xml.append(f"      <{attr}>{html.escape(custom_data['video'][attr])}</{attr}>")
+                            program_xml.append("    </video>")
 
-                    # Break if no more programs
-                    if not program_chunk:
-                        break
+                        if "audio" in custom_data and isinstance(custom_data["audio"], dict):
+                            program_xml.append("    <audio>")
+                            for attr in ['present', 'stereo']:
+                                if attr in custom_data["audio"]:
+                                    program_xml.append(f"      <{attr}>{html.escape(custom_data['audio'][attr])}</{attr}>")
+                            program_xml.append("    </audio>")
 
-                    # Process each program in the chunk
-                    for prog in program_chunk:
-                        start_str = prog.start_time.strftime("%Y%m%d%H%M%S %z")
-                        stop_str = prog.end_time.strftime("%Y%m%d%H%M%S %z")
+                        if "subtitles" in custom_data and isinstance(custom_data["subtitles"], list):
+                            for subtitle in custom_data["subtitles"]:
+                                if isinstance(subtitle, dict):
+                                    subtitle_type = subtitle.get("type", "")
+                                    type_attr = f' type="{html.escape(subtitle_type)}"' if subtitle_type else ""
+                                    program_xml.append(f"    <subtitles{type_attr}>")
+                                    if "language" in subtitle:
+                                        program_xml.append(f"      <language>{html.escape(subtitle['language'])}</language>")
+                                    program_xml.append("    </subtitles>")
 
-                        program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">']
-                        program_xml.append(f'    <title>{html.escape(prog.title)}</title>')
+                        if "rating" in custom_data:
+                            rating_system = custom_data.get("rating_system", "TV Parental Guidelines")
+                            program_xml.append(f'    <rating system="{html.escape(rating_system)}">')
+                            program_xml.append(f'      <value>{html.escape(custom_data["rating"])}</value>')
+                            program_xml.append(f"    </rating>")
 
-                        # Add subtitle if available
-                        if prog.sub_title:
-                            program_xml.append(f"    <sub-title>{html.escape(prog.sub_title)}</sub-title>")
+                        if "star_ratings" in custom_data and isinstance(custom_data["star_ratings"], list):
+                            for star_rating in custom_data["star_ratings"]:
+                                if isinstance(star_rating, dict) and "value" in star_rating:
+                                    system_attr = f' system="{html.escape(star_rating["system"])}"' if "system" in star_rating else ""
+                                    program_xml.append(f"    <star-rating{system_attr}>")
+                                    program_xml.append(f"      <value>{html.escape(star_rating['value'])}</value>")
+                                    program_xml.append("    </star-rating>")
 
-                        # Add description if available
-                        if prog.description:
-                            program_xml.append(f"    <desc>{html.escape(prog.description)}</desc>")
+                        if "reviews" in custom_data and isinstance(custom_data["reviews"], list):
+                            for review in custom_data["reviews"]:
+                                if isinstance(review, dict) and "content" in review:
+                                    review_type = review.get("type", "text")
+                                    attrs = [f'type="{html.escape(review_type)}"']
+                                    if "source" in review:
+                                        attrs.append(f'source="{html.escape(review["source"])}"')
+                                    if "reviewer" in review:
+                                        attrs.append(f'reviewer="{html.escape(review["reviewer"])}"')
+                                    attr_str = " ".join(attrs)
+                                    program_xml.append(f'    <review {attr_str}>{html.escape(review["content"])}</review>')
 
-                        # Process custom properties if available
-                        if prog.custom_properties:
-                            custom_data = prog.custom_properties or {}
+                        if "images" in custom_data and isinstance(custom_data["images"], list):
+                            for image in custom_data["images"]:
+                                if isinstance(image, dict) and "url" in image:
+                                    attrs = []
+                                    for attr in ['type', 'size', 'orient', 'system']:
+                                        if attr in image:
+                                            attrs.append(f'{attr}="{html.escape(image[attr])}"')
+                                    attr_str = " " + " ".join(attrs) if attrs else ""
+                                    program_xml.append(f'    <image{attr_str}>{html.escape(image["url"])}</image>')
 
-                            # Add categories if available
-                            if "categories" in custom_data and custom_data["categories"]:
-                                for category in custom_data["categories"]:
-                                    program_xml.append(f"    <category>{html.escape(category)}</category>")
+                        # Add enhanced credits handling
+                        if "credits" in custom_data:
+                            program_xml.append("    <credits>")
+                            credits = custom_data["credits"]
 
-                            # Add keywords if available
-                            if "keywords" in custom_data and custom_data["keywords"]:
-                                for keyword in custom_data["keywords"]:
-                                    program_xml.append(f"    <keyword>{html.escape(keyword)}</keyword>")
-
-                            # Handle episode numbering - multiple formats supported
-                            # Prioritize onscreen_episode over standalone episode for onscreen system
-                            if "onscreen_episode" in custom_data:
-                                program_xml.append(f'    <episode-num system="onscreen">{html.escape(custom_data["onscreen_episode"])}</episode-num>')
-                            elif "episode" in custom_data:
-                                program_xml.append(f'    <episode-num system="onscreen">E{custom_data["episode"]}</episode-num>')
-
-                            # Handle dd_progid format
-                            if 'dd_progid' in custom_data:
-                                program_xml.append(f'    <episode-num system="dd_progid">{html.escape(custom_data["dd_progid"])}</episode-num>')
-
-                            # Handle external database IDs
-                            for system in ['thetvdb.com', 'themoviedb.org', 'imdb.com']:
-                                if f'{system}_id' in custom_data:
-                                    program_xml.append(f'    <episode-num system="{system}">{html.escape(custom_data[f"{system}_id"])}</episode-num>')
-
-                            # Add season and episode numbers in xmltv_ns format if available
-                            if "season" in custom_data and "episode" in custom_data:
-                                season = (
-                                    int(custom_data["season"]) - 1
-                                    if str(custom_data["season"]).isdigit()
-                                    else 0
-                                )
-                                episode = (
-                                    int(custom_data["episode"]) - 1
-                                    if str(custom_data["episode"]).isdigit()
-                                    else 0
-                                )
-                                program_xml.append(f'    <episode-num system="xmltv_ns">{season}.{episode}.</episode-num>')
-
-                            # Add language information
-                            if "language" in custom_data:
-                                program_xml.append(f'    <language>{html.escape(custom_data["language"])}</language>')
-
-                            if "original_language" in custom_data:
-                                program_xml.append(f'    <orig-language>{html.escape(custom_data["original_language"])}</orig-language>')
-
-                            # Add length information
-                            if "length" in custom_data and isinstance(custom_data["length"], dict):
-                                length_value = custom_data["length"].get("value", "")
-                                length_units = custom_data["length"].get("units", "minutes")
-                                program_xml.append(f'    <length units="{html.escape(length_units)}">{html.escape(str(length_value))}</length>')
-
-                            # Add video information
-                            if "video" in custom_data and isinstance(custom_data["video"], dict):
-                                program_xml.append("    <video>")
-                                for attr in ['present', 'colour', 'aspect', 'quality']:
-                                    if attr in custom_data["video"]:
-                                        program_xml.append(f"      <{attr}>{html.escape(custom_data['video'][attr])}</{attr}>")
-                                program_xml.append("    </video>")
-
-                            # Add audio information
-                            if "audio" in custom_data and isinstance(custom_data["audio"], dict):
-                                program_xml.append("    <audio>")
-                                for attr in ['present', 'stereo']:
-                                    if attr in custom_data["audio"]:
-                                        program_xml.append(f"      <{attr}>{html.escape(custom_data['audio'][attr])}</{attr}>")
-                                program_xml.append("    </audio>")
-
-                            # Add subtitles information
-                            if "subtitles" in custom_data and isinstance(custom_data["subtitles"], list):
-                                for subtitle in custom_data["subtitles"]:
-                                    if isinstance(subtitle, dict):
-                                        subtitle_type = subtitle.get("type", "")
-                                        type_attr = f' type="{html.escape(subtitle_type)}"' if subtitle_type else ""
-                                        program_xml.append(f"    <subtitles{type_attr}>")
-                                        if "language" in subtitle:
-                                            program_xml.append(f"      <language>{html.escape(subtitle['language'])}</language>")
-                                        program_xml.append("    </subtitles>")
-
-                            # Add rating if available
-                            if "rating" in custom_data:
-                                rating_system = custom_data.get("rating_system", "TV Parental Guidelines")
-                                program_xml.append(f'    <rating system="{html.escape(rating_system)}">')
-                                program_xml.append(f'      <value>{html.escape(custom_data["rating"])}</value>')
-                                program_xml.append(f"    </rating>")
-
-                            # Add star ratings
-                            if "star_ratings" in custom_data and isinstance(custom_data["star_ratings"], list):
-                                for star_rating in custom_data["star_ratings"]:
-                                    if isinstance(star_rating, dict) and "value" in star_rating:
-                                        system_attr = f' system="{html.escape(star_rating["system"])}"' if "system" in star_rating else ""
-                                        program_xml.append(f"    <star-rating{system_attr}>")
-                                        program_xml.append(f"      <value>{html.escape(star_rating['value'])}</value>")
-                                        program_xml.append("    </star-rating>")
-
-                            # Add reviews
-                            if "reviews" in custom_data and isinstance(custom_data["reviews"], list):
-                                for review in custom_data["reviews"]:
-                                    if isinstance(review, dict) and "content" in review:
-                                        review_type = review.get("type", "text")
-                                        attrs = [f'type="{html.escape(review_type)}"']
-                                        if "source" in review:
-                                            attrs.append(f'source="{html.escape(review["source"])}"')
-                                        if "reviewer" in review:
-                                            attrs.append(f'reviewer="{html.escape(review["reviewer"])}"')
-                                        attr_str = " ".join(attrs)
-                                        program_xml.append(f'    <review {attr_str}>{html.escape(review["content"])}</review>')
-
-                            # Add images
-                            if "images" in custom_data and isinstance(custom_data["images"], list):
-                                for image in custom_data["images"]:
-                                    if isinstance(image, dict) and "url" in image:
-                                        attrs = []
-                                        for attr in ['type', 'size', 'orient', 'system']:
-                                            if attr in image:
-                                                attrs.append(f'{attr}="{html.escape(image[attr])}"')
-                                        attr_str = " " + " ".join(attrs) if attrs else ""
-                                        program_xml.append(f'    <image{attr_str}>{html.escape(image["url"])}</image>')
-
-                            # Add enhanced credits handling
-                            if "credits" in custom_data:
-                                program_xml.append("    <credits>")
-                                credits = custom_data["credits"]
-
-                                # Handle different credit types
-                                for role in ['director', 'writer', 'adapter', 'producer', 'composer', 'editor', 'presenter', 'commentator', 'guest']:
-                                    if role in credits:
-                                        people = credits[role]
-                                        if isinstance(people, list):
-                                            for person in people:
-                                                program_xml.append(f"      <{role}>{html.escape(person)}</{role}>")
-                                        else:
-                                            program_xml.append(f"      <{role}>{html.escape(people)}</{role}>")
-
-                                # Handle actors separately to include role and guest attributes
-                                if "actor" in credits:
-                                    actors = credits["actor"]
-                                    if isinstance(actors, list):
-                                        for actor in actors:
-                                            if isinstance(actor, dict):
-                                                name = actor.get("name", "")
-                                                role_attr = f' role="{html.escape(actor["role"])}"' if "role" in actor else ""
-                                                guest_attr = ' guest="yes"' if actor.get("guest") else ""
-                                                program_xml.append(f"      <actor{role_attr}{guest_attr}>{html.escape(name)}</actor>")
-                                            else:
-                                                program_xml.append(f"      <actor>{html.escape(actor)}</actor>")
+                            for role in ['director', 'writer', 'adapter', 'producer', 'composer', 'editor', 'presenter', 'commentator', 'guest']:
+                                if role in credits:
+                                    people = credits[role]
+                                    if isinstance(people, list):
+                                        for person in people:
+                                            program_xml.append(f"      <{role}>{html.escape(person)}</{role}>")
                                     else:
-                                        program_xml.append(f"      <actor>{html.escape(actors)}</actor>")
+                                        program_xml.append(f"      <{role}>{html.escape(people)}</{role}>")
 
-                                program_xml.append("    </credits>")
-
-                            # Add program date if available (full date, not just year)
-                            if "date" in custom_data:
-                                program_xml.append(f'    <date>{html.escape(custom_data["date"])}</date>')
-
-                            # Add country if available
-                            if "country" in custom_data:
-                                program_xml.append(f'    <country>{html.escape(custom_data["country"])}</country>')
-
-                            # Add icon if available
-                            if "icon" in custom_data:
-                                program_xml.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
-
-                            # Add special flags as proper tags with enhanced handling
-                            if custom_data.get("previously_shown", False):
-                                prev_shown_details = custom_data.get("previously_shown_details", {})
-                                attrs = []
-                                if "start" in prev_shown_details:
-                                    attrs.append(f'start="{html.escape(prev_shown_details["start"])}"')
-                                if "channel" in prev_shown_details:
-                                    attrs.append(f'channel="{html.escape(prev_shown_details["channel"])}"')
-                                attr_str = " " + " ".join(attrs) if attrs else ""
-                                program_xml.append(f"    <previously-shown{attr_str} />")
-
-                            if custom_data.get("premiere", False):
-                                premiere_text = custom_data.get("premiere_text", "")
-                                if premiere_text:
-                                    program_xml.append(f"    <premiere>{html.escape(premiere_text)}</premiere>")
+                            # Handle actors separately to include role and guest attributes
+                            if "actor" in credits:
+                                actors = credits["actor"]
+                                if isinstance(actors, list):
+                                    for actor in actors:
+                                        if isinstance(actor, dict):
+                                            name = actor.get("name", "")
+                                            role_attr = f' role="{html.escape(actor["role"])}"' if "role" in actor else ""
+                                            guest_attr = ' guest="yes"' if actor.get("guest") else ""
+                                            program_xml.append(f"      <actor{role_attr}{guest_attr}>{html.escape(name)}</actor>")
+                                        else:
+                                            program_xml.append(f"      <actor>{html.escape(actor)}</actor>")
                                 else:
-                                    program_xml.append("    <premiere />")
+                                    program_xml.append(f"      <actor>{html.escape(actors)}</actor>")
 
-                            if custom_data.get("last_chance", False):
-                                last_chance_text = custom_data.get("last_chance_text", "")
-                                if last_chance_text:
-                                    program_xml.append(f"    <last-chance>{html.escape(last_chance_text)}</last-chance>")
-                                else:
-                                    program_xml.append("    <last-chance />")
+                            program_xml.append("    </credits>")
 
-                            if custom_data.get("new", False):
-                                program_xml.append("    <new />")
+                        if "date" in custom_data:
+                            program_xml.append(f'    <date>{html.escape(custom_data["date"])}</date>')
 
-                            if custom_data.get('live', False):
-                                program_xml.append('    <live />')
+                        if "country" in custom_data:
+                            program_xml.append(f'    <country>{html.escape(custom_data["country"])}</country>')
 
-                        program_xml.append("  </programme>")
+                        if "icon" in custom_data:
+                            program_xml.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
+                        elif "sd_icon" in custom_data:
+                            program_xml.append(f'    <icon src="{html.escape(_poster_url_base)}{prog["id"]}/poster/" />')
 
-                        # Add to batch
-                        program_batch.extend(program_xml)
+                        # Add special flags as proper tags with enhanced handling
+                        if custom_data.get("previously_shown", False):
+                            prev_shown_details = custom_data.get("previously_shown_details", {})
+                            attrs = []
+                            if "start" in prev_shown_details:
+                                attrs.append(f'start="{html.escape(prev_shown_details["start"])}"')
+                            if "channel" in prev_shown_details:
+                                attrs.append(f'channel="{html.escape(prev_shown_details["channel"])}"')
+                            attr_str = " " + " ".join(attrs) if attrs else ""
+                            program_xml.append(f"    <previously-shown{attr_str} />")
 
-                        # Send batch when full or send keep-alive
-                        if len(program_batch) >= batch_size:
-                            batch_xml = '\n'.join(program_batch) + '\n'
-                            yield batch_xml
-                            program_batch = []
+                        if custom_data.get("premiere", False):
+                            premiere_text = custom_data.get("premiere_text", "")
+                            if premiere_text:
+                                program_xml.append(f"    <premiere>{html.escape(premiere_text)}</premiere>")
+                            else:
+                                program_xml.append("    <premiere />")
 
-                    # Move to next chunk
-                    offset += chunk_size
+                        if custom_data.get("last_chance", False):
+                            last_chance_text = custom_data.get("last_chance_text", "")
+                            if last_chance_text:
+                                program_xml.append(f"    <last-chance>{html.escape(last_chance_text)}</last-chance>")
+                            else:
+                                program_xml.append("    <last-chance />")
 
-                # Send remaining programs in batch
-                if program_batch:
-                    batch_xml = '\n'.join(program_batch) + '\n'
-                    yield batch_xml
+                        if custom_data.get("new", False):
+                            program_xml.append("    <new />")
+
+                        if custom_data.get('live', False):
+                            program_xml.append('    <live />')
+
+                    program_xml.append("  </programme>")
+
+                    xml_text = '\n'.join(program_xml)
+                    program_batch.append(xml_text)
+
+                    if is_multi:
+                        multi_buffer.append(xml_text)
+
+                    if len(program_batch) >= batch_size:
+                        yield '\n'.join(program_batch) + '\n'
+                        program_batch = []
+
+            # Final flush of multi-channel buffer
+            if is_multi and multi_buffer:
+                escaped_primary = html.escape(channel_ids_for_epg[0])
+                for extra_cid in channel_ids_for_epg[1:]:
+                    escaped_extra = html.escape(extra_cid)
+                    for xml_text in multi_buffer:
+                        program_batch.append(xml_text.replace(
+                            f'channel="{escaped_primary}"',
+                            f'channel="{escaped_extra}"',
+                            1,
+                        ))
+
+            if program_batch:
+                yield '\n'.join(program_batch) + '\n'
 
         # Send final closing tag and completion message
         yield "</tv>\n"
@@ -1857,11 +1930,13 @@ def generate_epg(request, profile_name=None, user=None):
         client_id, client_ip, user_agent = get_client_identifier(request)
         event_cache_key = f"epg_download:{user.username if user else 'anonymous'}:{profile_name or 'all'}:{client_id}"
         if not cache.get(event_cache_key):
+            # `len()` reuses the queryset's iteration cache populated above;
+            # `count()` would issue a separate SELECT COUNT(*).
             log_system_event(
                 event_type='epg_download',
                 profile=profile_name or 'all',
                 user=user.username if user else 'anonymous',
-                channels=channels.count(),
+                channels=len(channels),
                 client_ip=client_ip,
                 user_agent=user_agent,
             )
@@ -1878,7 +1953,6 @@ def generate_epg(request, profile_name=None, user=None):
         cache.set(content_cache_key, full_content, 300)
         logger.debug("Cached EPG content (%d bytes)", len(full_content))
 
-    # Return streaming response
     response = StreamingHttpResponse(
         streaming_content=caching_generator(),
         content_type="application/xml"
@@ -1896,6 +1970,7 @@ def xc_get_user(request):
         return None
 
     user = get_object_or_404(User, username=username)
+
     custom_properties = user.custom_properties or {}
 
     if "xc_password" not in custom_properties:
@@ -1904,13 +1979,18 @@ def xc_get_user(request):
     if custom_properties["xc_password"] != password:
         return None
 
+    if not network_access_allowed(request, 'XC_API', user):
+        return None
+
     return user
 
 
-def xc_get_info(request, full=False):
-    if not network_access_allowed(request, 'XC_API'):
-        return JsonResponse({'error': 'Forbidden'}, status=403)
+def _xc_allowed_output_formats(user):
+    """Return the list of allowed output formats for the XC API user_info response."""
+    return ['ts', 'mp4']
 
+
+def xc_get_info(request, full=False):
     user = xc_get_user(request)
 
     if user is None:
@@ -1923,6 +2003,13 @@ def xc_get_info(request, full=False):
         hostname = raw_host
         port = "443" if request.is_secure() else "80"
 
+    if user.stream_limit and user.stream_limit > 0:
+        active_cons = len(get_user_active_connections(user.id))
+        max_connections = user.stream_limit
+    else:
+        active_cons = len(get_user_active_connections(None))
+        max_connections = calculate_tuner_count(minimum=1, unlimited_default=50)
+
     info = {
         "user_info": {
             "username": request.GET.get("username"),
@@ -1931,10 +2018,9 @@ def xc_get_info(request, full=False):
             "auth": 1,
             "status": "Active",
             "exp_date": str(int(time.time()) + (90 * 24 * 60 * 60)),
-            "max_connections": str(calculate_tuner_count(minimum=1, unlimited_default=50)),
-            "allowed_output_formats": [
-                "ts",
-            ],
+            "active_cons": str(active_cons),
+            "max_connections": str(max_connections),
+            "allowed_output_formats": _xc_allowed_output_formats(user),
         },
         "server_info": {
             "url": hostname,
@@ -1959,9 +2045,6 @@ def xc_get_info(request, full=False):
 
 
 def xc_player_api(request, full=False):
-    if not network_access_allowed(request, 'XC_API'):
-        return JsonResponse({'error': 'Forbidden'}, status=403)
-
     action = request.GET.get("action")
     user = xc_get_user(request)
 
@@ -1971,7 +2054,10 @@ def xc_player_api(request, full=False):
     if action == "get_live_categories":
         return JsonResponse(xc_get_live_categories(user), safe=False)
     elif action == "get_live_streams":
-        return JsonResponse(xc_get_live_streams(request, user, request.GET.get("category_id")), safe=False)
+        return StreamingHttpResponse(
+            _xc_stream_live_streams(request, user, request.GET.get("category_id")),
+            content_type="application/json",
+        )
     elif action == "get_short_epg":
         return JsonResponse(xc_get_epg(request, user, short=True), safe=False)
     elif action == "get_simple_data_table":
@@ -1996,9 +2082,6 @@ def xc_player_api(request, full=False):
 
 
 def xc_panel_api(request):
-    if not network_access_allowed(request, 'XC_API'):
-        return JsonResponse({'error': 'Forbidden'}, status=403)
-
     user = xc_get_user(request)
 
     if user is None:
@@ -2078,29 +2161,44 @@ def xc_xmltv(request):
 
 def xc_get_live_categories(user):
     from django.db.models import Min
+    from django.db.models.functions import Coalesce
+
     response = []
 
-    if user.user_level == 0:
+    # Rank categories by the minimum EFFECTIVE channel number across their
+    # visible (not hidden_from_output) channels so overridden numbers drive the
+    # ordering, not the underlying provider values.
+    effective_min = Min(
+        Coalesce("channels__override__channel_number", "channels__channel_number")
+    )
+    hidden_exclusion = {"channels__hidden_from_output": False}
+
+    if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
         # If user has ALL profiles or NO profiles, give unrestricted access
         if user_profile_count == 0:
             # No profile filtering - user sees all channel groups
             channel_groups = ChannelGroup.objects.filter(
-                channels__isnull=False, channels__user_level__lte=user.user_level
-            ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+                channels__isnull=False,
+                channels__user_level__lte=user.user_level,
+                **hidden_exclusion,
+            ).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
         else:
             # User has specific limited profiles assigned
             filters = {
                 "channels__channelprofilemembership__enabled": True,
                 "channels__user_level": 0,
-                "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+                "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
+                **hidden_exclusion,
             }
-            channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+            channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
     else:
         channel_groups = ChannelGroup.objects.filter(
-            channels__isnull=False, channels__user_level__lte=user.user_level
-        ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+            channels__isnull=False,
+            channels__user_level__lte=user.user_level,
+            **hidden_exclusion,
+        ).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
 
     for group in channel_groups:
         response.append(
@@ -2114,10 +2212,10 @@ def xc_get_live_categories(user):
     return response
 
 
-def xc_get_live_streams(request, user, category_id=None):
-    streams = []
+def _xc_live_streams_setup(request, user, category_id):
+    from apps.channels.managers import with_effective_values
 
-    if user.user_level == 0:
+    if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
         # If user has ALL profiles or NO profiles, give unrestricted access
@@ -2126,7 +2224,10 @@ def xc_get_live_streams(request, user, category_id=None):
             filters = {"user_level__lte": user.user_level}
             if category_id is not None:
                 filters["channel_group__id"] = category_id
-            channels = Channel.objects.filter(**filters).order_by("channel_number")
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
+            base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo')
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -2136,89 +2237,145 @@ def xc_get_live_streams(request, user, category_id=None):
             }
             if category_id is not None:
                 filters["channel_group__id"] = category_id
-            channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
+            base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo').distinct()
     else:
         if not category_id:
-            channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+            base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('channel_group', 'logo')
         else:
-            channels = Channel.objects.filter(
+            base_qs = Channel.objects.filter(
                 channel_group__id=category_id, user_level__lte=user.user_level
-            ).order_by("channel_number")
+            ).select_related('channel_group', 'logo')
 
-    # Build collision-free mapping for XC clients (which require integers)
-    # This ensures channels with float numbers don't conflict with existing integers
-    channel_num_map = {}  # Maps channel.id -> integer channel number for XC
-    used_numbers = set()  # Track all assigned integer channel numbers
+    channels = (
+        with_effective_values(base_qs, select_related_fks=True)
+        .exclude(hidden_from_output=True)
+        .order_by("effective_channel_number")
+    )
 
-    # First pass: assign integers for channels that already have integer numbers
-    for channel in channels:
-        if channel.channel_number == int(channel.channel_number):
-            # Already an integer, use it directly
-            num = int(channel.channel_number)
+    _default_group_id = None
+
+    def _get_default_group_id():
+        nonlocal _default_group_id
+        if _default_group_id is None:
+            _default_group_id = ChannelGroup.objects.get_or_create(name="Default Group")[0].id
+        return _default_group_id
+
+    # Build collision-free integer channel number mapping.
+    # Channels with integer effective numbers are assigned immediately; those with
+    # fractional numbers are deferred until all integers are known, then assigned
+    # the nearest available integer to avoid collisions.
+    channel_num_map = {}
+    used_numbers = set()
+    float_channels = []  # (channel.id, effective_num) for deferred resolution
+
+    for channel in channels:  # evaluates and caches the queryset
+        effective_num = channel.effective_channel_number
+        if effective_num is None:
+            pass
+        elif effective_num == int(effective_num):
+            num = int(effective_num)
             channel_num_map[channel.id] = num
             used_numbers.add(num)
+        else:
+            float_channels.append((channel.id, effective_num))
 
-    # Second pass: assign integers for channels with float numbers
-    # Find next available number to avoid collisions
+    for channel_id, effective_num in float_channels:
+        candidate = int(effective_num)
+        while candidate in used_numbers:
+            candidate += 1
+        channel_num_map[channel_id] = candidate
+        used_numbers.add(candidate)
+
+    # Precompute base URL and logo path template once for the entire response
+    # to avoid calling reverse() + build_absolute_uri_with_port() per channel.
+    _base_url = build_absolute_uri_with_port(request, "")
+    _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
+
+    return channels, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix
+
+
+def _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix):
+    channel_num_int = channel_num_map[channel.id]
+    effective_logo = channel.effective_logo_obj
+    effective_group = channel.effective_channel_group_obj
+    group_id = effective_group.id if effective_group else _get_default_group_id()
+    return {
+        "num": channel_num_int,
+        "name": channel.effective_name,
+        "stream_type": "live",
+        "stream_id": channel.id,
+        "stream_icon": (
+            f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
+            if effective_logo else None
+        ),
+        "epg_channel_id": str(channel_num_int),
+        "added": str(int(channel.created_at.timestamp())),
+        "is_adult": int(channel.is_adult),
+        "category_id": str(group_id),
+        "category_ids": [group_id],
+        "custom_sid": None,
+        "tv_archive": 0,
+        "direct_source": "",
+        "tv_archive_duration": 0,
+    }
+
+
+def xc_get_live_streams(request, user, category_id=None):
+    channels, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix = \
+        _xc_live_streams_setup(request, user, category_id)
+    return [
+        _xc_channel_entry(ch, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix)
+        for ch in channels
+    ]
+
+
+def _xc_stream_live_streams(request, user, category_id=None):
+    channels, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix = \
+        _xc_live_streams_setup(request, user, category_id)
+    yield "["
+    sep = ""
     for channel in channels:
-        if channel.channel_number != int(channel.channel_number):
-            # Has decimal component, need to find available integer
-            # Start from truncated value and increment until we find an unused number
-            candidate = int(channel.channel_number)
-            while candidate in used_numbers:
-                candidate += 1
-            channel_num_map[channel.id] = candidate
-            used_numbers.add(candidate)
-
-    # Build the streams list with the collision-free channel numbers
-    for channel in channels:
-        channel_num_int = channel_num_map[channel.id]
-
-        streams.append(
-            {
-                "num": channel_num_int,
-                "name": channel.name,
-                "stream_type": "live",
-                "stream_id": channel.id,
-                "stream_icon": (
-                    None
-                    if not channel.logo
-                    else build_absolute_uri_with_port(
-                        request,
-                        reverse("api:channels:logo-cache", args=[channel.logo.id])
-                    )
-                ),
-                "epg_channel_id": str(channel_num_int),
-                "added": int(channel.created_at.timestamp()),
-                "is_adult": 0,
-                "category_id": str(channel.channel_group.id),
-                "category_ids": [channel.channel_group.id],
-                "custom_sid": None,
-                "tv_archive": 0,
-                "direct_source": "",
-                "tv_archive_duration": 0,
-            }
+        yield sep + json.dumps(
+            _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix)
         )
-
-    return streams
+        sep = ","
+    yield "]"
 
 
 def xc_get_epg(request, user, short=False):
+    from apps.channels.managers import with_effective_values
+
     channel_id = request.GET.get('stream_id')
     if not channel_id:
         raise Http404()
 
     channel = None
+    # Apply effective-value annotation + hidden-exclusion at every channel
+    # resolution path so a single channel lookup honors the same visibility
+    # rules as xc_get_live_streams.
+    def _annotate(qs):
+        return with_effective_values(qs, select_related_fks=True).exclude(hidden_from_output=True)
+
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
         # If user has ALL profiles or NO profiles, give unrestricted access
         if user_profile_count == 0:
             # No profile filtering - user sees all channels based on user_level
-            channel = Channel.objects.filter(
-                id=channel_id,
-                user_level__lte=user.user_level
-            ).first()
+            filters = {
+                "id": channel_id,
+                "user_level__lte": user.user_level
+            }
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
+            channel = _annotate(Channel.objects.filter(**filters).select_related('epg_data__epg_source')).first()
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -2227,75 +2384,117 @@ def xc_get_epg(request, user, short=False):
                 "user_level__lte": user.user_level,
                 "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
             }
-            channel = Channel.objects.filter(**filters).distinct().first()
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
+            channel = _annotate(Channel.objects.filter(**filters).select_related('epg_data__epg_source').distinct()).first()
 
         if not channel:
             raise Http404()
     else:
-        channel = get_object_or_404(Channel, id=channel_id)
+        channel = _annotate(Channel.objects.filter(id=channel_id).select_related('epg_data__epg_source')).first()
+        if not channel:
+            raise Http404()
 
     if not channel:
         raise Http404()
 
     # Calculate the collision-free integer channel number for this channel
-    # This must match the logic in xc_get_live_streams to ensure consistency
-    # Get all channels in the same category for collision detection
-    category_channels = Channel.objects.filter(
-        channel_group=channel.channel_group
-    ).order_by("channel_number")
+    # This must match the logic in xc_get_live_streams to ensure consistency.
+    # The category channels must be filtered by the channel's EFFECTIVE group
+    # (an override can move a channel into a different group), then annotated
+    # so the comparison runs on effective numbers.
+    effective_group = channel.effective_channel_group_obj
+    category_channels = (
+        with_effective_values(
+            Channel.objects.filter(channel_group=effective_group) if effective_group else Channel.objects.none()
+        )
+        .exclude(hidden_from_output=True)
+        .order_by("effective_channel_number")
+    )
 
     channel_num_map = {}
     used_numbers = set()
 
-    # First pass: assign integers for channels that already have integer numbers
+    # First pass: assign integers for channels that already have integer effective numbers
     for ch in category_channels:
-        if ch.channel_number == int(ch.channel_number):
-            num = int(ch.channel_number)
+        effective_num = ch.effective_channel_number
+        if effective_num is not None and effective_num == int(effective_num):
+            num = int(effective_num)
             channel_num_map[ch.id] = num
             used_numbers.add(num)
 
-    # Second pass: assign integers for channels with float numbers
+    # Second pass: assign integers for channels with float effective numbers
     for ch in category_channels:
-        if ch.channel_number != int(ch.channel_number):
-            candidate = int(ch.channel_number)
+        effective_num = ch.effective_channel_number
+        if effective_num is not None and effective_num != int(effective_num):
+            candidate = int(effective_num)
             while candidate in used_numbers:
                 candidate += 1
             channel_num_map[ch.id] = candidate
             used_numbers.add(candidate)
 
     # Get the mapped integer for this specific channel
-    channel_num_int = channel_num_map.get(channel.id, int(channel.channel_number))
+    channel_num_int = channel_num_map.get(
+        channel.id,
+        int(channel.effective_channel_number) if channel.effective_channel_number is not None else 0,
+    )
 
     limit = int(request.GET.get('limit', 4))
-    if channel.epg_data:
+    user_custom = user.custom_properties or {}
+    try:
+        num_days = int(request.GET.get('days', user_custom.get('epg_days', 0)))
+        num_days = max(0, min(num_days, 365))
+    except (ValueError, TypeError):
+        num_days = 0
+    try:
+        prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
+        prev_days = max(0, min(prev_days, 30))
+    except (ValueError, TypeError):
+        prev_days = 0
+    now = django_timezone.now()
+    lookback_cutoff = now - timedelta(days=prev_days)
+    forward_cutoff = now + timedelta(days=num_days) if num_days > 0 else None
+    effective_epg_data = channel.effective_epg_data_obj
+    effective_name = channel.effective_name
+
+    if effective_epg_data:
         # Check if this is a dummy EPG that generates on-demand
-        if channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
-            if not channel.epg_data.programs.exists():
+        if effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
+            if not effective_epg_data.programs.exists():
                 # Generate on-demand using custom patterns
                 programs = generate_dummy_programs(
                     channel_id=channel_id,
-                    channel_name=channel.name,
-                    epg_source=channel.epg_data.epg_source
+                    channel_name=effective_name,
+                    epg_source=effective_epg_data.epg_source
                 )
             else:
                 # Has stored programs, use them
-                if short == False:
-                    programs = channel.epg_data.programs.filter(
-                        start_time__gte=django_timezone.now()
-                    ).order_by('start_time')
+                if short:
+                    # Short EPG: current and upcoming only (never historical), limited count
+                    programs = effective_epg_data.programs.filter(
+                        end_time__gt=now
+                    ).order_by('start_time')[:limit]
                 else:
-                    programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
+                    qs = effective_epg_data.programs.filter(end_time__gt=lookback_cutoff)
+                    if forward_cutoff:
+                        qs = qs.filter(start_time__lt=forward_cutoff)
+                    programs = qs.order_by('start_time')
         else:
             # Regular EPG with stored programs
-            if short == False:
-                programs = channel.epg_data.programs.filter(
-                    start_time__gte=django_timezone.now()
-                ).order_by('start_time')
+            if short:
+                # Short EPG: current and upcoming only (never historical), limited count
+                programs = effective_epg_data.programs.filter(
+                    end_time__gt=now
+                ).order_by('start_time')[:limit]
             else:
-                programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
+                qs = effective_epg_data.programs.filter(end_time__gt=lookback_cutoff)
+                if forward_cutoff:
+                    qs = qs.filter(start_time__lt=forward_cutoff)
+                programs = qs.order_by('start_time')
     else:
         # No EPG data assigned, generate default dummy
-        programs = generate_dummy_programs(channel_id=channel_id, channel_name=channel.name, epg_source=None)
+        programs = generate_dummy_programs(channel_id=channel_id, channel_name=effective_name, epg_source=None)
 
     output = {"epg_listings": []}
 
@@ -2316,7 +2515,7 @@ def xc_get_epg(request, user, short=False):
 
         # epg_id refers to the EPG source/channel mapping in XC panels
         # Use the actual EPGData ID when available, otherwise fall back to 0
-        epg_id = str(channel.epg_data.id) if channel.epg_data else "0"
+        epg_id = str(effective_epg_data.id) if effective_epg_data else "0"
 
         program_output = {
             "id": program_id,
@@ -2365,60 +2564,79 @@ def xc_get_vod_categories(user):
 
 def xc_get_vod_streams(request, user, category_id=None):
     """Get VOD streams (movies) for XtreamCodes API"""
-    from apps.vod.models import Movie, M3UMovieRelation
-    from django.db.models import Prefetch
+    from apps.vod.models import M3UMovieRelation
+    from django.db import connection
+
+    rel_filters = {"m3u_account__is_active": True}
+    if category_id:
+        rel_filters["category_id"] = category_id
+
+    base_qs = (
+        M3UMovieRelation.objects
+        .filter(**rel_filters)
+        .select_related('movie', 'movie__logo', 'category')
+    )
+
+    if connection.vendor == 'postgresql':
+        # DISTINCT ON returns one row per movie (highest-priority active relation)
+        # in a single query. ORDER BY must lead with the DISTINCT field.
+        relations = list(
+            base_qs.order_by('movie_id', '-m3u_account__priority', 'id')
+            .distinct('movie_id')
+        )
+    else:
+        # SQLite fallback: fetch all matching relations, deduplicate in Python.
+        seen: dict = {}
+        for rel in base_qs.order_by('-m3u_account__priority', 'id'):
+            if rel.movie_id not in seen:
+                seen[rel.movie_id] = rel
+        relations = list(seen.values())
+
+    # Precompute logo URL prefix/suffix once (mirrors _xc_live_streams_setup)
+    # so each row only needs a string concat instead of reverse() + URI build.
+    _base_url = build_absolute_uri_with_port(request, "")
+    _sample_logo_path = reverse("api:vod:vodlogo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
+
+    # Sort by name (DISTINCT ON forces ORDER BY movie_id; SQLite path is unsorted).
+    relations.sort(key=lambda r: (r.movie.name or "").lower())
 
     streams = []
+    append = streams.append
+    for num, relation in enumerate(relations, 1):
+        movie = relation.movie
+        custom_props = movie.custom_properties or {}
+        category = relation.category
+        category_id_str = str(category.id) if category else "0"
+        category_id_list = [category.id] if category else []
+        rating = movie.rating
+        logo = movie.logo
 
-    # All authenticated users get access to VOD from all active M3U accounts
-    filters = {"m3u_relations__m3u_account__is_active": True}
-
-    if category_id:
-        filters["m3u_relations__category_id"] = category_id
-
-    # Optimize with prefetch_related to eliminate N+1 queries
-    # This loads all relations in a single query instead of one per movie
-    movies = Movie.objects.filter(**filters).select_related('logo').prefetch_related(
-        Prefetch(
-            'm3u_relations',
-            queryset=M3UMovieRelation.objects.filter(
-                m3u_account__is_active=True
-            ).select_related('m3u_account', 'category').order_by('-m3u_account__priority', 'id'),
-            to_attr='active_relations'
-        )
-    ).distinct()
-
-    for movie in movies:
-        # Get the first (highest priority) relation from prefetched data
-        # This avoids the N+1 query problem entirely
-        if hasattr(movie, 'active_relations') and movie.active_relations:
-            relation = movie.active_relations[0]
-        else:
-            # Fallback - should rarely be needed with proper prefetching
-            continue
-
-        streams.append({
-            "num": movie.id,
+        append({
+            "num": num,
             "name": movie.name,
             "stream_type": "movie",
             "stream_id": movie.id,
             "stream_icon": (
-                None if not movie.logo
-                else build_absolute_uri_with_port(
-                    request,
-                    reverse("api:vod:vodlogo-cache", args=[movie.logo.id])
-                )
+                f"{_logo_url_prefix}{logo.id}{_logo_url_suffix}" if logo else None
             ),
-            #'stream_icon': movie.logo.url if movie.logo else '',
-            "rating": movie.rating or "0",
-            "rating_5based": round(float(movie.rating or 0) / 2, 2) if movie.rating else 0,
+            "rating": rating or "0",
+            "rating_5based": round(float(rating or 0) / 2, 2) if rating else 0,
             "added": str(int(movie.created_at.timestamp())),
             "is_adult": 0,
             "tmdb_id": movie.tmdb_id or "",
             "imdb_id": movie.imdb_id or "",
-            "trailer": (movie.custom_properties or {}).get('trailer') or "",
-            "category_id": str(relation.category.id) if relation.category else "0",
-            "category_ids": [int(relation.category.id)] if relation.category else [],
+            "trailer": custom_props.get('youtube_trailer') or "",
+            "plot": movie.description or "",
+            "genre": movie.genre or "",
+            "year": movie.year or "",
+            "director": custom_props.get('director', ''),
+            "cast": custom_props.get('actors', ''),
+            "release_date": custom_props.get('release_date', ''),
+            "category_id": category_id_str,
+            "category_ids": category_id_list,
             "container_extension": relation.container_extension or "mp4",
             "custom_sid": None,
             "direct_source": "",
@@ -2452,47 +2670,72 @@ def xc_get_series_categories(user):
 def xc_get_series(request, user, category_id=None):
     """Get series list for XtreamCodes API"""
     from apps.vod.models import M3USeriesRelation
+    from django.db import connection
 
-    series_list = []
-
-    # All authenticated users get access to series from all active M3U accounts
-    filters = {"m3u_account__is_active": True}
-
+    rel_filters = {"m3u_account__is_active": True}
     if category_id:
-        filters["category_id"] = category_id
+        rel_filters["category_id"] = category_id
 
-    # Get series relations instead of series directly
-    series_relations = M3USeriesRelation.objects.filter(**filters).select_related(
-        'series', 'series__logo', 'category', 'm3u_account'
+    base_qs = (
+        M3USeriesRelation.objects
+        .filter(**rel_filters)
+        .select_related('series', 'series__logo', 'category')
     )
 
-    for relation in series_relations:
+    if connection.vendor == 'postgresql':
+        relations = list(
+            base_qs.order_by('series_id', '-m3u_account__priority', 'id')
+            .distinct('series_id')
+        )
+    else:
+        seen: dict = {}
+        for rel in base_qs.order_by('-m3u_account__priority', 'id'):
+            if rel.series_id not in seen:
+                seen[rel.series_id] = rel
+        relations = list(seen.values())
+
+    _base_url = build_absolute_uri_with_port(request, "")
+    _sample_logo_path = reverse("api:vod:vodlogo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
+
+    relations.sort(key=lambda r: (r.series.name or "").lower())
+
+    series_list = []
+    append = series_list.append
+    for num, relation in enumerate(relations, 1):
         series = relation.series
-        series_list.append({
-            "num": relation.id,  # Use relation ID
+        custom_props = series.custom_properties or {}
+        category = relation.category
+        rating = series.rating
+        logo = series.logo
+        year_str = str(series.year) if series.year else ""
+        release_date = custom_props.get('release_date', year_str)
+
+        append({
+            "num": num,
             "name": series.name,
-            "series_id": relation.id,  # Use relation ID
+            "series_id": relation.id,
             "cover": (
-                None if not series.logo
-                else build_absolute_uri_with_port(
-                    request,
-                    reverse("api:vod:vodlogo-cache", args=[series.logo.id])
-                )
+                f"{_logo_url_prefix}{logo.id}{_logo_url_suffix}" if logo else None
             ),
             "plot": series.description or "",
-            "cast": series.custom_properties.get('cast', '') if series.custom_properties else "",
-            "director": series.custom_properties.get('director', '') if series.custom_properties else "",
+            "cast": custom_props.get('cast', ''),
+            "director": custom_props.get('director', ''),
             "genre": series.genre or "",
-            "release_date": series.custom_properties.get('release_date', str(series.year) if series.year else "") if series.custom_properties else (str(series.year) if series.year else ""),
-            "releaseDate": series.custom_properties.get('release_date', str(series.year) if series.year else "") if series.custom_properties else (str(series.year) if series.year else ""),
+            "release_date": release_date,
+            "releaseDate": release_date,
             "last_modified": str(int(relation.updated_at.timestamp())),
-            "rating": str(series.rating or "0"),
-            "rating_5based": str(round(float(series.rating or 0) / 2, 2)) if series.rating else "0",
-            "backdrop_path": series.custom_properties.get('backdrop_path', []) if series.custom_properties else [],
-            "youtube_trailer": series.custom_properties.get('youtube_trailer', '') if series.custom_properties else "",
-            "episode_run_time": series.custom_properties.get('episode_run_time', '') if series.custom_properties else "",
-            "category_id": str(relation.category.id) if relation.category else "0",
-            "category_ids": [int(relation.category.id)] if relation.category else [],
+            "rating": str(rating or "0"),
+            "rating_5based": str(round(float(rating or 0) / 2, 2)) if rating else "0",
+            "backdrop_path": custom_props.get('backdrop_path', []),
+            "youtube_trailer": custom_props.get('youtube_trailer', ''),
+            "episode_run_time": custom_props.get('episode_run_time', ''),
+            "category_id": str(category.id) if category else "0",
+            "category_ids": [category.id] if category else [],
+            "tmdb_id": series.tmdb_id or "",
+            "imdb_id": series.imdb_id or "",
         })
 
     return series_list
@@ -2840,7 +3083,7 @@ def xc_get_vod_info(request, user, vod_id):
         "movie_data": {
             "stream_id": movie.id,
             "name": movie.name,
-            "added": int(movie_relation.created_at.timestamp()),
+            "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
             "category_ids": [int(movie_relation.category.id)] if movie_relation.category else [],
             "container_extension": movie_relation.container_extension or "mp4",
@@ -2922,87 +3165,6 @@ def xc_series_stream(request, username, password, stream_id, extension):
 
     return HttpResponseRedirect(vod_url)
 
-
-def get_host_and_port(request):
-    """
-    Returns (host, port) for building absolute URIs.
-    - Prefers X-Forwarded-Host/X-Forwarded-Port (nginx).
-    - Falls back to Host header.
-    - Returns None for port if using standard ports (80/443) to omit from URLs.
-    - In dev, uses 5656 as a guess if port cannot be determined.
-    """
-    # Determine the scheme first - needed for standard port detection
-    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
-    standard_port = "443" if scheme == "https" else "80"
-
-    # 1. Try X-Forwarded-Host (may include port) - set by our nginx
-    xfh = request.META.get("HTTP_X_FORWARDED_HOST")
-    if xfh:
-        if ":" in xfh:
-            host, port = xfh.split(":", 1)
-            # Omit standard ports from URLs
-            if port == standard_port:
-                return host, None
-            # Non-standard port in X-Forwarded-Host - return it
-            # This handles reverse proxies on non-standard ports (e.g., https://example.com:8443)
-            return host, port
-        else:
-            host = xfh
-
-        # Check for X-Forwarded-Port header (if we didn't find a port in X-Forwarded-Host)
-        port = request.META.get("HTTP_X_FORWARDED_PORT")
-        if port:
-            # Omit standard ports from URLs
-            return host, None if port == standard_port else port
-        # If X-Forwarded-Proto is set but no valid port, assume standard
-        if request.META.get("HTTP_X_FORWARDED_PROTO"):
-            return host, None
-
-    # 2. Try Host header
-    raw_host = request.get_host()
-    if ":" in raw_host:
-        host, port = raw_host.split(":", 1)
-        # Omit standard ports from URLs
-        return host, None if port == standard_port else port
-    else:
-        host = raw_host
-
-    # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
-    port = request.META.get("HTTP_X_FORWARDED_PORT")
-    if port:
-        # Omit standard ports from URLs
-        return host, None if port == standard_port else port
-
-    # 4. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
-    # If so, assume standard port for the scheme (don't trust SERVER_PORT in this case)
-    if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
-        return host, None
-
-    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
-    port = request.META.get("SERVER_PORT")
-    if port:
-        # Omit standard ports from URLs
-        return host, None if port == standard_port else port
-
-    # 6. Dev fallback: guess port 5656
-    if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
-        return host, "5656"
-
-    # 7. Final fallback: assume standard port for scheme (omit from URL)
-    return host, None
-
-def build_absolute_uri_with_port(request, path):
-    """
-    Build an absolute URI with optional port.
-    Port is omitted from URL if None (standard port for scheme).
-    """
-    host, port = get_host_and_port(request)
-    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
-
-    if port:
-        return f"{scheme}://{host}:{port}{path}"
-    else:
-        return f"{scheme}://{host}{path}"
 
 def format_duration_hms(seconds):
     """

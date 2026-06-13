@@ -22,7 +22,7 @@ const PageContent = () => {
 
   const [allotmentSizes, setAllotmentSizes] = useLocalStorage(
     'channels-splitter-sizes',
-    [50, 50]
+    [60, 40]
   );
 
   // Only load logos when BOTH tables are ready
@@ -79,19 +79,19 @@ const PageContent = () => {
         defaultSizes={allotmentSizes}
         h={'100%'}
         w={'100%'}
-        miw={'600px'}
+        miw={'625px'}
         className="custom-allotment"
         minSize={100}
         onChange={handleSplitChange}
         onResize={handleResize}
       >
         <Box p={10} miw={'100px'} style={{ overflowX: 'auto' }}>
-          <Box miw={'600px'}>
+          <Box miw={'625px'}>
             <ChannelsTable onReady={handleChannelsReady} />
           </Box>
         </Box>
         <Box p={10} miw={'100px'} style={{ overflowX: 'auto' }}>
-          <Box miw={'600px'}>
+          <Box miw={'625px'}>
             <StreamsTable onReady={handleStreamsReady} />
           </Box>
         </Box>

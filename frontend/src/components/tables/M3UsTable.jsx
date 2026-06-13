@@ -8,6 +8,7 @@ import React, {
 import API from '../../api';
 import usePlaylistsStore from '../../store/playlists';
 import M3UForm from '../forms/M3U';
+import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
 import { TableHelper } from '../../helpers';
 import {
   useMantineTheme,
@@ -19,9 +20,6 @@ import {
   ActionIcon,
   Tooltip,
   Switch,
-  Progress,
-  Stack,
-  Badge,
   Group,
   Center,
 } from '@mantine/core';
@@ -29,16 +27,18 @@ import {
   SquareMinus,
   SquarePen,
   RefreshCcw,
-  Check,
-  X,
   ArrowUpDown,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   SquarePlus,
 } from 'lucide-react';
-import dayjs from 'dayjs';
-import useSettingsStore from '../../store/settings';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import {
+  useDateTimeFormat,
+  format,
+  diff,
+  getNow,
+} from '../../utils/dateTimeUtils.js';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
@@ -131,26 +131,48 @@ const RowActions = ({
 const M3UTable = () => {
   const [playlist, setPlaylist] = useState(null);
   const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
-  const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
   const [rowSelection, setRowSelection] = useState([]);
-  const [activeFilterValue, setActiveFilterValue] = useState('all');
   const [playlistCreated, setPlaylistCreated] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [playlistToDelete, setPlaylistToDelete] = useState(null);
+  // Auto-created channel preview shown in the delete confirmation so the
+  // user sees what cascades along with the account.
+  const [autoChannelsInfo, setAutoChannelsInfo] = useState({
+    count: 0,
+    sample_names: [],
+  });
   const [data, setData] = useState([]);
   const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
+  const [deleting, setDeleting] = useState(false);
+  const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
 
   const playlists = usePlaylistsStore((s) => s.playlists);
   const refreshProgress = usePlaylistsStore((s) => s.refreshProgress);
   const setRefreshProgress = usePlaylistsStore((s) => s.setRefreshProgress);
   const editPlaylistId = usePlaylistsStore((s) => s.editPlaylistId);
   const setEditPlaylistId = usePlaylistsStore((s) => s.setEditPlaylistId);
+
+  // Memoize data to prevent unnecessary re-renders during progress updates
+  const processedData = useMemo(() => {
+    return playlists
+      .filter((playlist) => playlist.locked === false)
+      .sort((a, b) => {
+        // First sort by active status (active items first)
+        if (a.is_active !== b.is_active) {
+          return a.is_active ? -1 : 1;
+        }
+        // Then sort by name (case-insensitive)
+        return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+      });
+  }, [playlists]);
+
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
   const theme = useMantineTheme();
   const [tableSize] = useLocalStorage('table-size', 'default');
+  const { fullDateFormat, fullDateTimeFormat } = useDateTimeFormat();
 
   const generateStatusString = (data) => {
     if (data.progress == 100) {
@@ -390,8 +412,32 @@ const M3UTable = () => {
     setPlaylistToDelete(playlist);
     setDeleteTarget(id);
 
-    // Skip warning if it's been suppressed
-    if (isWarningSuppressed('delete-m3u')) {
+    // Fetch how many auto-created channels this playlist owns. Populates the
+    // confirmation message so the user can decide whether to also delete
+    // them. On failure, surface "unknown" so the user is not misled into
+    // thinking there are zero auto-created channels.
+    let info;
+    try {
+      const result = await API.getPlaylistAutoCreatedChannelsCount(id);
+      info = result || { count: 0, sample_names: [] };
+    } catch {
+      info = {
+        count: null,
+        sample_names: [],
+        countUnavailable: true,
+      };
+    }
+    setAutoChannelsInfo(info);
+
+    // Skip the warning when it has been suppressed AND the account has
+    // no auto-created channels. When the account did create channels (or
+    // the count could not be resolved), the dialog still opens so the
+    // user sees and confirms what cascades.
+    if (
+      isWarningSuppressed('delete-m3u') &&
+      info.count === 0 &&
+      !info.countUnavailable
+    ) {
       return executeDeletePlaylist(id);
     }
 
@@ -400,9 +446,15 @@ const M3UTable = () => {
 
   const executeDeletePlaylist = async (id) => {
     setIsLoading(true);
-    await API.deletePlaylist(id);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deletePlaylist(id);
+    } finally {
+      setDeleting(false);
+      setIsLoading(false);
+      setConfirmDeleteOpen(false);
+      setAutoChannelsInfo({ count: 0, sample_names: [] });
+    }
   };
 
   const toggleActive = async (playlist) => {
@@ -566,9 +618,115 @@ const M3UTable = () => {
       },
       {
         header: 'Max Streams',
-        accessorKey: 'max_streams',
+        id: 'max_streams',
+        accessorFn: (row) => {
+          const activeProfiles = (row.profiles || []).filter(
+            (p) => p.is_active
+          );
+          if (activeProfiles.length === 0) return row.max_streams;
+          if (activeProfiles.some((p) => p.max_streams === 0)) return Infinity;
+          return activeProfiles.reduce((sum, p) => sum + p.max_streams, 0);
+        },
         sortable: true,
         size: 125,
+        cell: ({ row }) => {
+          const profiles = row.original.profiles || [];
+          const activeProfiles = profiles.filter((p) => p.is_active);
+
+          if (activeProfiles.length <= 1) {
+            const val = row.original.max_streams;
+            return <Text size="xs">{val === 0 ? '∞' : val}</Text>;
+          }
+
+          const hasUnlimited = activeProfiles.some((p) => p.max_streams === 0);
+          const total = hasUnlimited
+            ? null
+            : activeProfiles.reduce((sum, p) => sum + p.max_streams, 0);
+
+          const tooltipLines = activeProfiles
+            .map(
+              (p) =>
+                `${p.name}: ${p.max_streams === 0 ? 'Unlimited' : p.max_streams}`
+            )
+            .join('\n');
+
+          return (
+            <Tooltip
+              label={tooltipLines}
+              multiline
+              width={220}
+              style={{ whiteSpace: 'pre-line' }}
+            >
+              <Text
+                size="xs"
+                style={{
+                  cursor: 'default',
+                  textDecoration: 'underline dotted',
+                }}
+              >
+                {hasUnlimited ? '∞' : total}
+              </Text>
+            </Tooltip>
+          );
+        },
+      },
+      {
+        header: 'Expiration',
+        accessorKey: 'earliest_expiration',
+        sortable: true,
+        size: 110,
+        cell: ({ cell, row }) => {
+          const data = row.original;
+
+          const earliest = cell.getValue();
+          if (!earliest) {
+            return null;
+          }
+
+          const now = getNow();
+          const daysLeft = diff(earliest, now, 'day');
+          let color;
+          let label;
+          if (daysLeft < 0) {
+            color = 'red.7';
+            label = 'Expired';
+          } else if (daysLeft === 0) {
+            color = 'red.5';
+            label = 'Expires today';
+          } else if (daysLeft <= 7) {
+            color = 'orange.5';
+            label = `${daysLeft}d left`;
+          } else if (daysLeft <= 30) {
+            color = 'yellow.5';
+            label = `${daysLeft}d left`;
+          } else {
+            label = format(earliest, fullDateFormat);
+          }
+
+          const allExpirations = data.all_expirations || [];
+          const tooltipContent =
+            allExpirations.length > 0
+              ? allExpirations
+                  .map(
+                    (e) =>
+                      `${e.profile_name}: ${format(e.exp_date, fullDateTimeFormat)}${!e.is_active ? ' (inactive)' : ''}`
+                  )
+                  .join('\n')
+              : label;
+
+          return (
+            <Tooltip
+              label={tooltipContent}
+              multiline
+              width={300}
+              style={{ whiteSpace: 'pre-line' }}
+            >
+              <Text size="xs" c={color} fw={daysLeft <= 7 ? 600 : 400}>
+                {label}
+              </Text>
+            </Tooltip>
+          );
+        },
       },
       {
         header: 'Updated',
@@ -576,11 +734,11 @@ const M3UTable = () => {
         size: 175,
         cell: ({ cell }) => {
           const value = cell.getValue();
-          return value ? (
-            <Text size="xs">{new Date(value).toLocaleString()}</Text>
-          ) : (
-            <Text size="xs">Never</Text>
-          );
+          if (!value) {
+            return <Text size="xs">Never</Text>;
+          }
+          const formatted = format(value, fullDateTimeFormat);
+          return <Text size="xs">{formatted}</Text>;
         },
       },
       {
@@ -605,7 +763,14 @@ const M3UTable = () => {
         size: tableSize == 'compact' ? 75 : 100,
       },
     ],
-    [refreshPlaylist, editPlaylist, deletePlaylist, toggleActive]
+    [
+      refreshPlaylist,
+      editPlaylist,
+      deletePlaylist,
+      toggleActive,
+      fullDateFormat,
+      fullDateTimeFormat,
+    ]
   );
 
   //optionally access the underlying virtualizer instance
@@ -635,18 +800,7 @@ const M3UTable = () => {
 
   // Listen for edit playlist requests from notifications
   useEffect(() => {
-    setData(
-      playlists
-        .filter((playlist) => playlist.locked === false)
-        .sort((a, b) => {
-          // First sort by active status (active items first)
-          if (a.is_active !== b.is_active) {
-            return a.is_active ? -1 : 1;
-          }
-          // Then sort by name (case-insensitive)
-          return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-        })
-    );
+    setData(processedData);
 
     if (editPlaylistId) {
       const playlistToEdit = playlists.find((p) => p.id === editPlaylistId);
@@ -656,7 +810,7 @@ const M3UTable = () => {
         setEditPlaylistId(null);
       }
     }
-  }, [editPlaylistId, playlists]);
+  }, [editPlaylistId, processedData, playlists, setEditPlaylistId]);
 
   const onSortingChange = (column) => {
     console.log(column);
@@ -687,13 +841,22 @@ const M3UTable = () => {
         playlists
           .filter((playlist) => playlist.locked === false)
           .sort((a, b) => {
-            console.log(a);
-            console.log(newSorting[0].id);
-            if (a[compareColumn] !== b[compareColumn]) {
-              return compareDesc ? 1 : -1;
+            const aVal = a[compareColumn];
+            const bVal = b[compareColumn];
+
+            // Always sort nulls/undefined to the end regardless of direction
+            if (aVal == null && bVal == null) return 0;
+            if (aVal == null) return 1;
+            if (bVal == null) return -1;
+
+            let comparison;
+            if (typeof aVal === 'string') {
+              comparison = aVal.localeCompare(bVal);
+            } else {
+              comparison = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
             }
 
-            return 0;
+            return compareDesc ? -comparison : comparison;
           })
       );
     }
@@ -769,6 +932,7 @@ const M3UTable = () => {
       status: renderHeaderCell,
       last_message: renderHeaderCell,
       updated_at: renderHeaderCell,
+      earliest_expiration: renderHeaderCell,
       is_active: renderHeaderCell,
       actions: renderHeaderCell,
     },
@@ -826,21 +990,31 @@ const M3UTable = () => {
         >
           M3U Accounts
         </Text>
-        <Button
-          leftSection={<SquarePlus size={14} />}
-          variant="light"
-          size="xs"
-          onClick={() => editPlaylist()}
-          p={5}
-          color="green"
-          style={{
-            borderWidth: '1px',
-            borderColor: 'green',
-            color: 'white',
-          }}
-        >
-          Add M3U
-        </Button>
+        <Flex gap={6}>
+          <Button
+            variant="light"
+            size="xs"
+            onClick={() => setServerGroupsManagerOpen(true)}
+            p={5}
+          >
+            Server Groups
+          </Button>
+          <Button
+            leftSection={<SquarePlus size={14} />}
+            variant="light"
+            size="xs"
+            onClick={() => editPlaylist()}
+            p={5}
+            color="green"
+            style={{
+              borderWidth: '1px',
+              borderColor: 'green',
+              color: 'white',
+            }}
+          >
+            Add M3U
+          </Button>
+        </Flex>
       </Flex>
 
       <Paper
@@ -889,22 +1063,62 @@ const M3UTable = () => {
         playlistCreated={playlistCreated}
       />
 
+      <ServerGroupsManagerModal
+        isOpen={serverGroupsManagerOpen}
+        onClose={() => setServerGroupsManagerOpen(false)}
+      />
+
       <ConfirmationDialog
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => executeDeletePlaylist(deleteTarget)}
+        loading={deleting}
         title="Confirm M3U Account Deletion"
         message={
           playlistToDelete ? (
-            <div style={{ whiteSpace: 'pre-line' }}>
-              {`Are you sure you want to delete the following M3U account?
+            <div>
+              <div style={{ whiteSpace: 'pre-line', marginBottom: 12 }}>
+                {`Delete the following M3U account?
 
 Name: ${playlistToDelete.name}
 Type: ${playlistToDelete.account_type === 'XC' ? 'Xtream Codes' : 'Standard'}
 Server: ${playlistToDelete.server_url || 'Local file'}
 
-This will remove all related streams and may affect channels using these streams.
+Streams owned by this provider will be removed. Manual channels that include those streams will lose them, but the channels and any other streams on them survive.
+
 This action cannot be undone.`}
+              </div>
+              {autoChannelsInfo.countUnavailable ? (
+                <div
+                  style={{
+                    background: 'rgba(234,179,8,0.08)',
+                    border: '1px solid rgba(234,179,8,0.3)',
+                    borderRadius: 4,
+                    padding: 10,
+                    marginTop: 6,
+                  }}
+                >
+                  <Text size="sm" fw={600}>
+                    Auto-synced channel count is unavailable; any channels
+                    auto-created by this provider will be deleted with the
+                    account.
+                  </Text>
+                </div>
+              ) : autoChannelsInfo.count > 0 ? (
+                <div
+                  style={{
+                    background: 'rgba(234,179,8,0.08)',
+                    border: '1px solid rgba(234,179,8,0.3)',
+                    borderRadius: 4,
+                    padding: 10,
+                    marginTop: 6,
+                  }}
+                >
+                  <Text size="sm" fw={600}>
+                    {`${autoChannelsInfo.count} auto-synced channel${autoChannelsInfo.count === 1 ? '' : 's'} created by this provider will also be deleted.`}
+                  </Text>
+                </div>
+              ) : null}
             </div>
           ) : (
             'Are you sure you want to delete this M3U account? This action cannot be undone.'

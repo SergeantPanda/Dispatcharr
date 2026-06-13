@@ -13,7 +13,12 @@ class PluginsConfig(AppConfig):
 
         - Skip during common management commands that don't need discovery.
         - Register post_migrate handler to sync plugin registry to DB after migrations.
-        - Do an in-memory discovery (no DB) so registry is available early.
+        - Run in-memory discovery (no DB) in every non-Celery process so plugin
+          modules are imported and monkey-patches apply. This includes uWSGI workers
+          under lazy-apps=true, which each start cold and never inherit a warmed fork.
+          Celery workers skip here and discover via the worker_ready signal instead.
+        - One-shot startup tasks (schedule setup, repo refresh) are gated by
+          should_skip_initialization() so they only fire in the master/main process.
         """
         try:
             # Allow explicit opt-out via env var
@@ -44,11 +49,70 @@ class PluginsConfig(AppConfig):
                 dispatch_uid="apps.plugins.post_migrate_discover",
             )
 
-            # Perform non-DB discovery now to populate in-memory registry.
-            from .loader import PluginManager
-            PluginManager.get().discover_plugins(sync_db=False)
+            from dispatcharr.app_initialization import should_skip_initialization
+            # Skip discovery for Celery (worker_ready signal handles it) and
+            # pure management commands that don't serve requests. Every other
+            # process - including each uWSGI worker under lazy-apps=true - runs
+            # discovery so plugin modules are imported and monkey-patches apply.
+            _no_discovery_cmds = {'celery', 'beat', 'migrate', 'dbshell', 'loaddata'}
+            if not any(cmd in sys.argv for cmd in _no_discovery_cmds):
+                from .loader import PluginManager
+                PluginManager.get().discover_plugins(sync_db=False)
+
+            if should_skip_initialization():
+                return
         except Exception:
             # Avoid breaking startup due to plugin errors
             import logging
 
             logging.getLogger(__name__).exception("Plugin discovery wiring failed during app ready")
+
+        # Register periodic task for refreshing plugin repo manifests
+        self._setup_repo_refresh_schedule()
+
+        # Refresh repo manifests once at startup so the UI always has current data
+        self._enqueue_startup_refresh()
+
+    def _enqueue_startup_refresh(self):
+        from dispatcharr.app_initialization import should_skip_initialization
+        if should_skip_initialization():
+            return
+        try:
+            from .tasks import refresh_plugin_repos
+            refresh_plugin_repos.apply_async(countdown=10)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug(
+                "Could not enqueue startup plugin repo refresh (Celery may not be ready yet)"
+            )
+
+    def _setup_repo_refresh_schedule(self):
+        from dispatcharr.app_initialization import should_skip_initialization
+        if should_skip_initialization():
+            return
+        try:
+            from core.scheduling import create_or_update_periodic_task, delete_periodic_task
+            from core.models import CoreSettings
+            from .tasks import PLUGIN_REPO_REFRESH_TASK_NAME
+
+            interval = 6
+            try:
+                obj = CoreSettings.objects.get(key="plugin_repo_settings")
+                interval = obj.value.get("refresh_interval_hours", 6)
+            except CoreSettings.DoesNotExist:
+                pass
+
+            if interval == 0:
+                delete_periodic_task(PLUGIN_REPO_REFRESH_TASK_NAME)
+            else:
+                create_or_update_periodic_task(
+                    task_name=PLUGIN_REPO_REFRESH_TASK_NAME,
+                    celery_task_path="apps.plugins.tasks.refresh_plugin_repos",
+                    interval_hours=interval,
+                    enabled=True,
+                )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug(
+                "Could not set up plugin repo refresh schedule (migrations may not have run yet)"
+            )

@@ -1,3 +1,5 @@
+import API from '../../api.js';
+
 export const getStatRows = (stats) => {
   return [
     ['Video Codec', stats.video_codec],
@@ -30,10 +32,11 @@ const filterByUpcoming = (arr, tvid, titleKey, toUserTime, userNow) => {
 
     if ((pr.tvg_id || '') !== tvid) return false;
     if ((pr.title || '').toLowerCase() !== titleKey) return false;
-    const st = toUserTime(r.start_time);
-    return st.isAfter(userNow());
+    // Include episodes that haven't ended yet (currently-airing + future)
+    const et = toUserTime(r.end_time);
+    return et.isAfter(userNow());
   });
-}
+};
 
 const dedupeByProgram = (filtered) => {
   // Deduplicate by program.id if present, else by time+title
@@ -62,7 +65,7 @@ const dedupeByProgram = (filtered) => {
     deduped.push(r);
   }
   return deduped;
-}
+};
 
 export const getUpcomingEpisodes = (
   isSeriesGroup,
@@ -84,4 +87,23 @@ export const getUpcomingEpisodes = (
   return dedupeByProgram(filtered).sort(
     (a, b) => toUserTime(a.start_time) - toUserTime(b.start_time)
   );
+};
+
+export const getChannel = (id) => {
+  return API.getChannel(id);
+};
+
+export const updateRecordingMetadata = (
+  recording,
+  editTitle,
+  editDescription
+) => {
+  return API.updateRecordingMetadata(recording.id, {
+    title: editTitle || 'Custom Recording',
+    description: editDescription,
+  });
+};
+
+export const refreshArtwork = (id) => {
+  return API.refreshArtwork(id);
 };

@@ -1,28 +1,44 @@
 import { Box, Flex } from '@mantine/core';
 import CustomTableHeader from './CustomTableHeader';
 import { useCallback, useState, useRef, useMemo } from 'react';
-import { flexRender } from '@tanstack/react-table';
-import table from '../../../helpers/table';
 import CustomTableBody from './CustomTableBody';
-import useLocalStorage from '../../../hooks/useLocalStorage';
 
 const CustomTable = ({ table }) => {
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
+  const tableSize = table?.tableSize ?? 'default';
 
-  // Get column sizing state for dependency tracking
+  // columnSizing is read here so the memo below re-runs when columns are resized.
   const columnSizing = table.getState().columnSizing;
 
-  // Calculate minimum table width reactively based on column sizes
+  // Calculate minimum table width reactively based on column sizes.
+  // Grow columns contribute only their minSize (not TanStack's default 150px)
+  // so the wrapper doesn't force the table wider than its container.
   const minTableWidth = useMemo(() => {
+    void columnSizing; // reactive trigger: recalculate when column sizes change
     const headerGroups = table.getHeaderGroups();
     if (!headerGroups || headerGroups.length === 0) return 0;
 
     const width =
       headerGroups[0]?.headers.reduce((total, header) => {
-        return total + header.getSize();
+        const colDef = header.column.columnDef;
+        const size = colDef.grow ? colDef.minSize || 0 : header.getSize();
+        return total + size;
       }, 0) || 0;
 
     return width;
+  }, [table, columnSizing]);
+
+  // CSS custom properties for each fixed-width column's current size.
+  // These are injected on the table wrapper and cascade to all descendant cells,
+  // so body cells (which are memoized and don't re-render on resize) still pick
+  // up the new width via CSS cascade without needing a React re-render.
+  const columnSizeVars = useMemo(() => {
+    void columnSizing;
+    return table.getFlatHeaders().reduce((vars, header) => {
+      if (!header.column.columnDef.grow) {
+        vars[`--header-${header.id}-size`] = `${header.getSize()}px`;
+      }
+      return vars;
+    }, {});
   }, [table, columnSizing]);
 
   return (
@@ -34,7 +50,7 @@ const CustomTable = ({ table }) => {
         minWidth: `${minTableWidth}px`,
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
+        ...columnSizeVars,
       }}
     >
       <CustomTableHeader
@@ -47,6 +63,8 @@ const CustomTable = ({ table }) => {
         }
         selectedTableIds={table.selectedTableIds}
         tableCellProps={table.tableCellProps}
+        headerPinned={table.headerPinned}
+        enableDragDrop={table.enableDragDrop}
       />
       <CustomTableBody
         getRowModel={table.getRowModel}
@@ -54,10 +72,11 @@ const CustomTable = ({ table }) => {
         expandedRowIds={table.expandedRowIds}
         expandedRowRenderer={table.expandedRowRenderer}
         renderBodyCell={table.renderBodyCell}
-        getExpandedRowHeight={table.getExpandedRowHeight}
-        getRowStyles={table.getRowStyles} // Pass the getRowStyles function
-        tableBodyProps={table.tableBodyProps}
+        getRowStyles={table.getRowStyles}
         tableCellProps={table.tableCellProps}
+        enableDragDrop={table.enableDragDrop}
+        selectedTableIdsSet={table.selectedTableIdsSet}
+        handleRowClickRef={table.handleRowClickRef}
       />
     </Box>
   );

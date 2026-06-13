@@ -4,6 +4,7 @@ import duration from 'dayjs/plugin/duration';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
+import customParseFormat from 'dayjs/plugin/customParseFormat';
 import useSettingsStore from '../store/settings';
 import useLocalStorage from '../hooks/useLocalStorage';
 
@@ -11,10 +12,21 @@ dayjs.extend(duration);
 dayjs.extend(relativeTime);
 dayjs.extend(utc);
 dayjs.extend(timezone);
+dayjs.extend(customParseFormat);
 
 export const convertToMs = (dateTime) => dayjs(dateTime).valueOf();
 
-export const initializeTime = (dateTime) => dayjs(dateTime);
+export const convertToSec = (dateTime) => dayjs(dateTime).unix();
+
+export const initializeTime = (dateTime, format = null, locale = null, strict = false) => {
+  if (format && locale) {
+    return dayjs(dateTime, format, locale, strict);
+  } else if (format) {
+    return dayjs(dateTime, format, strict);
+  } else {
+    return dayjs(dateTime);
+  }
+}
 
 export const startOfDay = (dateTime) => dayjs(dateTime).startOf('day');
 
@@ -27,6 +39,9 @@ export const isSame = (date1, date2, unit = 'day') =>
 
 export const add = (dateTime, value, unit) => dayjs(dateTime).add(value, unit);
 
+export const subtract = (dateTime, value, unit) =>
+  dayjs(dateTime).subtract(value, unit);
+
 export const diff = (date1, date2, unit = 'millisecond') =>
   dayjs(date1).diff(date2, unit);
 
@@ -34,6 +49,62 @@ export const format = (dateTime, formatStr) =>
   dayjs(dateTime).format(formatStr);
 
 export const getNow = () => dayjs();
+
+export const toFriendlyDuration = (dateTime, unit) =>
+  dayjs.duration(dateTime, unit).humanize();
+
+export const isValid = (dateTime) => dayjs(dateTime).isValid();
+
+export const toDate = (dateTime) => dayjs(dateTime).toDate();
+
+export const formatExactDuration = (seconds) => {
+  if (seconds < 60) return `${seconds.toFixed(1)} seconds`;
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m} minute${m !== 1 ? 's' : ''}, ${s} second${s !== 1 ? 's' : ''}`;
+  }
+  if (seconds < 86400) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h} hour${h !== 1 ? 's' : ''}, ${m} minute${m !== 1 ? 's' : ''}`;
+  }
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  return `${d} day${d !== 1 ? 's' : ''}, ${h} hour${h !== 1 ? 's' : ''}`;
+};
+
+export const fromNow = (dateTime) => dayjs(dateTime).fromNow();
+
+export const setTz = (dateTime, timeZone) => dayjs(dateTime).tz(timeZone);
+
+export const setMonth = (dateTime, value) => dayjs(dateTime).month(value);
+
+export const setYear = (dateTime, value) => dayjs(dateTime).year(value);
+
+export const setDay = (dateTime, value) => dayjs(dateTime).date(value);
+
+export const setHour = (dateTime, value) => dayjs(dateTime).hour(value);
+
+export const setMinute = (dateTime, value) => dayjs(dateTime).minute(value);
+
+export const setSecond = (dateTime, value) => dayjs(dateTime).second(value);
+
+export const setMillisecond = (dateTime, value) => dayjs(dateTime).millisecond(value);
+
+export const getMonth = (dateTime) => dayjs(dateTime).month();
+
+export const getYear = (dateTime) => dayjs(dateTime).year();
+
+export const getDay = (dateTime) => dayjs(dateTime).date();
+
+export const getHour = (dateTime) => dayjs(dateTime).hour();
+
+export const getMinute = (dateTime) => dayjs(dateTime).minute();
+
+export const getSecond = (dateTime) => dayjs(dateTime).second();
+
+export const getMillisecond = (dateTime) => dayjs(dateTime).millisecond();
 
 export const getNowMs = () => Date.now();
 
@@ -57,7 +128,7 @@ export const useUserTimeZone = () => {
   );
 
   useEffect(() => {
-    const tz = settings?.['system-time-zone']?.value;
+    const tz = settings?.['system_settings']?.value?.time_zone;
     if (tz && tz !== timeZone) {
       setTimeZone(tz);
     }
@@ -71,7 +142,7 @@ export const useTimeHelpers = () => {
 
   const toUserTime = useCallback(
     (value) => {
-      if (!value) return dayjs.invalid();
+      if (!value) return dayjs(null);
       try {
         return initializeTime(value).tz(timeZone);
       } catch (error) {
@@ -103,7 +174,22 @@ export const useDateTimeFormat = () => {
   const timeFormat = timeFormatSetting === '12h' ? 'h:mma' : 'HH:mm';
   const dateFormat = dateFormatSetting === 'mdy' ? 'MMM D' : 'D MMM';
 
-  return [timeFormat, dateFormat];
+  // Full format strings for detailed date-time displays
+  const fullDateFormat =
+    dateFormatSetting === 'mdy' ? 'MM/DD/YYYY' : 'DD/MM/YYYY';
+  const fullTimeFormat = timeFormatSetting === '12h' ? 'h:mm:ss A' : 'HH:mm:ss';
+  const fullDateTimeFormat = `${fullDateFormat}, ${fullTimeFormat}`;
+
+  return {
+    timeFormat,
+    dateFormat,
+    fullDateFormat,
+    fullTimeFormat,
+    fullDateTimeFormat,
+    // Also return raw settings for cases that need them
+    timeFormatSetting,
+    dateFormatSetting,
+  };
 };
 
 export const toTimeString = (value) => {
@@ -256,3 +342,33 @@ export const getDefaultTimeZone = () => {
     return 'UTC';
   }
 };
+
+export const MONTH_NAMES = [
+  'january',
+  'february',
+  'march',
+  'april',
+  'may',
+  'june',
+  'july',
+  'august',
+  'september',
+  'october',
+  'november',
+  'december',
+];
+
+export const MONTH_ABBR = [
+  'jan',
+  'feb',
+  'mar',
+  'apr',
+  'may',
+  'jun',
+  'jul',
+  'aug',
+  'sep',
+  'oct',
+  'nov',
+  'dec',
+];
