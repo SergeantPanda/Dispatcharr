@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Manual Server Groups for shared M3U connection limits.** The existing `ServerGroup` model and account FK are now wired into live and VOD playback. Accounts assigned to the same group share a credential-scoped Redis counter when their provider logins match (hashed fingerprint); unrelated logins in the same group keep separate counters. Enforcement uses each profile's `max_streams` - not a group-wide cap - and profiles with `max_streams=0` skip credential pooling for that profile while still rotating on their own per-profile counter. New `apps/m3u/connection_pool.py` centralizes reserve/release, profile rotation, and credential moves on profile switch. (Closes #1137) — Thanks [@Goldenfreddy0703](https://github.com/Goldenfreddy0703)
+  - **Server Groups manager UI** on the M3U Accounts page: create, rename, and delete groups with account counts and delete confirmation. Groups load on login via a new Zustand store and REST helpers (`/api/m3u/server-groups/`).
+  - **M3U account form** adds a Server Group picker (including inline “add group”), reorganized into three columns (source/auth, connection limits, sync/content), and a Manage server groups shortcut.
+  - **VOD profile selection** uses `pool_has_capacity_for_profile()` so grouped accounts respect shared credential limits before a profile is chosen (non-grouped accounts behave as before).
+  - **Live profile switches** move the shared credential counter when the new profile uses a different provider login; same-login switches leave the credential counter unchanged.
+  - **Credential release keys** stored at reserve time allow counters to be released even if the M3U profile row is deleted afterward.
+
+### Changed
+
+- **Live and VOD connection slot logic now routes through `connection_pool`.** `Channel.get_stream()`, direct `Stream.get_stream()`, VOD profile selection, and the multi-worker VOD connection manager all call `reserve_profile_slot()` / `release_profile_slot()` instead of inline Redis INCR/DECR. VOD profile selection also checks `pool_has_capacity_for_profile()` before choosing a profile.
+- **Live XC upstream URLs use current credentials.** `_resolve_live_stream_url()` builds `/live/{user}/{pass}/{stream_id}.ts` from transformed account credentials and the stream's provider `stream_id`, so playback stays aligned with the active login after credential or profile changes instead of reusing a stale `stream.url` from sync.
+- **Channel stream switches check pooled capacity.** `get_stream_info_for_switch()` uses `profile_available_for_channel_switch()` when targeting a specific stream, and releases a reserved slot if URL assembly fails after `get_stream()` allocated one.
+- **Live proxy init reads Redis assignment once.** After `generate_stream_url()` reserves a slot, the stream handler reads `channel_stream` / `stream_profile` from Redis instead of calling `get_stream()` again, avoiding double INCR under concurrent release.
+- **Centralized Dispatcharr User-Agent construction in `core.utils`.** Outbound HTTP calls (Schedules Direct API, update checks, logo/VOD fallbacks, DVR recording clients) now use `dispatcharr_user_agent()`, `dispatcharr_dvr_user_agent()`, and `dispatcharr_http_headers()` instead of ad-hoc `Dispatcharr/{version}` strings and stale `Dispatcharr/1.0` fallbacks.
+- **EPG auto-match overhaul** — matching logic moved to `apps/channels/epg_matching.py`; Celery tasks in `tasks.py` are thin wrappers.
+  - Single-channel auto-match is now asynchronous: the API returns `202 Accepted` and pushes the result over WebSocket (`single_channel_epg_match`), so large EPG libraries no longer hit the previous 30-second HTTP timeout.
+  - Progress, bulk completion, and single-channel results use `send_websocket_update` instead of `async_to_sync(channel_layer.group_send)`, so notifications work reliably under gevent-patched uWSGI and Celery workers.
+  - Single-channel and selected-channel auto-match always run, even when the channel already has EPG assigned; match-all (no channel IDs) still only processes channels without EPG.
+  - Rematching to the same EPG no longer re-saves the channel or queues program-parse tasks; only assignments that actually change are written and refreshed.
+- **Easier EPG search when editing a channel.** The filter in the EPG picker now works more like a normal search box. You can type several words at once (e.g. `sky uk`) and it finds channels where every word appears somewhere in the name or TVG-ID, the order doesn't matter, and a word in the name can pair with one in the ID. Accents are ignored too, so `decale` matches `Décalé` and the other way around. — Thanks [@FiveBoroughs](https://github.com/FiveBoroughs)
+
+### Performance
+
+- **Schedules Direct refresh only fetches guide data for mapped channels.** Schedule MD5 checks and schedule downloads now target mapped lineup stations instead of the entire lineup, and schedule MD5 cache for unmapped stations is pruned each refresh. Unmapped lineup entries no longer trigger wasted schedule API calls when their MD5 changes.
+- **EPG auto-match memory and throughput improvements.**
+  - Single-channel matching streams active EPG rows and keeps only the best match plus the top 20 candidates in memory; ML validates at most 21 names per channel instead of embedding the full catalog.
+  - Strong fuzzy matches (≥75% single channel, ≥80% bulk) skip ML entirely, avoiding a ~500MB PyTorch load when the fuzzy result is already reliable.
+  - Bulk matching uses a single fuzzy pass per channel instead of scanning the full catalog twice for best match and top candidates.
+  - Bulk exact `tvg_id` / Gracenote matching uses an in-memory index built alongside the EPG catalog (`build_epg_matching_catalog()`), giving O(1) lookups with no extra database queries.
+  - Bulk match apply uses batched queries (two fetches plus `bulk_update`) instead of one `EPGData.objects.get()` per matched channel.
+  - EPG normalization settings are cached once per matching run, avoiding repeated `CoreSettings` reads when normalizing thousands of names.
+
+### Fixed
+
+- **Stale `channel_stream` Redis keys after a channel stopped could skip connection accounting on retune.** On `dev`, `get_stream()` reused any existing `channel_stream` / `stream_profile` assignment without reserving a new slot. If those keys were left behind after a stop, the next tune-in could reach the provider without incrementing Redis counters. `get_stream()` now releases stale assignments when proxy metadata shows the channel is inactive, then reserves fresh slots.
+- **EPG auto-match reliability fixes.**
+  - Memory could spike to multiple GB on large EPG sources when building a full in-memory catalog before fuzzy matching; single-channel matching now streams rows and bounds ML work to a small candidate set.
+  - Wrong channel assignments from global ML similarity; ML validation now checks the fuzzy best match (or top fuzzy candidates as a last resort) instead of scoring the entire catalog.
+  - Channel form auto-match spinner could stick after errors or early task exits; all single-channel outcomes now push a WebSocket result, and the UI clears loading state after a 3-minute timeout.
+  - Bulk auto-match completion no longer calls `batch-set-epg` from the WebSocket handler, which had been re-applying every match and queueing redundant `parse_programs_for_tvg_id` tasks even when assignments were unchanged.
+- **Schedules Direct lineup search country dropdown.** The country list was fetched directly from the SD API in the browser, which failed due to CORS and silently fell back to a 14-country hardcoded list. Countries are now included in the `GET sd-lineups` response (server-side fetch with proper User-Agent) so the full SD country list populates correctly. — Thanks [@sethwv](https://github.com/sethwv)
+- **Schedules Direct program poster proxy omitted User-Agent on image requests.** The poster endpoint authenticated with SD correctly but fetched images with only the `token` header, which violates SD's API requirements (error 1003). Image requests now include the standard `Dispatcharr/{version}` User-Agent via `dispatcharr_http_headers()`.
+- **Schedules Direct guide data missing after mapping a channel.** Lineup refreshes cached schedule MD5s for all stations, but `ProgramData` was only written for mapped channels. Mapping a channel later could leave MD5s looking unchanged so schedules were skipped and the channel had no guide until dates rolled outside the cached window. Refreshes now backfill fetch-window dates that lack `ProgramData` (including newly mapped stations with stale cache), fetch program metadata when no local `ProgramData` exists for a `programID`, and clean up orphaned `ProgramData` on unmapped `EPGData` entries. — Thanks [@sethwv](https://github.com/sethwv)
+- **Schedules Direct guide fetch on channel map.** Mapping a channel (or bulk-assigning EPG) now triggers a targeted guide fetch for that `EPGData` entry—mirroring XMLTV's `parse_programs_for_tvg_id` flow—without waiting for the next full source refresh. Skips the fetch when `ProgramData` already exists so additional channels sharing the same `tvg-id` do not trigger redundant API calls. Bulk assignment of three or more SD stations without guide data on the same source queues one batched mapped-station fetch instead of separate per-station API sessions. Concurrent batch and single-EPG fetches coordinate via source-level locks with deferred retries so mappings are not dropped and overlapping SD API sessions are avoided when possible.
+- **Auto-sync numbering modes now read only the fields each mode's UI exposes.** After the auto-sync overhaul, switching between Provider, Next Available, and Fixed modes left stale `auto_sync_channel_start` / `auto_sync_channel_end` values in the database while each mode's UI only edits a subset of those fields. Sync treated the hidden values as authoritative in every mode, which discarded valid provider numbers (floored at an auto-computed start), capped Next Available at a stale End, and ran range-enforcement deletes against provider- and next-available-numbered channels. Provider mode now honors `stream_chno` verbatim when free (Start/End bound only the fallback for numberless streams); Next Available ignores End; overflow-delete runs in Fixed mode only. Duplicate or already-taken provider numbers fall back to a free slot instead of being dropped or overwriting an existing channel. Provider mode's Start # field now drops End when it would invert the fallback range (matching Fixed mode). (Closes #1273) — Thanks [@CodeBormen](https://github.com/CodeBormen)
+
 ## [0.26.0] - 2026-06-07
 
 ### Added
